@@ -1,18 +1,69 @@
+// App.tsx — versione corretta per background tracking (Android)
+// Note: richiede `expo install expo-task-manager expo-location expo-file-system expo-sharing`
+
 import React from 'react';
-import { StyleSheet, Text, View, Button, useColorScheme, Alert, TextInput, Modal, TouchableOpacity, Animated, StatusBar, Platform } from 'react-native';
+import {
+  StyleSheet, Text, View, Button, useColorScheme, Alert, TextInput, Modal,
+  TouchableOpacity, Animated, StatusBar, Platform, AppState, AppStateStatus
+} from 'react-native';
 import * as Location from 'expo-location';
+import * as TaskManager from 'expo-task-manager';
+import * as FileSystem from 'expo-file-system';
 import Constants from 'expo-constants';
 import { File, Paths } from "expo-file-system";
 import * as FileSystemLegacy from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
-
 type Coordinate = {
   latitude: number;
   longitude: number;
   timestamp: number;
 };
+
+const LOCATION_TASK_NAME = "background-location-task";
+const BG_POSITIONS_FILE = `${FileSystem.cacheDirectory}bg_positions.json`;
+
+/**
+ * Background task: viene eseguito in un contesto separato.
+ * Qui salviamo le posizioni su un file JSON nella cache.
+ */
+TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
+  if (error) {
+    console.error("Errore task location:", error);
+    return;
+  }
+  if (data) {
+    try {
+      const { locations } = data as any;
+      // leggi file esistente (se presente)
+      let arr: Coordinate[] = [];
+      try {
+        const file = new File(Paths.cache, "bg_positions.json");
+        const raw = await file.read();
+        arr = JSON.parse(raw || "[]");
+      } catch {
+        arr = [];
+      }
+
+      // aggiungi le nuove posizioni
+      (locations as any[]).forEach((loc) => {
+        const ts = typeof loc.timestamp === 'number' ? loc.timestamp : Date.now();
+        arr.push({
+          latitude: loc.coords.latitude,
+          longitude: loc.coords.longitude,
+          timestamp: ts,
+        });
+      });
+
+      // scrivi indietro
+      const file = new File(Paths.cache, "bg_positions.json");
+      await file.write(JSON.stringify(arr));
+    } catch (err) {
+      console.error("Errore scrittura file bg positions:", err);
+    }
+  }
+});
 
 export default function App() {
   const [recording, setRecording] = React.useState(false);
@@ -24,7 +75,6 @@ export default function App() {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
 
-  // animazioni
   const titlePosition = React.useRef(new Animated.Value(0)).current;
   const buttonsPosition = React.useRef(new Animated.Value(0)).current;
 
@@ -42,58 +92,118 @@ export default function App() {
     }).start();
   }, [recording]);
 
-  // subscription ref
   const locationSubscription = React.useRef<Location.LocationSubscription | null>(null);
+
+  // Carica posizioni raccolte in background (file)
+  const loadBackgroundPositions = React.useCallback(async () => {
+    try {
+      const exists = await FileSystemLegacy.getInfoAsync(BG_POSITIONS_FILE);
+      if (!exists.exists) return;
+
+      const raw = await FileSystemLegacy.readAsStringAsync(BG_POSITIONS_FILE);
+      const arr = JSON.parse(raw || "[]") as Coordinate[];
+
+      if (arr.length > 0) {
+        setPath(prev => [...prev, ...arr]);
+        await FileSystemLegacy.deleteAsync(BG_POSITIONS_FILE, { idempotent: true });
+      }
+    } catch (err) {
+      console.warn("loadBackgroundPositions error", err);
+    }
+  }, []);
+
+
+  // Ricarica posizioni quando l'app torna in foreground
+  React.useEffect(() => {
+    loadBackgroundPositions(); // all'avvio
+    const sub = AppState.addEventListener('change', (nextState: AppStateStatus) => {
+      if (nextState === 'active') {
+        loadBackgroundPositions();
+      }
+    });
+    return () => sub.remove();
+  }, [loadBackgroundPositions]);
 
   // START RECORDING
   const startRecording = async () => {
-    // se c'è una subscription precedente, la rimuovo (safety)
+    // safety: rimuovi eventuale subscription precedente
     if (locationSubscription.current) {
-      try {
-        locationSubscription.current.remove();
-      } catch (e) {
-        // ignore
-      }
+      try { locationSubscription.current.remove(); } catch (e) { /* ignore */ }
       locationSubscription.current = null;
     }
 
-    const { status } = await Location.requestForegroundPermissionsAsync();
-    if (status !== 'granted') {
+    // chiedi permessi foreground
+    const { status: fgStatus } = await Location.requestForegroundPermissionsAsync();
+    if (fgStatus !== 'granted') {
       Alert.alert('Permesso GPS negato!');
       return;
+    }
+
+    // chiedi permessi background (utile su Android per tracking in standby)
+    const { status: bgStatus } = await Location.requestBackgroundPermissionsAsync();
+    if (Platform.OS === 'android' && bgStatus !== 'granted') {
+      Alert.alert('Permesso background non concesso', 'Per tracciare la posizione in background devi concedere "Consenti sempre" nelle impostazioni.');
+      // prosegui comunque: avrai tracking in foreground ma non in background
     }
 
     setRecording(true);
     setPath([]);
     setMarkers([]);
 
-    locationSubscription.current = await Location.watchPositionAsync(
-      { accuracy: Location.Accuracy.High, timeInterval: 1000, distanceInterval: 0 },
-      (loc) => {
-        // protezioni: se manca timestamp, usa Date.now()
-        const ts = typeof loc.timestamp === 'number' ? loc.timestamp : Date.now();
-        // log per debug
-        // console.log('nuova posizione', loc.coords.latitude, loc.coords.longitude, 'TIME:', ts);
-        setPath((prev) => [...prev, {
-          latitude: loc.coords.latitude,
-          longitude: loc.coords.longitude,
-          timestamp: ts,
-        }]);
-      }
-    );
+    // avvia il background location updates se non è già partito
+    const started = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
+    if (!started) {
+      await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
+        accuracy: Location.Accuracy.Highest,
+        timeInterval: 5000,
+        distanceInterval: 1,
+        showsBackgroundLocationIndicator: true,
+        foregroundService: {
+          notificationTitle: "GPS attivo",
+          notificationBody: "L'app sta registrando la tua posizione",
+        },
+      });
+    }
+
+    // avvia watcher foreground per aggiornare lo state UI immediatamente
+    try {
+      locationSubscription.current = await Location.watchPositionAsync(
+        { accuracy: Location.Accuracy.BestForNavigation, timeInterval: 1000, distanceInterval: 0 },
+        (loc) => {
+          const ts = typeof loc.timestamp === 'number' ? loc.timestamp : Date.now();
+          setPath(prev => [...prev, {
+            latitude: loc.coords.latitude,
+            longitude: loc.coords.longitude,
+            timestamp: ts,
+          }]);
+        }
+      );
+    } catch (err) {
+      console.warn("watchPositionAsync error", err);
+    }
   };
 
   // STOP RECORDING
-  const stopRecording = () => {
+  const stopRecording = async () => {
     setRecording(false);
-    if (locationSubscription.current) {
-      try {
-        locationSubscription.current.remove();
-      } catch (e) {
-        // ignore
+
+    try {
+      const started = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
+      if (started) {
+        await Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME);
       }
+    } catch (err) {
+      console.warn("Errore stop location updates:", err);
+    }
+
+    // rimuovi subscription foreground
+    if (locationSubscription.current) {
+      try { locationSubscription.current.remove(); } catch (e) { /* ignore */ }
       locationSubscription.current = null;
     }
+
+    // se il task ha scritto posizioni in background, caricale ora
+    await loadBackgroundPositions();
 
     Alert.alert(
       'Salvare GPX?',
@@ -112,7 +222,7 @@ export default function App() {
     }
   };
 
-  // GENERATE GPX
+  // --- la funzione generateGPX e saveAndShareGPX le lascio come le avevi, con piccole aggiunte per compatibilità ---
   const generateGPX = (path: Coordinate[], markers: Coordinate[]): string => {
     const header = `<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" creator="GPS Tracker App">
@@ -126,48 +236,29 @@ export default function App() {
     return `${header}\n${trackPoints}\n${footer}\n${waypoints}\n</gpx>`;
   };
 
-  // SAVE AND SHARE GPX (usa expo-file-system stabile)
   const saveAndShareGPX = async () => {
     try {
       const gpxData = generateGPX(path, markers);
-
-      // --- 1) Nuova API: File + Paths.cache ---
       let uri: string | undefined;
 
       try {
         const safeFileName = fileName?.trim() || `percorso_${Date.now()}`;
         const file = new File(Paths.cache, safeFileName + '.gpx');
-
-        try { file.create(); } catch (errCreate) {
-          console.warn('[debug] file.create() errore (ignoro):', errCreate);
-        }
-
-        try { await (file.write(gpxData) as Promise<void> | void); } catch (errWrite) {
-          console.warn('[debug] file.write() errore (ignoro):', errWrite);
-        }
-
-        // prova a ottenere URI
+        try { file.create(); } catch (errCreate) { /* ignore */ }
+        try { await (file.write(gpxData) as Promise<void> | void); } catch (errWrite) { /* ignore */ }
         // @ts-ignore
         uri = file.uri ?? (file.getUri ? await file.getUri() : undefined);
-
-        if (uri) {
-          console.log('[debug] Nuova API URI:', uri);
-        }
       } catch (errNewAPI) {
-        console.warn('[debug] nuova API fallita:', errNewAPI);
         uri = undefined;
       }
 
-      // --- 2) fallback legacy ---
       if (!uri) {
-        console.log('[debug] Fallback legacy');
         const safeFileName = fileName?.trim() || `percorso_${Date.now()}`;
         const legacyUri = FileSystemLegacy.cacheDirectory + safeFileName + '.gpx';
         await FileSystemLegacy.writeAsStringAsync(legacyUri, gpxData, { encoding: 'utf8' });
         uri = legacyUri;
       }
 
-      // --- 3) Condivisione ---
       if (uri) {
         const available = await Sharing.isAvailableAsync();
         if (!available) {
@@ -185,123 +276,6 @@ export default function App() {
     } finally {
       setModalVisible(false);
       setFileName('percorso');
-    }
-  };
-
-
-  const saveAndShareGPX_debug = async () => {
-    // genera GPX come fai tu
-    const gpxData = generateGPX(path, markers);
-
-    // raccolta debug
-    const debugLines: string[] = [];
-    const push = (k: string, v: any) =>
-      debugLines.push(`${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`);
-
-    try {
-      push('Platform.OS', Platform.OS);
-      push('Constants.appOwnership', (Constants as any).appOwnership ?? 'undefined');
-      push('FileSystem module typeof', typeof FileSystem);
-      push('FileSystem.documentDirectory (raw)', String(FileSystem.documentDirectory));
-      push('FileSystem.cacheDirectory (raw)', String(FileSystem.cacheDirectory));
-
-      // getInfoAsync su documentDirectory e cacheDirectory se non null
-      try {
-        const doc = FileSystem.documentDirectory;
-        if (doc) {
-          const infoDoc = await FileSystem.getInfoAsync(doc);
-          push('getInfoAsync(documentDirectory)', infoDoc);
-        } else {
-          push('getInfoAsync(documentDirectory)', 'documentDirectory === null/undefined');
-        }
-      } catch (e) {
-        push('getInfoAsync(documentDirectory) error', (e as Error).toString());
-      }
-
-      try {
-        const cache = FileSystem.cacheDirectory;
-        if (cache) {
-          const infoCache = await FileSystem.getInfoAsync(cache);
-          push('getInfoAsync(cacheDirectory)', infoCache);
-        } else {
-          push('getInfoAsync(cacheDirectory)', 'cacheDirectory === null/undefined');
-        }
-      } catch (e) {
-        push('getInfoAsync(cacheDirectory) error', (e as Error).toString());
-      }
-
-      // is Sharing available?
-      try {
-        const s = await Sharing.isAvailableAsync();
-        push('Sharing.isAvailableAsync()', s);
-      } catch (e) {
-        push('Sharing.isAvailableAsync() error', (e as Error).toString());
-      }
-
-      // Prova a scegliere baseDir con priorità: documentDirectory -> cacheDirectory
-      const baseDir = FileSystem.documentDirectory ?? FileSystem.cacheDirectory ?? null;
-      push('resolved baseDir', baseDir);
-
-      if (!baseDir) {
-        // alert + console con debug completo
-        console.log('DEBUG FILESYSTEM:\n' + debugLines.join('\n'));
-        Alert.alert('DEBUG: Nessuna directory disponibile', debugLines.join('\n\n'));
-        throw new Error('Nessuna directory disponibile per il salvataggio (baseDir null)');
-      }
-
-      // Path di test per scrivere: proviamo prima in cache (più permissiva) e poi document
-      const safeFileName = fileName?.trim?.() ? fileName.trim() : `percorso_${Date.now()}`;
-      const testPath = `${baseDir}${safeFileName}_debug_${Date.now()}.gpx`;
-      push('testPath', testPath);
-
-      // prova a scrivere
-      try {
-        await FileSystem.writeAsStringAsync(testPath, gpxData, {
-          encoding: FileSystem.EncodingType.UTF8,
-        });
-        push('writeAsStringAsync', 'OK');
-      } catch (e) {
-        push('writeAsStringAsync error', (e as Error).toString());
-        console.log('DEBUG FILESYSTEM:\n' + debugLines.join('\n'));
-        Alert.alert('Errore writeAsStringAsync', debugLines.join('\n\n'));
-        throw e;
-      }
-
-      // verifica file info
-      try {
-        const finfo = await FileSystem.getInfoAsync(testPath);
-        push('getInfoAsync(testPath)', finfo);
-        // prova a leggere una piccola porzione (readAsStringAsync)
-        const read = await FileSystem.readAsStringAsync(testPath);
-        push('readAsStringAsync length', read.length);
-      } catch (e) {
-        push('read/getInfo testPath error', (e as Error).toString());
-      }
-
-      // prova a condividere
-      try {
-        const available = await Sharing.isAvailableAsync();
-        push('Sharing.available (again)', available);
-        if (available) {
-          await Sharing.shareAsync(testPath);
-          push('shareAsync', 'invocato OK');
-        } else {
-          push('shareAsync', 'non disponibile');
-        }
-      } catch (e) {
-        push('shareAsync error', (e as Error).toString());
-      }
-
-      // tutto ok: mostra i debug
-      console.log('DEBUG FILESYSTEM:\n' + debugLines.join('\n'));
-      Alert.alert('DEBUG FILESYSTEM (success)', debugLines.join('\n\n'));
-    } catch (err: any) {
-      console.error('saveAndShareGPX_debug errore', err);
-      // assicurati di mostrare i debug raccolti insieme all'errore
-      const msg = debugLines.length ? debugLines.join('\n\n') + '\n\nERR: ' + String(err) : String(err);
-      Alert.alert('saveAndShareGPX_debug errore', msg);
-    } finally {
-      setModalVisible(false);
     }
   };
 
@@ -327,7 +301,6 @@ export default function App() {
   );
 }
 
-// UI separata per evitare remount quando App si aggiorna
 function MainUI(props: any) {
   const {
     recording, startRecording, stopRecording, addMarker,
@@ -396,32 +369,13 @@ function MainUI(props: any) {
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-  },
-  container: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 20,
-  },
-  title: {
-    fontSize: 30,
-    fontWeight: 'bold',
-    marginBottom: 20,
-    marginTop: 10,
-  },
+  safeArea: { flex: 1 },
+  container: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 20 },
+  title: { fontSize: 30, fontWeight: 'bold', marginBottom: 20, marginTop: 10 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
   modalContent: { backgroundColor: 'white', padding: 20, borderRadius: 10, width: '80%' },
   input: { borderWidth: 1, borderColor: '#ccc', padding: 10, marginVertical: 10, borderRadius: 5 },
-  bigButton: {
-    width: 250,
-    paddingVertical: 15,
-    borderRadius: 10,
-    marginVertical: 10,
-    alignItems: 'center',
-    backgroundColor: '#4CAF50',
-  },
+  bigButton: { width: 250, paddingVertical: 15, borderRadius: 10, marginVertical: 10, alignItems: 'center', backgroundColor: '#4CAF50' },
   startButton: { backgroundColor: '#4CAF50' },
   stopButton: { backgroundColor: '#F44336' },
   markerButton: { backgroundColor: '#2196F3' },

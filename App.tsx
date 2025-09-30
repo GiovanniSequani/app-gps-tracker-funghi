@@ -3,13 +3,11 @@
 
 import React from 'react';
 import {
-  StyleSheet, Text, View, Button, useColorScheme, Alert, TextInput, Modal,
+  StyleSheet, Text, View, Button, useColorScheme, Alert, TextInput, Modal, Linking,
   TouchableOpacity, Animated, StatusBar, Platform, AppState, AppStateStatus
 } from 'react-native';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
-import * as FileSystem from 'expo-file-system';
-import Constants from 'expo-constants';
 import { File, Paths } from "expo-file-system";
 import * as FileSystemLegacy from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
@@ -21,8 +19,9 @@ type Coordinate = {
   timestamp: number;
 };
 
+
 const LOCATION_TASK_NAME = "background-location-task";
-const BG_POSITIONS_FILE = `${FileSystem.cacheDirectory}bg_positions.json`;
+const BG_POSITIONS_FILE = `${FileSystemLegacy.cacheDirectory}bg_positions.json`;
 
 /**
  * Background task: viene eseguito in un contesto separato.
@@ -33,22 +32,28 @@ TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
     console.error("Errore task location:", error);
     return;
   }
+
   if (data) {
+    console.log("LOCATION TASK DATA:", JSON.stringify(data));
+
     try {
       const { locations } = data as any;
+
       // leggi file esistente (se presente)
       let arr: Coordinate[] = [];
       try {
-        const file = new File(Paths.cache, "bg_positions.json");
-        const raw = await file.read();
-        arr = JSON.parse(raw || "[]");
+        const info = await FileSystemLegacy.getInfoAsync(BG_POSITIONS_FILE);
+        if (info.exists) {
+          const raw = await FileSystemLegacy.readAsStringAsync(BG_POSITIONS_FILE);
+          arr = JSON.parse(raw || "[]");
+        }
       } catch {
         arr = [];
       }
 
       // aggiungi le nuove posizioni
       (locations as any[]).forEach((loc) => {
-        const ts = typeof loc.timestamp === 'number' ? loc.timestamp : Date.now();
+        const ts = typeof loc.timestamp === "number" ? loc.timestamp : Date.now();
         arr.push({
           latitude: loc.coords.latitude,
           longitude: loc.coords.longitude,
@@ -57,13 +62,41 @@ TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
       });
 
       // scrivi indietro
-      const file = new File(Paths.cache, "bg_positions.json");
-      await file.write(JSON.stringify(arr));
+      await FileSystemLegacy.writeAsStringAsync(
+        BG_POSITIONS_FILE,
+        JSON.stringify(arr)
+      );
     } catch (err) {
       console.error("Errore scrittura file bg positions:", err);
     }
   }
 });
+
+
+const checkAndOpenSettingsIfNeeded = async () => {
+  if (Platform.OS !== 'android') return;
+
+  const fg = await Location.getForegroundPermissionsAsync();
+  const bg = await Location.getBackgroundPermissionsAsync();
+
+  if (fg.status !== 'granted' || bg.status !== 'granted') {
+    Alert.alert(
+      'Permessi mancanti',
+      'Per tracciare la posizione in background devi concedere tutti i permessi. Aprire impostazioni?',
+      [
+        { text: 'No', style: 'cancel' },
+        {
+          text: 'Sì',
+          onPress: () => Linking.openSettings(), // apre il pannello permessi dell'app
+        },
+      ]
+    );
+    return false;
+  }
+  return true;
+};
+
+
 
 export default function App() {
   const [recording, setRecording] = React.useState(false);
@@ -126,6 +159,9 @@ export default function App() {
 
   // START RECORDING
   const startRecording = async () => {
+      const ok = await checkAndOpenSettingsIfNeeded();
+      if (!ok) return;
+
     // safety: rimuovi eventuale subscription precedente
     if (locationSubscription.current) {
       try { locationSubscription.current.remove(); } catch (e) { /* ignore */ }
@@ -154,7 +190,7 @@ export default function App() {
     const started = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
     if (!started) {
       await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
-        accuracy: Location.Accuracy.Highest,
+        accuracy: Location.Accuracy.High,
         timeInterval: 5000,
         distanceInterval: 1,
         showsBackgroundLocationIndicator: true,

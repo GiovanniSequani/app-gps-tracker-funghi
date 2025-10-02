@@ -66,6 +66,9 @@ TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
         BG_POSITIONS_FILE,
         JSON.stringify(arr)
       );
+
+      //console.log("BACKGROUND FILE:", JSON.stringify(arr));
+
     } catch (err) {
       console.error("Errore scrittura file bg positions:", err);
     }
@@ -125,7 +128,122 @@ export default function App() {
     }).start();
   }, [recording]);
 
-  const locationSubscription = React.useRef<Location.LocationSubscription | null>(null);
+
+  // Sincronizza il path con le posizioni salvate in background (file)
+//  const syncPathFromFile = React.useCallback(async (consume = false): Promise<Coordinate[]> => {
+//    try {
+//      const info = await FileSystemLegacy.getInfoAsync(BG_POSITIONS_FILE);
+//      if (!info.exists) {
+//        // non esiste file, nulla da sincronizzare
+//        return path;
+//      }
+//      const raw = await FileSystemLegacy.readAsStringAsync(BG_POSITIONS_FILE);
+//      const arr = JSON.parse(raw || "[]") as Coordinate[];
+//      if (!Array.isArray(arr) || arr.length === 0) return path;
+//
+//      // merge basato sul timestamp: punti con ts > ultimo ts presente in path
+//      let updated: Coordinate[] = [];
+//      setPath(prev => {
+//        const lastTs = prev.length ? prev[prev.length - 1].timestamp : 0;
+//        const newPoints = arr.filter(p => (p.timestamp ?? 0) > lastTs);
+//        updated = newPoints.length ? [...prev, ...newPoints] : prev;
+//        return updated;
+//      });
+//
+//      if (consume) {
+//        try {
+//          await FileSystemLegacy.deleteAsync(BG_POSITIONS_FILE, { idempotent: true });
+//        } catch (_e) { /* ignora errori di delete */ }
+//      }
+//
+//      return updated;
+//    } catch (err) {
+//      console.warn("syncPathFromFile error", err);
+//      return path;
+//    }
+//  }, [path]);
+
+  const syncPathFromFile = React.useCallback(async (consume = false): Promise<Coordinate[]> => {
+    try {
+      const info = await FileSystemLegacy.getInfoAsync(BG_POSITIONS_FILE);
+      if (!info.exists) {
+        console.log("syncPathFromFile → file non trovato, ritorna", path.length, "punti");
+        return path;
+      }
+
+      const raw = await FileSystemLegacy.readAsStringAsync(BG_POSITIONS_FILE);
+      const arr = JSON.parse(raw || "[]") as Coordinate[];
+      if (!Array.isArray(arr) || arr.length === 0) {
+        console.log("syncPathFromFile → file vuoto, ritorna", path.length, "punti");
+        return path;
+      }
+
+      console.log("syncPathFromFile → file contiene", arr.length, "punti:", arr.map(p => p.timestamp));
+
+      let updated: Coordinate[] = [];
+      setPath(prev => {
+        const lastTs = prev.length ? prev[prev.length - 1].timestamp : 0;
+        const newPoints = arr.filter(p => (p.timestamp ?? 0) > lastTs);
+
+        console.log("syncPathFromFile → prev length:", prev.length, 
+                    "lastTs:", lastTs, 
+                    "nuovi punti dal file:", newPoints.map(p => p.timestamp));
+
+        updated = newPoints.length ? [...prev, ...newPoints] : prev;
+
+        console.log("syncPathFromFile → path aggiornato length:", updated.length,
+                    "timestamps:", updated.map(p => p.timestamp));
+
+        return updated;
+      });
+
+      if (consume) {
+        try {
+          await FileSystemLegacy.deleteAsync(BG_POSITIONS_FILE, { idempotent: true });
+          console.log("syncPathFromFile → file consumato e cancellato");
+        } catch (e) {
+          console.warn("syncPathFromFile → errore delete:", e);
+        }
+      }
+
+      console.log("syncPathFromFile → ritorna", (updated.length ? updated : path).length, "punti (updated.length =", updated.length, ")");
+      return updated.length ? updated : path;
+
+    } catch (err) {
+      console.warn("syncPathFromFile error, ritorna", path.length, "punti");
+      return path;
+    }
+  }, [path]);
+
+
+
+  // Polling per aggiornare il path con eventuali posizioni salvate in background
+  React.useEffect(() => {
+    let mounted = true;
+
+    const tick = async () => {
+      try {
+        // non eseguire se il componente è stato smontato
+        if (!mounted) return;
+        await syncPathFromFile(false); // aggiorna lo state internamente
+      } catch (err) {
+        console.warn('polling sync error', err);
+      }
+    };
+
+    // esegui subito una volta
+    void tick();
+
+    const id = setInterval(() => {
+      void tick();
+    }, 1000);
+
+    return () => {
+      mounted = false;
+      clearInterval(id);
+    };
+  }, [syncPathFromFile]);
+
 
   // Carica posizioni raccolte in background (file)
   const loadBackgroundPositions = React.useCallback(async () => {
@@ -151,22 +269,19 @@ export default function App() {
     loadBackgroundPositions(); // all'avvio
     const sub = AppState.addEventListener('change', (nextState: AppStateStatus) => {
       if (nextState === 'active') {
-        loadBackgroundPositions();
+        void loadBackgroundPositions();
       }
     });
     return () => sub.remove();
   }, [loadBackgroundPositions]);
+
+
 
   // START RECORDING
   const startRecording = async () => {
       const ok = await checkAndOpenSettingsIfNeeded();
       if (!ok) return;
 
-    // safety: rimuovi eventuale subscription precedente
-    if (locationSubscription.current) {
-      try { locationSubscription.current.remove(); } catch (e) { /* ignore */ }
-      locationSubscription.current = null;
-    }
 
     // chiedi permessi foreground
     const { status: fgStatus } = await Location.requestForegroundPermissionsAsync();
@@ -186,11 +301,17 @@ export default function App() {
     setPath([]);
     setMarkers([]);
 
+    try {
+      await FileSystemLegacy.deleteAsync(BG_POSITIONS_FILE, { idempotent: true });
+    } catch (e) {
+      // ignora
+    }
+
     // avvia il background location updates se non è già partito
     const started = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
     if (!started) {
       await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
-        accuracy: Location.Accuracy.High,
+        accuracy: Location.Accuracy.BestForNavigation,
         timeInterval: 5000,
         distanceInterval: 1,
         showsBackgroundLocationIndicator: true,
@@ -200,24 +321,9 @@ export default function App() {
         },
       });
     }
-
-    // avvia watcher foreground per aggiornare lo state UI immediatamente
-    try {
-      locationSubscription.current = await Location.watchPositionAsync(
-        { accuracy: Location.Accuracy.BestForNavigation, timeInterval: 1000, distanceInterval: 0 },
-        (loc) => {
-          const ts = typeof loc.timestamp === 'number' ? loc.timestamp : Date.now();
-          setPath(prev => [...prev, {
-            latitude: loc.coords.latitude,
-            longitude: loc.coords.longitude,
-            timestamp: ts,
-          }]);
-        }
-      );
-    } catch (err) {
-      console.warn("watchPositionAsync error", err);
-    }
   };
+
+
 
   // STOP RECORDING
   const stopRecording = async () => {
@@ -232,15 +338,6 @@ export default function App() {
       console.warn("Errore stop location updates:", err);
     }
 
-    // rimuovi subscription foreground
-    if (locationSubscription.current) {
-      try { locationSubscription.current.remove(); } catch (e) { /* ignore */ }
-      locationSubscription.current = null;
-    }
-
-    // se il task ha scritto posizioni in background, caricale ora
-    await loadBackgroundPositions();
-
     Alert.alert(
       'Salvare GPX?',
       'Vuoi salvare il percorso registrato come file GPX?',
@@ -251,17 +348,30 @@ export default function App() {
     );
   };
 
-  // ADD MARKER
-  const addMarker = () => {
-    if (path.length > 0) {
-      setMarkers((prev) => [...prev, path[path.length - 1]]);
-    }
-  };
 
-  // --- la funzione generateGPX e saveAndShareGPX le lascio come le avevi, con piccole aggiunte per compatibilità ---
+  // ADD MARKER
+  const addMarker = React.useCallback(async () => {
+    try {
+      // sincronizza path (ma non consumare il file)
+      const updated = await syncPathFromFile(false);
+      const last = (updated && updated.length) ? updated[updated.length - 1]
+                : (path.length ? path[path.length - 1] : undefined);
+      if (last) {
+        setMarkers((prev) => [...prev, last]);
+      } else {
+        Alert.alert('Nessuna posizione disponibile', 'Non ci sono ancora posizioni registrate per aggiungere un segnaposto.');
+      }
+    } catch (e) {
+      console.warn('addMarker error', e);
+      Alert.alert('Errore', 'Impossibile aggiungere il segnaposto.');
+    }
+  }, [syncPathFromFile, path]);
+
+
+  // GENERATE GPX
   const generateGPX = (path: Coordinate[], markers: Coordinate[]): string => {
     const header = `<?xml version="1.0" encoding="UTF-8"?>
-<gpx version="1.1" creator="GPS Tracker App">
+<gpx version="1.1" creator="Funghi Tracker">
 <trk><name>Percorso</name><trkseg>`;
     const trackPoints = path.map((pt) => {
       const time = new Date(pt.timestamp).toISOString();
@@ -272,9 +382,18 @@ export default function App() {
     return `${header}\n${trackPoints}\n${footer}\n${waypoints}\n</gpx>`;
   };
 
+
+  // SAVE AND SHARE GPX
   const saveAndShareGPX = async () => {
     try {
-      const gpxData = generateGPX(path, markers);
+      // aggiorna path con i punti scritti in background (ma non consumare file qui)
+      const updatedPath = await syncPathFromFile(true) ?? path;
+
+      console.log("updatedPath completo:", updatedPath);
+      console.log("updatedPath length:", updatedPath.length);
+      console.log(updatedPath.map(p => p.timestamp));
+      
+      const gpxData = generateGPX(updatedPath, markers);
       let uri: string | undefined;
 
       try {
@@ -315,6 +434,8 @@ export default function App() {
     }
   };
 
+
+
   return (
     <SafeAreaProvider>
       <MainUI
@@ -336,6 +457,7 @@ export default function App() {
     </SafeAreaProvider>
   );
 }
+
 
 function MainUI(props: any) {
   const {

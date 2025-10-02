@@ -4,8 +4,9 @@
 import React from 'react';
 import {
   StyleSheet, Text, View, Button, useColorScheme, Alert, TextInput, Modal, Linking,
-  TouchableOpacity, Animated, StatusBar, Platform, AppState, AppStateStatus
+  TouchableOpacity, Animated, StatusBar, Platform
 } from 'react-native';
+import MapView, { Region, Circle } from 'react-native-maps';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import { File, Paths } from "expo-file-system";
@@ -107,106 +108,71 @@ export default function App() {
   const [markers, setMarkers] = React.useState<Coordinate[]>([]);
   const [modalVisible, setModalVisible] = React.useState(false);
   const [fileName, setFileName] = React.useState('percorso');
+  const [region, setRegion] = React.useState<Region | null>(null);
 
+  const followLocationRef = React.useRef(true);
+  const mapRef = React.useRef<MapView>(null);
+  const recordingRef = React.useRef(recording);
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
 
-  const titlePosition = React.useRef(new Animated.Value(0)).current;
-  const buttonsPosition = React.useRef(new Animated.Value(0)).current;
+    React.useEffect(() => {
+      recordingRef.current = recording;
+    }, [recording]);
 
   React.useEffect(() => {
-    Animated.timing(titlePosition, {
-      toValue: recording ? -270 : 0,
-      duration: 500,
-      useNativeDriver: true,
-    }).start();
+    (async () => {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permesso GPS negato!');
+        return;
+      }
 
-    Animated.timing(buttonsPosition, {
-      toValue: recording ? 225 : 0,
-      duration: 500,
-      useNativeDriver: true,
-    }).start();
-  }, [recording]);
+      const location = await Location.getCurrentPositionAsync({});
+      const initialRegion = {
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+        latitudeDelta: 0.001,
+        longitudeDelta: 0.001,
+      };
+      setRegion(initialRegion);
+
+      // facoltativo: centra la mappa
+      mapRef.current?.animateToRegion(initialRegion, 1000);
+    })();
+  }, []);
 
 
-  // Sincronizza il path con le posizioni salvate in background (file)
-//  const syncPathFromFile = React.useCallback(async (consume = false): Promise<Coordinate[]> => {
-//    try {
-//      const info = await FileSystemLegacy.getInfoAsync(BG_POSITIONS_FILE);
-//      if (!info.exists) {
-//        // non esiste file, nulla da sincronizzare
-//        return path;
-//      }
-//      const raw = await FileSystemLegacy.readAsStringAsync(BG_POSITIONS_FILE);
-//      const arr = JSON.parse(raw || "[]") as Coordinate[];
-//      if (!Array.isArray(arr) || arr.length === 0) return path;
-//
-//      // merge basato sul timestamp: punti con ts > ultimo ts presente in path
-//      let updated: Coordinate[] = [];
-//      setPath(prev => {
-//        const lastTs = prev.length ? prev[prev.length - 1].timestamp : 0;
-//        const newPoints = arr.filter(p => (p.timestamp ?? 0) > lastTs);
-//        updated = newPoints.length ? [...prev, ...newPoints] : prev;
-//        return updated;
-//      });
-//
-//      if (consume) {
-//        try {
-//          await FileSystemLegacy.deleteAsync(BG_POSITIONS_FILE, { idempotent: true });
-//        } catch (_e) { /* ignora errori di delete */ }
-//      }
-//
-//      return updated;
-//    } catch (err) {
-//      console.warn("syncPathFromFile error", err);
-//      return path;
-//    }
-//  }, [path]);
-
+  // Sincronizza il path leggendo il file di posizioni in background
   const syncPathFromFile = React.useCallback(async (consume = false): Promise<Coordinate[]> => {
     try {
       const info = await FileSystemLegacy.getInfoAsync(BG_POSITIONS_FILE);
       if (!info.exists) {
-        console.log("syncPathFromFile → file non trovato, ritorna", path.length, "punti");
         return path;
       }
 
       const raw = await FileSystemLegacy.readAsStringAsync(BG_POSITIONS_FILE);
       const arr = JSON.parse(raw || "[]") as Coordinate[];
       if (!Array.isArray(arr) || arr.length === 0) {
-        console.log("syncPathFromFile → file vuoto, ritorna", path.length, "punti");
         return path;
       }
-
-      console.log("syncPathFromFile → file contiene", arr.length, "punti:", arr.map(p => p.timestamp));
 
       let updated: Coordinate[] = [];
       setPath(prev => {
         const lastTs = prev.length ? prev[prev.length - 1].timestamp : 0;
         const newPoints = arr.filter(p => (p.timestamp ?? 0) > lastTs);
-
-        console.log("syncPathFromFile → prev length:", prev.length, 
-                    "lastTs:", lastTs, 
-                    "nuovi punti dal file:", newPoints.map(p => p.timestamp));
-
         updated = newPoints.length ? [...prev, ...newPoints] : prev;
-
-        console.log("syncPathFromFile → path aggiornato length:", updated.length,
-                    "timestamps:", updated.map(p => p.timestamp));
-
         return updated;
       });
 
       if (consume) {
         try {
           await FileSystemLegacy.deleteAsync(BG_POSITIONS_FILE, { idempotent: true });
-          console.log("syncPathFromFile → file consumato e cancellato");
         } catch (e) {
           console.warn("syncPathFromFile → errore delete:", e);
         }
       }
 
-      console.log("syncPathFromFile → ritorna", (updated.length ? updated : path).length, "punti (updated.length =", updated.length, ")");
       return updated.length ? updated : path;
 
     } catch (err) {
@@ -225,7 +191,17 @@ export default function App() {
       try {
         // non eseguire se il componente è stato smontato
         if (!mounted) return;
-        await syncPathFromFile(false); // aggiorna lo state internamente
+        const currpath = await syncPathFromFile(false); // aggiorna lo state internamente
+        // centra la mappa sull'ultimo punto
+        if (recordingRef.current && currpath.length > 0 && mapRef.current && followLocationRef.current) {
+          const latest = currpath[currpath.length - 1];
+          mapRef.current.animateToRegion({
+            latitude: latest.latitude,
+            longitude: latest.longitude,
+            latitudeDelta: 0.001,
+            longitudeDelta: 0.001,
+          }, 500);
+        }
       } catch (err) {
         console.warn('polling sync error', err);
       }
@@ -236,44 +212,13 @@ export default function App() {
 
     const id = setInterval(() => {
       void tick();
-    }, 1000);
+    }, 500);
 
     return () => {
       mounted = false;
       clearInterval(id);
     };
   }, [syncPathFromFile]);
-
-
-  // Carica posizioni raccolte in background (file)
-  const loadBackgroundPositions = React.useCallback(async () => {
-    try {
-      const exists = await FileSystemLegacy.getInfoAsync(BG_POSITIONS_FILE);
-      if (!exists.exists) return;
-
-      const raw = await FileSystemLegacy.readAsStringAsync(BG_POSITIONS_FILE);
-      const arr = JSON.parse(raw || "[]") as Coordinate[];
-
-      if (arr.length > 0) {
-        setPath(prev => [...prev, ...arr]);
-        await FileSystemLegacy.deleteAsync(BG_POSITIONS_FILE, { idempotent: true });
-      }
-    } catch (err) {
-      console.warn("loadBackgroundPositions error", err);
-    }
-  }, []);
-
-
-  // Ricarica posizioni quando l'app torna in foreground
-  React.useEffect(() => {
-    loadBackgroundPositions(); // all'avvio
-    const sub = AppState.addEventListener('change', (nextState: AppStateStatus) => {
-      if (nextState === 'active') {
-        void loadBackgroundPositions();
-      }
-    });
-    return () => sub.remove();
-  }, [loadBackgroundPositions]);
 
 
 
@@ -451,8 +396,9 @@ export default function App() {
         setFileName={setFileName}
         saveAndShareGPX={saveAndShareGPX}
         isDark={isDark}
-        titlePosition={titlePosition}
-        buttonsPosition={buttonsPosition}
+        mapRef={mapRef}
+        region={region}
+        followLocationRef={followLocationRef}
       />
     </SafeAreaProvider>
   );
@@ -463,12 +409,11 @@ function MainUI(props: any) {
   const {
     recording, startRecording, stopRecording, addMarker,
     path, markers, modalVisible, setModalVisible,
-    fileName, setFileName, saveAndShareGPX, isDark,
-    titlePosition, buttonsPosition,
+    fileName, setFileName, saveAndShareGPX, isDark, 
+    mapRef, region, followLocationRef
   } = props;
 
   const backgroundColor = isDark ? '#121212' : '#ffffff';
-  const titleColor = isDark ? '#ffffff' : '#000000';
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor }]}>
@@ -476,67 +421,131 @@ function MainUI(props: any) {
         barStyle={isDark ? 'light-content' : 'dark-content'}
         backgroundColor={backgroundColor}
       />
-      <View style={styles.container}>
-        <Animated.Text style={[styles.title, { transform: [{ translateY: titlePosition }], color: titleColor }]}>
-          GPS Tracker
-        </Animated.Text>
-
-        <Animated.View style={{ transform: [{ translateY: buttonsPosition }] }}>
-          <TouchableOpacity
-            style={[styles.bigButton, recording ? styles.stopButton : styles.startButton]}
-            onPress={recording ? stopRecording : startRecording}
-          >
-            <Text style={styles.buttonText}>{recording ? 'Termina Registrazione' : 'Inizia Registrazione'}</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.bigButton, styles.markerButton, !recording && { opacity: 0.5 }]}
-            onPress={addMarker}
-            disabled={!recording}
-          >
-            <Text style={styles.buttonText}>Aggiungi Segnaposto</Text>
-          </TouchableOpacity>
-        </Animated.View>
-
-        {recording && (
-          <View style={[styles.stats]}>
-            <Text style={{ color: isDark ? '#ffffff' : '#000000' }}>Coordinate registrate: {path.length}</Text>
-            <Text style={{ color: isDark ? '#ffffff' : '#000000' }}>Segnaposti: {markers.length}</Text>
-          </View>
+      
+      <MapView
+        ref={mapRef}
+        style={StyleSheet.absoluteFillObject}
+        initialRegion={region ?? undefined}
+        mapType="satellite"
+        onPanDrag={() => { followLocationRef.current = false; }} 
+      >
+        {recording && path.length > 0 && (
+          <Circle
+            center={path[path.length - 1]}
+            radius={4} // in metri
+            fillColor="rgba(25, 136, 255, 0.8)" // blu semitrasparente
+            strokeColor="rgba(0, 102, 211, 1)"  // bordo più scuro
+            strokeWidth={2}
+          />
         )}
+      </MapView>
 
-        <Modal visible={modalVisible} transparent animationType="slide">
-          <View style={styles.modalOverlay}>
-            <View style={styles.modalContent}>
-              <Text>Inserisci nome file GPX:</Text>
-              <TextInput
-                style={styles.input}
-                value={fileName}
-                onChangeText={setFileName}
-                placeholder="Nome file"
-                autoFocus
-              />
-              <Button title="Salva e Condividi" onPress={saveAndShareGPX} />
-              <Button title="Annulla" onPress={() => setModalVisible(false)} />
-            </View>
-          </View>
-        </Modal>
+      <View style={styles.titleContainer}>
+        <Text style={styles.title}>GPS Tracker</Text>
       </View>
+
+      <Animated.View style={[
+        {
+          position: 'absolute',
+          bottom: 50,    // distanza dal fondo
+          left: 0,
+          right: 0,
+          alignItems: 'center',
+        },
+      ]}>
+        <TouchableOpacity
+          style={[styles.bigButton, recording ? styles.stopButton : styles.startButton]}
+          onPress={recording ? stopRecording : startRecording}
+        >
+          <Text style={styles.buttonText}>{recording ? 'Termina Registrazione' : 'Inizia Registrazione'}</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.bigButton, styles.markerButton, !recording && { opacity: 0.5 }]}
+          onPress={addMarker}
+          disabled={!recording}
+        >
+          <Text style={styles.buttonText}>Aggiungi Segnaposto</Text>
+        </TouchableOpacity>
+      </Animated.View>
+
+      <TouchableOpacity
+        style={styles.centerButton}
+        onPress={() => {
+          followLocationRef.current = true;
+          if (path.length > 0 && mapRef.current) {
+            const latest = path[path.length - 1];
+            mapRef.current.animateToRegion({
+              latitude: latest.latitude,
+              longitude: latest.longitude,
+              latitudeDelta: 0.001,
+              longitudeDelta: 0.001,
+            }, 500);
+          }
+        }}
+      >
+        <Text style={{color: 'white'}}>📍</Text>
+      </TouchableOpacity>
+
+      {recording && (
+        <View style={[
+          styles.stats,
+          {
+            position: 'absolute',
+            bottom: 10,    // distanza dal fondo
+            left: 0,
+            right: 0,
+            alignItems: 'center',
+          }]}>
+          <Text style={{ color: isDark ? '#ffffff' : '#000000' }}>Coordinate registrate: {path.length}</Text>
+          <Text style={{ color: isDark ? '#ffffff' : '#000000' }}>Segnaposti: {markers.length}</Text>
+        </View>
+      )}
+
+      <Modal visible={modalVisible} transparent animationType="slide">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text>Inserisci nome file GPX:</Text>
+            <TextInput
+              style={styles.input}
+              value={fileName}
+              onChangeText={setFileName}
+              placeholder="Nome file"
+              autoFocus
+            />
+            <Button title="Salva e Condividi" onPress={saveAndShareGPX} />
+            <Button title="Annulla" onPress={() => setModalVisible(false)} />
+          </View>
+        </View>
+      </Modal>
+      {/*</View>*/}
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1 },
-  container: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 20 },
-  title: { fontSize: 30, fontWeight: 'bold', marginBottom: 20, marginTop: 10 },
+  
+  titleContainer: { 
+    position: "absolute", top: 45, alignSelf: "center", backgroundColor: "rgba(0,0,0,0.5)", paddingHorizontal: 16,
+    paddingVertical: 8, borderRadius: 8, alignItems: "center", justifyContent: "center",},
+  title: {
+    fontSize: 28, fontWeight: 'bold', borderRadius: 10, alignSelf: 'center',
+    // ombra iOS:
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 3,
+  },
+
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
   modalContent: { backgroundColor: 'white', padding: 20, borderRadius: 10, width: '80%' },
   input: { borderWidth: 1, borderColor: '#ccc', padding: 10, marginVertical: 10, borderRadius: 5 },
-  bigButton: { width: 250, paddingVertical: 15, borderRadius: 10, marginVertical: 10, alignItems: 'center', backgroundColor: '#4CAF50' },
+  bigButton: { width: 250, paddingVertical: 15, borderRadius: 10, marginVertical: 8, alignItems: 'center', backgroundColor: '#4CAF50' },
   startButton: { backgroundColor: '#4CAF50' },
   stopButton: { backgroundColor: '#F44336' },
   markerButton: { backgroundColor: '#2196F3' },
   buttonText: { color: 'white', fontSize: 18, fontWeight: 'bold' },
   stats: { position: 'absolute', bottom: 10, alignItems: 'center' },
+  centerButton: {
+    position: 'absolute', bottom: 20, right: 20, width: 50, height: 50, borderRadius: 25, 
+    backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center',
+},
 });

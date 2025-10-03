@@ -6,7 +6,7 @@ import {
   StyleSheet, Text, View, Button, useColorScheme, Alert, TextInput, Modal, Linking,
   TouchableOpacity, Animated, StatusBar, Platform
 } from 'react-native';
-import MapView, { Region, Circle } from 'react-native-maps';
+import MapView, { Region, Circle, Polyline, Marker } from 'react-native-maps';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import { File, Paths } from "expo-file-system";
@@ -239,7 +239,6 @@ export default function App() {
     const { status: bgStatus } = await Location.requestBackgroundPermissionsAsync();
     if (Platform.OS === 'android' && bgStatus !== 'granted') {
       Alert.alert('Permesso background non concesso', 'Per tracciare la posizione in background devi concedere "Consenti sempre" nelle impostazioni.');
-      // prosegui comunque: avrai tracking in foreground ma non in background
     }
 
     setRecording(true);
@@ -249,7 +248,7 @@ export default function App() {
     try {
       await FileSystemLegacy.deleteAsync(BG_POSITIONS_FILE, { idempotent: true });
     } catch (e) {
-      // ignora
+      console.warn("Errore all'avvio durante il delete del file background path:", e);
     }
 
     // avvia il background location updates se non è già partito
@@ -297,7 +296,7 @@ export default function App() {
   // ADD MARKER
   const addMarker = React.useCallback(async () => {
     try {
-      // sincronizza path (ma non consumare il file)
+      // sync path
       const updated = await syncPathFromFile(false);
       const last = (updated && updated.length) ? updated[updated.length - 1]
                 : (path.length ? path[path.length - 1] : undefined);
@@ -429,13 +428,33 @@ function MainUI(props: any) {
         mapType="satellite"
         onPanDrag={() => { followLocationRef.current = false; }} 
       >
-        {recording && path.length > 0 && (
+        {/* Current position IF PATH < 1*/}
+        {path.length < 1 && (
+          <Circle
+            center={{'latitude':region.latitude, 'longitude':region.longitude}}
+            radius={2} // metres
+            fillColor="rgba(25, 136, 255, 0.8)" // light blue
+            strokeColor="rgba(0, 102, 211, 1)"  // blue
+            strokeWidth={2}
+          />
+        )}
+        {/* Current position IF PATH >= 1*/}
+        {path.length > 0 && (
           <Circle
             center={path[path.length - 1]}
-            radius={4} // in metri
-            fillColor="rgba(25, 136, 255, 0.8)" // blu semitrasparente
-            strokeColor="rgba(0, 102, 211, 1)"  // bordo più scuro
+            radius={2} // metres
+            fillColor="rgba(25, 136, 255, 0.8)" // light blue
+            strokeColor="rgba(0, 102, 211, 1)"  // blue
             strokeWidth={2}
+          />
+        )}
+
+        {/* Path polyline */}
+        {path.length > 1 && (
+          <Polyline
+            coordinates={path}
+            strokeColor="#1E90FF"
+            strokeWidth={3}
           />
         )}
       </MapView>

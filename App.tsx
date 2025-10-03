@@ -429,9 +429,9 @@ function MainUI(props: any) {
         onPanDrag={() => { followLocationRef.current = false; }} 
       >
         {/* Current position IF PATH < 1*/}
-        {path.length < 1 && (
+        {(path.length < 1 && region) && (
           <Circle
-            center={{'latitude':region.latitude, 'longitude':region.longitude}}
+            center={{'latitude' : region.latitude, 'longitude' : region.longitude}}
             radius={2} // metres
             fillColor="rgba(25, 136, 255, 0.8)" // light blue
             strokeColor="rgba(0, 102, 211, 1)"  // blue

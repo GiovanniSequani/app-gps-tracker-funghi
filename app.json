@@ -2,7 +2,7 @@
   "expo": {
     "name": "Funghi Tracker",
     "slug": "funghi-tracker",
-    "version": "1.1.1",
+    "version": "1.1.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -14,13 +14,13 @@
     },
     "ios": {
       "bundleIdentifier": "com.giovannisequani.funghitracker",
-      "buildNumber": "6",
+      "buildNumber": "5",
       "supportsTablet": true,
       "userInterfaceStyle": "automatic"
     },
     "android": {
       "package": "com.giovannisequani.funghitracker",
-      "versionCode": 6,
+      "versionCode": 5,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
@@ -32,7 +32,16 @@
         "ACCESS_COARSE_LOCATION",
         "ACCESS_BACKGROUND_LOCATION",
         "FOREGROUND_SERVICE",
-        "WAKE_LOCK"
+        "WAKE_LOCK",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "FOREGROUND_SERVICE",
+        "WAKE_LOCK",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
       ],
       "config": {
         "googleMaps": {
@@ -56,6 +65,12 @@
           "locationWhenInUsePermission": "L'app usa la tua posizione per registrare il percorso."
         }
       ]
-    ]
+    ],
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/db015e21-718f-4431-8fb3-02eab77646b5"
+    }
   }
 }

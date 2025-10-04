@@ -450,7 +450,7 @@ function MainUI(props: any) {
         )}
 
         {/* Path polyline */}
-        {path.length > 1 && (
+        {(path.length > 1 && recording) && (
           <Polyline
             coordinates={path}
             strokeColor="#1E90FF"

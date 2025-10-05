@@ -315,14 +315,20 @@ export default function App() {
   // GENERATE GPX
   const generateGPX = (path: Coordinate[], markers: Coordinate[]): string => {
     const header = `<?xml version="1.0" encoding="UTF-8"?>
-<gpx version="1.1" creator="Funghi Tracker">
-<trk><name>Percorso</name><trkseg>`;
+      <gpx version="1.1" creator="Funghi Tracker">
+      <trk><name>Percorso</name><trkseg>`;
     const trackPoints = path.map((pt) => {
       const time = new Date(pt.timestamp).toISOString();
       return `<trkpt lat="${pt.latitude}" lon="${pt.longitude}"><time>${time}</time></trkpt>`;
     }).join('\n');
     const footer = `</trkseg></trk>`;
-    const waypoints = markers.map((m, i) => `<wpt lat="${m.latitude}" lon="${m.longitude}"><name>Segnaposto ${i+1}</name></wpt>`).join('\n');
+    const waypoints = markers.map((m, i) => {
+      const time = m.timestamp ? new Date(m.timestamp).toISOString() : null;
+      return `<wpt lat="${m.latitude}" lon="${m.longitude}">
+        ${time ? `<time>${time}</time>` : ''}
+        <name>Segnaposto ${i + 1}</name>
+      </wpt>`;
+    }).join('\n');
     return `${header}\n${trackPoints}\n${footer}\n${waypoints}\n</gpx>`;
   };
 
@@ -424,7 +430,12 @@ function MainUI(props: any) {
       <MapView
         ref={mapRef}
         style={StyleSheet.absoluteFillObject}
-        initialRegion={region ?? undefined}
+        initialRegion={region || {
+          latitude: 45.4384,      // default fallback
+          longitude: 10.9916,
+          latitudeDelta: 0.001,
+          longitudeDelta: 0.001,
+        }}
         mapType="satellite"
         onPanDrag={() => { followLocationRef.current = false; }} 
       >
@@ -457,6 +468,29 @@ function MainUI(props: any) {
             strokeWidth={3}
           />
         )}
+
+        {/* Segnaposti aggiunti manualmente */}
+        {recording && markers.map((m, idx) => (
+          <Marker
+            key={`marker-${idx}`}
+            coordinate={m}
+            anchor={{ x: 0.275, y: 0.256 }}
+            title={`Segnaposto ${idx + 1}`}
+          >
+            {/* Piccola icona arancione per distinguere dai punti del path */}
+            <View
+              style={{
+                width: 20,
+                height: 20,
+                borderRadius: 10,
+                backgroundColor: '#FF8C00',
+                borderWidth: 2,
+                borderColor: 'white',
+              }}
+            />
+          </Marker>
+        ))}
+
       </MapView>
 
       <View style={styles.titleContainer}>
@@ -474,7 +508,21 @@ function MainUI(props: any) {
       ]}>
         <TouchableOpacity
           style={[styles.bigButton, recording ? styles.stopButton : styles.startButton]}
-          onPress={recording ? stopRecording : startRecording}
+          onPress={() => {
+            if (recording) {
+              Alert.alert(
+                "Conferma",
+                "Sei sicuro di voler terminare la registrazione?",
+                [
+                  { text: "Annulla", style: "cancel" },
+                  { text: "OK", onPress: stopRecording },
+                ],
+                { cancelable: true }
+              );
+            } else {
+              startRecording();
+            }
+          }}
         >
           <Text style={styles.buttonText}>{recording ? 'Termina Registrazione' : 'Inizia Registrazione'}</Text>
         </TouchableOpacity>

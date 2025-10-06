@@ -4,9 +4,10 @@
 import React from 'react';
 import {
   StyleSheet, Text, View, Button, useColorScheme, Alert, TextInput, Modal, Linking,
-  TouchableOpacity, Animated, StatusBar, Platform
+  TouchableOpacity, Animated, StatusBar, Platform, Image, ScrollView
 } from 'react-native';
-import MapView, { Region, Circle, Polyline, Marker } from 'react-native-maps';
+import MapView, { Region, Polyline, Marker, Circle } from 'react-native-maps';
+import { Trash2 } from 'lucide-react-native';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import { File, Paths } from "expo-file-system";
@@ -19,6 +20,7 @@ type Coordinate = {
   longitude: number;
   timestamp: number;
 };
+type MarkerData = Coordinate & { tipo?: 'Porcino' | 'Finferlo', name?: string };
 
 
 const LOCATION_TASK_NAME = "background-location-task";
@@ -105,10 +107,12 @@ const checkAndOpenSettingsIfNeeded = async () => {
 export default function App() {
   const [recording, setRecording] = React.useState(false);
   const [path, setPath] = React.useState<Coordinate[]>([]);
-  const [markers, setMarkers] = React.useState<Coordinate[]>([]);
+  const [porciniMarkers, setPorciniMarkers] = React.useState<MarkerData[]>([]);
+  const [finferliMarkers, setFinferliMarkers] = React.useState<MarkerData[]>([]);
   const [modalVisible, setModalVisible] = React.useState(false);
   const [fileName, setFileName] = React.useState('percorso');
   const [region, setRegion] = React.useState<Region | null>(null);
+  const [showAll, setShowAll] = React.useState(false);
 
   const followLocationRef = React.useRef(true);
   const mapRef = React.useRef<MapView>(null);
@@ -116,9 +120,36 @@ export default function App() {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
 
-    React.useEffect(() => {
-      recordingRef.current = recording;
-    }, [recording]);
+  const allMarkers = React.useMemo(() => {
+    return [...porciniMarkers, ...finferliMarkers]
+      .sort((a, b) => b.timestamp - a.timestamp);
+  }, [porciniMarkers, finferliMarkers]);
+  const visibleMarkers = showAll ? allMarkers : allMarkers.slice(0, 5);
+
+  const handleDeleteMarker = (marker: MarkerData) => {
+    Alert.alert(
+      'Conferma eliminazione',
+      `Vuoi eliminare ${marker.name}?`,
+      [
+        { text: 'Annulla', style: 'cancel' },
+        { 
+          text: 'Elimina', 
+          style: 'destructive',
+          onPress: () => {
+            if (marker.tipo === 'Porcino') {
+              setPorciniMarkers(porciniMarkers.filter(m => m.name !== marker.name ));
+            } else {
+              setFinferliMarkers(finferliMarkers.filter(m => m.name !== marker.name ));
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  React.useEffect(() => {
+    recordingRef.current = recording;
+  }, [recording]);
 
   React.useEffect(() => {
     (async () => {
@@ -243,8 +274,10 @@ export default function App() {
 
     setRecording(true);
     setPath([]);
-    setMarkers([]);
+    setFinferliMarkers([]);
+    setPorciniMarkers([]);
 
+    // elimina file background location (se esiste)
     try {
       await FileSystemLegacy.deleteAsync(BG_POSITIONS_FILE, { idempotent: true });
     } catch (e) {
@@ -294,16 +327,21 @@ export default function App() {
 
 
   // ADD MARKER
-  const addMarker = React.useCallback(async () => {
+  const addMarker = React.useCallback(async (tipo: 'Porcino' | 'Finferlo') => {
     try {
-      // sync path
       const updated = await syncPathFromFile(false);
       const last = (updated && updated.length) ? updated[updated.length - 1]
                 : (path.length ? path[path.length - 1] : undefined);
-      if (last) {
-        setMarkers((prev) => [...prev, last]);
+
+      if (!last) {
+        Alert.alert('Nessuna posizione disponibile', 'Non ci sono ancora posizioni registrate.');
+        return;
+      }
+
+      if (tipo === 'Porcino') {
+        setPorciniMarkers(prev => [...prev, {latitude: last.latitude, longitude: last.longitude, timestamp: Date.now(), tipo: 'Porcino', name: `Porcino_${prev.length + 1}`}]);
       } else {
-        Alert.alert('Nessuna posizione disponibile', 'Non ci sono ancora posizioni registrate per aggiungere un segnaposto.');
+        setFinferliMarkers(prev => [...prev, {latitude: last.latitude, longitude: last.longitude, timestamp: Date.now(), tipo: 'Finferlo', name: `Finferlo_${prev.length + 1}`}]);
       }
     } catch (e) {
       console.warn('addMarker error', e);
@@ -312,23 +350,26 @@ export default function App() {
   }, [syncPathFromFile, path]);
 
 
-  // GENERATE GPX
-  const generateGPX = (path: Coordinate[], markers: Coordinate[]): string => {
+
+  // GENERATE GPX con due liste separate
+  const generateGPX = (path: Coordinate[], allMarkers: MarkerData[]): string => {  
     const header = `<?xml version="1.0" encoding="UTF-8"?>
-      <gpx version="1.1" creator="Funghi Tracker">
-      <trk><name>Percorso</name><trkseg>`;
+                    <gpx version="1.1" creator="Funghi Tracker">
+                    <trk><name>Percorso</name><trkseg>`;
+
     const trackPoints = path.map((pt) => {
-      const time = new Date(pt.timestamp).toISOString();
-      return `<trkpt lat="${pt.latitude}" lon="${pt.longitude}"><time>${time}</time></trkpt>`;
+      const time = pt.timestamp ? new Date(pt.timestamp).toISOString() : null;
+      return `<trkpt lat="${pt.latitude}" lon="${pt.longitude}">${time ? `<time>${time}</time>` : ''}</trkpt>`;
     }).join('\n');
+
     const footer = `</trkseg></trk>`;
-    const waypoints = markers.map((m, i) => {
+
+    const waypoints = allMarkers.map((m) => {
       const time = m.timestamp ? new Date(m.timestamp).toISOString() : null;
-      return `<wpt lat="${m.latitude}" lon="${m.longitude}">
-        ${time ? `<time>${time}</time>` : ''}
-        <name>Segnaposto ${i + 1}</name>
-      </wpt>`;
+      return `<wpt lat="${m.latitude}" lon="${m.longitude}">${time ? `<time>${time}</time>` : ''}
+              <name>${m.name}</name></wpt>`;
     }).join('\n');
+
     return `${header}\n${trackPoints}\n${footer}\n${waypoints}\n</gpx>`;
   };
 
@@ -343,7 +384,7 @@ export default function App() {
       console.log("updatedPath length:", updatedPath.length);
       console.log(updatedPath.map(p => p.timestamp));
       
-      const gpxData = generateGPX(updatedPath, markers);
+      const gpxData = generateGPX(updatedPath, allMarkers);
       let uri: string | undefined;
 
       try {
@@ -394,7 +435,8 @@ export default function App() {
         stopRecording={stopRecording}
         addMarker={addMarker}
         path={path}
-        markers={markers}
+        porciniMarkers={porciniMarkers}
+        finferliMarkers={finferliMarkers}
         modalVisible={modalVisible}
         setModalVisible={setModalVisible}
         fileName={fileName}
@@ -404,6 +446,10 @@ export default function App() {
         mapRef={mapRef}
         region={region}
         followLocationRef={followLocationRef}
+        showAll = {showAll}
+        visibleMarkers = {visibleMarkers}
+        handleDeleteMarker = {handleDeleteMarker}
+        setShowAll = {setShowAll}
       />
     </SafeAreaProvider>
   );
@@ -413,12 +459,18 @@ export default function App() {
 function MainUI(props: any) {
   const {
     recording, startRecording, stopRecording, addMarker,
-    path, markers, modalVisible, setModalVisible,
+    path, porciniMarkers, finferliMarkers, modalVisible, setModalVisible,
     fileName, setFileName, saveAndShareGPX, isDark, 
-    mapRef, region, followLocationRef
+    mapRef, region, followLocationRef, showAll, visibleMarkers,
+    handleDeleteMarker, setShowAll
   } = props;
 
   const backgroundColor = isDark ? '#121212' : '#ffffff';
+  const allMarkers: MarkerData[] = [
+      ...porciniMarkers, ...finferliMarkers
+    ].sort((a, b) => b.timestamp - a.timestamp);
+
+  console.log("allMarkers:", allMarkers);
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor }]}>
@@ -469,32 +521,59 @@ function MainUI(props: any) {
           />
         )}
 
-        {/* Segnaposti aggiunti manualmente */}
-        {recording && markers.map((m, idx) => (
+        {/* Marker Porcino */}
+        {recording && porciniMarkers.map((m: MarkerData) => (
           <Marker
-            key={`marker-${idx}`}
-            coordinate={m}
-            anchor={{ x: 0.275, y: 0.256 }}
-            title={`Segnaposto ${idx + 1}`}
+            key={m.name}
+            coordinate={{ 'latitude': m.latitude, 'longitude': m.longitude }}
+            title={m.name}
+            anchor={{ x: 0.38, y: 0.38 }}
           >
-            {/* Piccola icona arancione per distinguere dai punti del path */}
-            <View
-              style={{
-                width: 20,
-                height: 20,
-                borderRadius: 10,
-                backgroundColor: '#FF8C00',
-                borderWidth: 2,
-                borderColor: 'white',
-              }}
-            />
+            <View style={{
+              width: 28,
+              height: 28,
+              borderRadius: 14,
+              backgroundColor: '#965123ff', // ARANCIONE ACCESO invece di marrone
+              borderWidth: 1,
+              borderColor: '#000',
+              shadowColor: '#000',
+              shadowOffset: { width: 0, height: 2 },
+              shadowOpacity: 0.8,
+              shadowRadius: 4,
+              elevation: 6,
+            }} />
           </Marker>
         ))}
+
+        {/* Marker Finferlo */}
+        {recording && finferliMarkers.map((m: MarkerData) => (
+          <Marker
+            key={m.name}
+            coordinate={{ 'latitude': m.latitude, 'longitude': m.longitude }}
+            title={m.name}
+            anchor={{ x: 0.38, y: 0.38 }}
+          >
+            <View style={{
+              width: 28,
+              height: 28,
+              borderRadius: 14,
+              backgroundColor: '#ffd900ff', // GIALLO PURO al 100%
+              borderWidth: 1,
+              borderColor: '#000',
+              shadowColor: '#000',
+              shadowOffset: { width: 0, height: 2 },
+              shadowOpacity: 0.8,
+              shadowRadius: 4,
+              elevation: 6,
+            }} />
+          </Marker>
+        ))}
+
 
       </MapView>
 
       <View style={styles.titleContainer}>
-        <Text style={styles.title}>GPS Tracker</Text>
+        <Text style={styles.title}>Funghi Tracker</Text>
       </View>
 
       <Animated.View style={[
@@ -527,13 +606,24 @@ function MainUI(props: any) {
           <Text style={styles.buttonText}>{recording ? 'Termina Registrazione' : 'Inizia Registrazione'}</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity
-          style={[styles.bigButton, styles.markerButton, !recording && { opacity: 0.5 }]}
-          onPress={addMarker}
-          disabled={!recording}
-        >
-          <Text style={styles.buttonText}>Aggiungi Segnaposto</Text>
-        </TouchableOpacity>
+        {/* Due bottoni affiancati per porcini e finferli */}
+        <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 10 }}>
+          <TouchableOpacity
+            style={[styles.smallButton, styles.markerButton, !recording && { opacity: 0.5 }]}
+            onPress={() => addMarker('Finferlo')}
+            disabled={!recording}
+          >
+            <Text style={styles.buttonText}>Finferli</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.smallButton, styles.markerButton, !recording && { opacity: 0.5 }]}
+            onPress={() => addMarker('Porcino')}
+            disabled={!recording}
+          >
+            <Text style={styles.buttonText}>Porcino</Text>
+          </TouchableOpacity>
+        </View>
       </Animated.View>
 
       <TouchableOpacity
@@ -553,6 +643,67 @@ function MainUI(props: any) {
       >
         <Text style={{color: 'white'}}>📍</Text>
       </TouchableOpacity>
+      
+      {/* Overlay lista funghi */}
+      {recording && allMarkers.length > 0 &&
+        <View style={{
+          position: 'absolute',
+          top: 120, right: 10,
+          backgroundColor: 'rgba(255,255,255,0.9)',
+          borderRadius: 12,
+          padding: 8,
+          maxHeight: showAll ? 400 : 180,
+          width: 170,
+          shadowColor: '#000000ff',
+          shadowOpacity: 0.1,
+          shadowRadius: 3,
+        }}>
+          <Text style={{ fontSize: 15, fontWeight: 'bold', marginBottom: 4 }}>
+            Funghi trovati ({allMarkers.length})
+          </Text>
+
+          <ScrollView>
+            {visibleMarkers.map((m: MarkerData) => (
+              <View key={m.name} style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                marginBottom: 4,
+              }}>
+                <View style={{
+                  width: 16,
+                  height: 16,
+                  borderRadius: 8,
+                  backgroundColor: m.tipo === "Porcino" ? "#965123ff" : "#ffd900ff",
+                  borderWidth: 1,
+                  borderColor: "#2e2e2eff",
+                  marginRight: 8,
+                  shadowColor: '#000',
+                  shadowOffset: { width: 0, height: 1 },
+                  shadowOpacity: 0.3,
+                  shadowRadius: 2,
+                  elevation: 2,
+                }} />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 12 }}>{m.name}</Text>
+                </View>
+                <TouchableOpacity onPress={() => handleDeleteMarker(m)}>
+                  <Trash2 size={16} color="red" />
+                </TouchableOpacity>
+              </View>
+            ))}
+          </ScrollView>
+
+          <TouchableOpacity
+            onPress={() => setShowAll(!showAll)}
+            style={{ marginTop: 6, marginBottom: 2 }}
+          >
+            <Text style={{ color: 'blue', fontSize: 14 }}>
+              {showAll ? 'Mostra meno ▲' : 'Mostra tutti ▼'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      }
 
       {recording && (
         <View style={[
@@ -565,7 +716,7 @@ function MainUI(props: any) {
             alignItems: 'center',
           }]}>
           <Text style={{ color: isDark ? '#ffffff' : '#000000' }}>Coordinate registrate: {path.length}</Text>
-          <Text style={{ color: isDark ? '#ffffff' : '#000000' }}>Segnaposti: {markers.length}</Text>
+          <Text style={{ color: isDark ? '#ffffff' : '#000000' }}>Porcini: {porciniMarkers.length} - Finferli: {finferliMarkers.length}</Text>
         </View>
       )}
 
@@ -590,29 +741,28 @@ function MainUI(props: any) {
   );
 }
 
+
 const styles = StyleSheet.create({
   safeArea: { flex: 1 },
-  
   titleContainer: { 
     position: "absolute", top: 45, alignSelf: "center", backgroundColor: "rgba(0,0,0,0.5)", paddingHorizontal: 16,
     paddingVertical: 8, borderRadius: 8, alignItems: "center", justifyContent: "center",},
   title: {
     fontSize: 28, fontWeight: 'bold', borderRadius: 10, alignSelf: 'center',
-    // ombra iOS:
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 3,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 3, color: 'white',
   },
-
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
   modalContent: { backgroundColor: 'white', padding: 20, borderRadius: 10, width: '80%' },
   input: { borderWidth: 1, borderColor: '#ccc', padding: 10, marginVertical: 10, borderRadius: 5 },
-  bigButton: { width: 250, paddingVertical: 15, borderRadius: 10, marginVertical: 8, alignItems: 'center', backgroundColor: '#4CAF50' },
+  bigButton: { width: 290, paddingVertical: 15, borderRadius: 10, marginVertical: 8, alignItems: 'center', backgroundColor: '#4CAF50' },
+  smallButton: { width: 140, paddingVertical: 15, borderRadius: 10, marginVertical: 8, alignItems: 'center', backgroundColor: '#4CAF50' },
   startButton: { backgroundColor: '#4CAF50' },
   stopButton: { backgroundColor: '#F44336' },
   markerButton: { backgroundColor: '#2196F3' },
   buttonText: { color: 'white', fontSize: 18, fontWeight: 'bold' },
   stats: { position: 'absolute', bottom: 10, alignItems: 'center' },
   centerButton: {
-    position: 'absolute', bottom: 20, right: 20, width: 50, height: 50, borderRadius: 25, 
-    backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center',
+    position: 'absolute', bottom: 240, left: 40, width: 50, height: 50, borderRadius: 25,
+    backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'center', alignItems: 'center',
 },
 });

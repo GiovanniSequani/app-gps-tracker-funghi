@@ -57,7 +57,8 @@
           "locationAlwaysAndWhenInUsePermission": "L'app usa la tua posizione anche in background per registrare il percorso.",
           "locationWhenInUsePermission": "L'app usa la tua posizione per registrare il percorso."
         }
-      ]
+      ],
+      "expo-sqlite"
     ],
     "runtimeVersion": {
       "policy": "appVersion"

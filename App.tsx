@@ -4,7 +4,7 @@
 import React from 'react';
 import {
   StyleSheet, Text, View, Button, useColorScheme, Alert, TextInput, Modal, Linking,
-  TouchableOpacity, Animated, StatusBar, Platform, Image, ScrollView
+  TouchableOpacity, Animated, StatusBar, Platform, ScrollView
 } from 'react-native';
 import MapView, { Region, Polyline, Marker, Circle } from 'react-native-maps';
 import { Trash2 } from 'lucide-react-native';
@@ -14,14 +14,36 @@ import { File, Paths } from "expo-file-system";
 import * as FileSystemLegacy from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import { initDB, insertRoute, getAllRoutes, getRouteById, deleteRoute } from './db';
+import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import { NavigationContainer } from '@react-navigation/native' ; 
+import uuid from 'react-native-uuid';
 
 type Coordinate = {
   latitude: number;
   longitude: number;
   timestamp: number;
 };
-type MarkerData = Coordinate & { tipo?: 'Porcino' | 'Finferlo', name?: string };
+type MarkerData = Coordinate & { tipo: 'Porcino' | 'Finferlo', name: string };
+type RouteData = {
+  path: Coordinate[];
+  markers: MarkerData[];
+};
+type Route = {
+  route_id: string;
+  name: string;
+  date: string;
+  path: Coordinate[]; 
+};
+type Waypoint = {
+    latitude: number; 
+    longitude: number; 
+    timestamp: number; 
+    name: string; 
+    tipo: string;
+};
 
+const Tab = createBottomTabNavigator();
 
 const LOCATION_TASK_NAME = "background-location-task";
 const BG_POSITIONS_FILE = `${FileSystemLegacy.cacheDirectory}bg_positions.json`;
@@ -37,7 +59,7 @@ TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
   }
 
   if (data) {
-    console.log("LOCATION TASK DATA:", JSON.stringify(data));
+    console.log("Background location task:", JSON.stringify(data));
 
     try {
       const { locations } = data as any;
@@ -104,48 +126,40 @@ const checkAndOpenSettingsIfNeeded = async () => {
 
 
 
+
+
 export default function App() {
   const [recording, setRecording] = React.useState(false);
   const [path, setPath] = React.useState<Coordinate[]>([]);
-  const [porciniMarkers, setPorciniMarkers] = React.useState<MarkerData[]>([]);
-  const [finferliMarkers, setFinferliMarkers] = React.useState<MarkerData[]>([]);
+  const [markers, setMarkers] = React.useState<MarkerData[]>([]);
   const [modalVisible, setModalVisible] = React.useState(false);
   const [fileName, setFileName] = React.useState('percorso');
   const [region, setRegion] = React.useState<Region | null>(null);
   const [showAll, setShowAll] = React.useState(false);
+  const [addedRoutes, setAddedRoutes] = React.useState<string[]>([]);
+  const [routesOnMap, setRoutesOnMap] = React.useState<RouteData[]>([]);
+
 
   const followLocationRef = React.useRef(true);
   const mapRef = React.useRef<MapView>(null);
   const recordingRef = React.useRef(recording);
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
+  
+  const visibleMarkers = showAll ? markers : markers.slice(0, 5);
 
-  const allMarkers = React.useMemo(() => {
-    return [...porciniMarkers, ...finferliMarkers]
-      .sort((a, b) => b.timestamp - a.timestamp);
-  }, [porciniMarkers, finferliMarkers]);
-  const visibleMarkers = showAll ? allMarkers : allMarkers.slice(0, 5);
+  React.useEffect(() => {
+    const setupDB = async () => {
+      try {
+        await initDB();
+        console.log('DB inizializzato');
+      } catch (err) {
+        console.error('Errore initDB:', err);
+      }
+    };
 
-  const handleDeleteMarker = (marker: MarkerData) => {
-    Alert.alert(
-      'Conferma eliminazione',
-      `Vuoi eliminare ${marker.name}?`,
-      [
-        { text: 'Annulla', style: 'cancel' },
-        { 
-          text: 'Elimina', 
-          style: 'destructive',
-          onPress: () => {
-            if (marker.tipo === 'Porcino') {
-              setPorciniMarkers(porciniMarkers.filter(m => m.name !== marker.name ));
-            } else {
-              setFinferliMarkers(finferliMarkers.filter(m => m.name !== marker.name ));
-            }
-          }
-        }
-      ]
-    );
-  };
+    setupDB();
+  }, []);
 
   React.useEffect(() => {
     recordingRef.current = recording;
@@ -172,6 +186,24 @@ export default function App() {
       mapRef.current?.animateToRegion(initialRegion, 1000);
     })();
   }, []);
+
+
+  const handleDeleteMarker = (marker: MarkerData) => {
+    Alert.alert(
+      'Conferma eliminazione',
+      `Vuoi eliminare ${marker.name}?`,
+      [
+        { text: 'Annulla', style: 'cancel' },
+        { 
+          text: 'Elimina', 
+          style: 'destructive',
+          onPress: () => {
+            setMarkers(markers.filter(m => m.name !== marker.name));
+          }
+        }
+      ]
+    );
+  };
 
 
   // Sincronizza il path leggendo il file di posizioni in background
@@ -213,7 +245,6 @@ export default function App() {
   }, [path]);
 
 
-
   // Polling per aggiornare il path con eventuali posizioni salvate in background
   React.useEffect(() => {
     let mounted = true;
@@ -252,7 +283,6 @@ export default function App() {
   }, [syncPathFromFile]);
 
 
-
   // START RECORDING
   const startRecording = async () => {
       const ok = await checkAndOpenSettingsIfNeeded();
@@ -274,8 +304,7 @@ export default function App() {
 
     setRecording(true);
     setPath([]);
-    setFinferliMarkers([]);
-    setPorciniMarkers([]);
+    setMarkers([]);
 
     // elimina file background location (se esiste)
     try {
@@ -301,6 +330,15 @@ export default function App() {
   };
 
 
+  // Salva il percorso nel DB
+  const saveCurrentRoute = async () => {
+    const route_id = uuid.v4();
+    const date = new Date().toISOString();
+    const name = `Percorso ${new Date().toLocaleDateString()}`;
+    console.log(`chiamo insertRoute(${route_id}, ${name}, ${date}, ${path}, ${markers})`);
+    await insertRoute(route_id, name, date, path, markers);
+  };
+
 
   // STOP RECORDING
   const stopRecording = async () => {
@@ -320,7 +358,18 @@ export default function App() {
       'Vuoi salvare il percorso registrato come file GPX?',
       [
         { text: 'No', style: 'cancel' },
-        { text: 'Sì', onPress: () => setModalVisible(true) },
+        { text: 'Sì', onPress: async () => {
+          try {
+            await saveCurrentRoute();
+            console.log('Percorso salvato nel DB');
+
+          } catch (err) {
+            console.error('Errore salvataggio percorso:', err);
+            Alert.alert('Errore', 'Impossibile salvare il percorso nel database.');
+          }
+
+          setModalVisible(true);
+        }, },
       ]
     );
   };
@@ -338,11 +387,14 @@ export default function App() {
         return;
       }
 
-      if (tipo === 'Porcino') {
-        setPorciniMarkers(prev => [...prev, {latitude: last.latitude, longitude: last.longitude, timestamp: Date.now(), tipo: 'Porcino', name: `Porcino_${prev.length + 1}`}]);
-      } else {
-        setFinferliMarkers(prev => [...prev, {latitude: last.latitude, longitude: last.longitude, timestamp: Date.now(), tipo: 'Finferlo', name: `Finferlo_${prev.length + 1}`}]);
-      }
+      setMarkers(prev => [...prev, {
+        latitude: last.latitude, 
+        longitude: last.longitude, 
+        timestamp: Date.now(), 
+        tipo: tipo=== 'Porcino' ? 'Porcino' : 'Finferlo', 
+        name: `Porcino_${prev.length + 1}`
+      }]);
+
     } catch (e) {
       console.warn('addMarker error', e);
       Alert.alert('Errore', 'Impossibile aggiungere il segnaposto.');
@@ -352,7 +404,7 @@ export default function App() {
 
 
   // GENERATE GPX con due liste separate
-  const generateGPX = (path: Coordinate[], allMarkers: MarkerData[]): string => {  
+  const generateGPX = (path: Coordinate[], markers: MarkerData[]): string => {  
     const header = `<?xml version="1.0" encoding="UTF-8"?>
                     <gpx version="1.1" creator="Funghi Tracker">
                     <trk><name>Percorso</name><trkseg>`;
@@ -364,10 +416,10 @@ export default function App() {
 
     const footer = `</trkseg></trk>`;
 
-    const waypoints = allMarkers.map((m) => {
+    const waypoints = markers.map((m) => {
       const time = m.timestamp ? new Date(m.timestamp).toISOString() : null;
       return `<wpt lat="${m.latitude}" lon="${m.longitude}">${time ? `<time>${time}</time>` : ''}
-              <name>${m.name}</name></wpt>`;
+              <name>${m.name}</name><type>${m.tipo}</type></wpt>`;
     }).join('\n');
 
     return `${header}\n${trackPoints}\n${footer}\n${waypoints}\n</gpx>`;
@@ -384,7 +436,7 @@ export default function App() {
       console.log("updatedPath length:", updatedPath.length);
       console.log(updatedPath.map(p => p.timestamp));
       
-      const gpxData = generateGPX(updatedPath, allMarkers);
+      const gpxData = generateGPX(updatedPath, markers);
       let uri: string | undefined;
 
       try {
@@ -426,31 +478,55 @@ export default function App() {
   };
 
 
-
   return (
     <SafeAreaProvider>
-      <MainUI
-        recording={recording}
-        startRecording={startRecording}
-        stopRecording={stopRecording}
-        addMarker={addMarker}
-        path={path}
-        porciniMarkers={porciniMarkers}
-        finferliMarkers={finferliMarkers}
-        modalVisible={modalVisible}
-        setModalVisible={setModalVisible}
-        fileName={fileName}
-        setFileName={setFileName}
-        saveAndShareGPX={saveAndShareGPX}
-        isDark={isDark}
-        mapRef={mapRef}
-        region={region}
-        followLocationRef={followLocationRef}
-        showAll = {showAll}
-        visibleMarkers = {visibleMarkers}
-        handleDeleteMarker = {handleDeleteMarker}
-        setShowAll = {setShowAll}
-      />
+      <NavigationContainer>
+        <Tab.Navigator
+          screenOptions={{
+            headerShown: false,
+            tabBarStyle: { height: 60, backgroundColor: isDark ? '#121212' : '#ffffff' }
+          }}
+        >
+          <Tab.Screen
+            name="MapScreen"
+            children={() => 
+              <MainUI
+                recording={recording}
+                startRecording={startRecording}
+                stopRecording={stopRecording}
+                addMarker={addMarker}
+                path={path}
+                markers={markers}
+                modalVisible={modalVisible}
+                setModalVisible={setModalVisible}
+                fileName={fileName}
+                setFileName={setFileName}
+                saveAndShareGPX={saveAndShareGPX}
+                isDark={isDark}
+                mapRef={mapRef}
+                region={region}
+                followLocationRef={followLocationRef}
+                showAll = {showAll}
+                visibleMarkers = {visibleMarkers}
+                handleDeleteMarker = {handleDeleteMarker}
+                setShowAll = {setShowAll}
+                addedRoutes={addedRoutes}
+                setRoutesOnMap = {setRoutesOnMap}
+                routesOnMap = {routesOnMap}
+              />}
+            options={{
+              tabBarIcon: () => <Text>🗺️</Text>,
+            }}
+          />
+          <Tab.Screen
+            name="ManageRoutes"
+            children={() => <ManageRoutesScreen addedRoutes={addedRoutes} setAddedRoutes={setAddedRoutes} />}
+            options={{
+              tabBarIcon: () => <Text>📂</Text>,
+            }}
+          />
+        </Tab.Navigator>
+      </NavigationContainer>
     </SafeAreaProvider>
   );
 }
@@ -459,18 +535,45 @@ export default function App() {
 function MainUI(props: any) {
   const {
     recording, startRecording, stopRecording, addMarker,
-    path, porciniMarkers, finferliMarkers, modalVisible, setModalVisible,
+    path, markers, modalVisible, setModalVisible,
     fileName, setFileName, saveAndShareGPX, isDark, 
     mapRef, region, followLocationRef, showAll, visibleMarkers,
-    handleDeleteMarker, setShowAll
+    handleDeleteMarker, setShowAll, addedRoutes, setRoutesOnMap, routesOnMap
   } = props;
 
-  const backgroundColor = isDark ? '#121212' : '#ffffff';
-  const allMarkers: MarkerData[] = [
-      ...porciniMarkers, ...finferliMarkers
-    ].sort((a, b) => b.timestamp - a.timestamp);
 
-  console.log("allMarkers:", allMarkers);
+  React.useEffect(() => {
+    const fetchRoutes = async () => {
+      const newRoutes: RouteData[] = [];
+
+      for (const route_id of addedRoutes) {
+        const route = await getRouteById(route_id) as Route & { waypoints: Waypoint[] };
+        console.log(`Fetched route ${route_id}:`, route);
+        const markers: MarkerData[] = route.waypoints.map(wp => ({
+          latitude: wp.lat,
+          longitude: wp.lon,
+          timestamp: wp.timestamp,
+          tipo: wp.type as 'Porcino' | 'Finferlo',
+          name: wp.name,
+        }));
+        const routeData: RouteData = {
+          path: route.path,
+          markers,
+        };
+        if (route) newRoutes.push(routeData);
+      }
+      
+      // rimuove eventuali null
+      setRoutesOnMap(newRoutes.filter(r => r !== null) as RouteData[]);
+    };
+    fetchRoutes();
+  }, [addedRoutes]);
+
+
+
+
+
+  const backgroundColor = isDark ? '#121212' : '#ffffff';
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor }]}>
@@ -522,7 +625,7 @@ function MainUI(props: any) {
         )}
 
         {/* Marker Porcino */}
-        {recording && porciniMarkers.map((m: MarkerData) => (
+        {recording && markers.map((m: MarkerData) => (
           <Marker
             key={m.name}
             coordinate={{ 'latitude': m.latitude, 'longitude': m.longitude }}
@@ -533,7 +636,7 @@ function MainUI(props: any) {
               width: 28,
               height: 28,
               borderRadius: 14,
-              backgroundColor: '#965123ff', // ARANCIONE ACCESO invece di marrone
+              backgroundColor: m.tipo === 'Porcino'? '#965123ff' : '#ffd900ff',
               borderWidth: 1,
               borderColor: '#000',
               shadowColor: '#000',
@@ -545,19 +648,61 @@ function MainUI(props: any) {
           </Marker>
         ))}
 
-        {/* Marker Finferlo */}
-        {recording && finferliMarkers.map((m: MarkerData) => (
-          <Marker
-            key={m.name}
-            coordinate={{ 'latitude': m.latitude, 'longitude': m.longitude }}
-            title={m.name}
-            anchor={{ x: 0.38, y: 0.38 }}
-          >
+        {/* Percorsi salvati */}
+        {routesOnMap.map((route: RouteData, idx: number) => {
+          // Log dei path
+          console.log(`Route ${idx} path:`, route.path);
+          // Log dei marker
+          console.log(`Route ${idx} markers:`, route.markers);
+
+          return (
+            <React.Fragment key={idx}>
+              <Polyline
+                coordinates={route.path.filter(p => p.latitude != null && p.longitude != null)}
+                strokeColor="#1e8fff91"
+                strokeWidth={1.5}
+              />
+              {route.markers
+                .filter(m => m.latitude != null && m.longitude != null)
+                .map(m => (
+                  <Marker 
+                    key={m.name} 
+                    coordinate={{ latitude: m.latitude, longitude: m.longitude }} 
+                    title={m.name}
+                    anchor={{ x: 0.38, y: 0.38 }}
+                  >
+                    <View style={{
+                      width: 20,
+                      height: 20,
+                      borderRadius: 10,
+                      backgroundColor: m.tipo === 'Porcino'? '#965123bb' : '#ffd900bb',
+                      borderWidth: 1,
+                      borderColor: '#000',
+                      shadowColor: '#000',
+                      shadowOffset: { width: 0, height: 2 },
+                      shadowOpacity: 0.8,
+                      shadowRadius: 4,
+                      elevation: 6,
+                    }} />
+                  </Marker>
+              ))}
+            </React.Fragment>
+          );
+        })}
+        {false && routesOnMap.map((route: RouteData, idx: number) => (
+          <React.Fragment key={idx}>
+            <Polyline coordinates={route.path} strokeColor="#1e8fff91" strokeWidth={1.5} />
+            {route.markers.map(m => (
+              <Marker 
+                key={m.name} 
+                coordinate={{ latitude: m.latitude, longitude: m.longitude }} 
+                title={m.name}
+                anchor={{ x: 0.38, y: 0.38 }}>
             <View style={{
-              width: 28,
-              height: 28,
-              borderRadius: 14,
-              backgroundColor: '#ffd900ff', // GIALLO PURO al 100%
+              width: 20,
+              height: 20,
+              borderRadius: 10,
+              backgroundColor: m.tipo === 'Porcino'? '#965123bb' : '#ffd900bb',
               borderWidth: 1,
               borderColor: '#000',
               shadowColor: '#000',
@@ -566,9 +711,10 @@ function MainUI(props: any) {
               shadowRadius: 4,
               elevation: 6,
             }} />
-          </Marker>
+              </Marker>
+            ))}
+          </React.Fragment>
         ))}
-
 
       </MapView>
 
@@ -579,33 +725,12 @@ function MainUI(props: any) {
       <Animated.View style={[
         {
           position: 'absolute',
-          bottom: 50,    // distanza dal fondo
+          bottom: 25,    // distanza dal fondo
           left: 0,
           right: 0,
           alignItems: 'center',
         },
       ]}>
-        <TouchableOpacity
-          style={[styles.bigButton, recording ? styles.stopButton : styles.startButton]}
-          onPress={() => {
-            if (recording) {
-              Alert.alert(
-                "Conferma",
-                "Sei sicuro di voler terminare la registrazione?",
-                [
-                  { text: "Annulla", style: "cancel" },
-                  { text: "OK", onPress: stopRecording },
-                ],
-                { cancelable: true }
-              );
-            } else {
-              startRecording();
-            }
-          }}
-        >
-          <Text style={styles.buttonText}>{recording ? 'Termina Registrazione' : 'Inizia Registrazione'}</Text>
-        </TouchableOpacity>
-
         {/* Due bottoni affiancati per porcini e finferli */}
         <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 10 }}>
           <TouchableOpacity
@@ -613,7 +738,7 @@ function MainUI(props: any) {
             onPress={() => addMarker('Finferlo')}
             disabled={!recording}
           >
-            <Text style={styles.buttonText}>Finferli</Text>
+            <Text style={styles.buttonText}>Finferlo</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
@@ -624,8 +749,30 @@ function MainUI(props: any) {
             <Text style={styles.buttonText}>Porcino</Text>
           </TouchableOpacity>
         </View>
+
+        <TouchableOpacity
+          style={[styles.bigButton, recording ? styles.stopButton : styles.startButton]}
+          onPress={() => {
+            if (recording) {
+              Alert.alert(
+                "Conferma",
+                "Sei sicuro di voler terminare la registrazione?",
+                [
+                  { text: "Annulla", style: "cancel" },
+                  { text: "OK", onPress: stopRecording() },
+                ],
+                { cancelable: true }
+              );
+            } else {
+              startRecording();
+            }
+          }}
+        >
+          <Text style={styles.buttonText}>{recording ? 'Termina Registrazione' : 'Inizia Registrazione'}</Text>
+        </TouchableOpacity>
       </Animated.View>
 
+      {/* Pulsante per centrare la mappa */}
       <TouchableOpacity
         style={styles.centerButton}
         onPress={() => {
@@ -645,7 +792,7 @@ function MainUI(props: any) {
       </TouchableOpacity>
       
       {/* Overlay lista funghi */}
-      {recording && allMarkers.length > 0 &&
+      {recording && markers.length > 0 &&
         <View style={{
           position: 'absolute',
           top: 120, right: 10,
@@ -659,7 +806,7 @@ function MainUI(props: any) {
           shadowRadius: 3,
         }}>
           <Text style={{ fontSize: 15, fontWeight: 'bold', marginBottom: 4 }}>
-            Funghi trovati ({allMarkers.length})
+            Funghi trovati ({markers.length})
           </Text>
 
           <ScrollView>
@@ -710,13 +857,13 @@ function MainUI(props: any) {
           styles.stats,
           {
             position: 'absolute',
-            bottom: 10,    // distanza dal fondo
+            bottom: 170,    // distanza dal fondo
             left: 0,
             right: 0,
             alignItems: 'center',
           }]}>
           <Text style={{ color: isDark ? '#ffffff' : '#000000' }}>Coordinate registrate: {path.length}</Text>
-          <Text style={{ color: isDark ? '#ffffff' : '#000000' }}>Porcini: {porciniMarkers.length} - Finferli: {finferliMarkers.length}</Text>
+          <Text style={{ color: isDark ? '#ffffff' : '#000000' }}>Porcini: {markers.filter(m => m.tipo === 'Porcino').length} - Finferli: {markers.filter(m => m.tipo === 'Finferlo').length}</Text>
         </View>
       )}
 
@@ -742,6 +889,68 @@ function MainUI(props: any) {
 }
 
 
+function ManageRoutesScreen(props: any) {
+  const { addedRoutes, setAddedRoutes } = props;
+
+  const [routes, setRoutes] = React.useState<any[]>([]);
+
+  React.useEffect(() => {
+    const fetchAllRoutes = async () => {
+      try {
+        const fetched = await getAllRoutes();
+        setRoutes(fetched);
+      } catch (err) {
+        console.error('Errore getAllRoutes:', err);
+        setRoutes([]);
+      }
+    };
+
+    fetchAllRoutes();
+  }, []);
+
+
+  const toggleRoute = (route_id: string) => {
+    if (addedRoutes.includes(route_id)) {
+      setAddedRoutes(prev => prev.filter(r => r !== route_id));
+    } else {
+      setAddedRoutes(prev => [...prev, route_id]);
+    }
+  };
+
+return (
+  <SafeAreaView style={styles_archive.container}>
+
+      <View style={styles.titleContainer}>
+        <Text style={styles.title}>Funghi Tracker</Text>
+      </View>
+
+    <ScrollView contentContainerStyle={styles_archive.scrollContainer}>
+      {routes.map(r => {
+        const isAdded = addedRoutes.includes(r.route_id);
+        return (
+          <View key={r.route_id} style={styles_archive.routeRow}>
+            <TouchableOpacity
+              onPress={() => toggleRoute(r.route_id)}
+              style={[
+                styles_archive.toggleButton,
+                { backgroundColor: isAdded ? '#ff4d4d' : '#4caf50' } // rosso per '-', verde per '+'
+              ]}
+            >
+              <Text style={styles_archive.toggleText}>{isAdded ? '-' : '+'}</Text>
+            </TouchableOpacity>
+            <View style={styles_archive.routeInfo}>
+              <Text style={styles_archive.routeName}>{r.name}</Text>
+              <Text style={styles_archive.routeDate}>{r.date}</Text>
+            </View>
+          </View>
+        );
+      })}
+    </ScrollView>
+  </SafeAreaView>
+);
+}
+
+
 const styles = StyleSheet.create({
   safeArea: { flex: 1 },
   titleContainer: { 
@@ -762,7 +971,49 @@ const styles = StyleSheet.create({
   buttonText: { color: 'white', fontSize: 18, fontWeight: 'bold' },
   stats: { position: 'absolute', bottom: 10, alignItems: 'center' },
   centerButton: {
-    position: 'absolute', bottom: 240, left: 40, width: 50, height: 50, borderRadius: 25,
+    position: 'absolute', bottom: 200, left: 30, width: 50, height: 50, borderRadius: 25,
     backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'center', alignItems: 'center',
 },
+});
+
+
+const styles_archive = StyleSheet.create({
+  container: {
+    flex: 1,
+    paddingHorizontal: 16,
+    paddingTop: 100,
+    backgroundColor: '#fff',
+  },
+  scrollContainer: {
+    paddingBottom: 16,
+  },
+  routeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  toggleButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  toggleText: {
+    color: '#fff',
+    fontSize: 24,
+    fontWeight: 'bold',
+  },
+  routeInfo: {
+    flex: 1,
+  },
+  routeName: {
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  routeDate: {
+    fontSize: 14,
+    color: '#666',
+  },
 });

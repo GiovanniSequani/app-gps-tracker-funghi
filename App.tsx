@@ -289,7 +289,7 @@ export default function App() {
     if (!started) {
       await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
         accuracy: Location.Accuracy.BestForNavigation,
-        timeInterval: 5000,
+        timeInterval: 2000,
         distanceInterval: 1,
         showsBackgroundLocationIndicator: true,
         foregroundService: {

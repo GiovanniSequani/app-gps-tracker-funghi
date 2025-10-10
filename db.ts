@@ -16,11 +16,11 @@ export type Route = {
 };
 
 export type Waypoint = {
-    latitude: number; 
-    longitude: number; 
+    lat: number; 
+    lon: number; 
     timestamp: number; 
     name: string; 
-    tipo: string;
+    type: string;
 };
 
 

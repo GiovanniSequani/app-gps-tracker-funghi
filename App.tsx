@@ -4,7 +4,7 @@
 import React from 'react';
 import {
   StyleSheet, Text, View, Button, useColorScheme, Alert, TextInput, Modal, Linking,
-  TouchableOpacity, Animated, StatusBar, Platform, ScrollView
+  TouchableOpacity, Animated, StatusBar, Platform, ScrollView, RefreshControl
 } from 'react-native';
 import MapView, { Region, Polyline, Marker, Circle } from 'react-native-maps';
 import { Trash2 } from 'lucide-react-native';
@@ -36,11 +36,11 @@ type Route = {
   path: Coordinate[]; 
 };
 type Waypoint = {
-    latitude: number; 
-    longitude: number; 
+    lat: number; 
+    lon: number; 
     timestamp: number; 
     name: string; 
-    tipo: string;
+    type: string;
 };
 
 const Tab = createBottomTabNavigator();
@@ -288,7 +288,6 @@ export default function App() {
       const ok = await checkAndOpenSettingsIfNeeded();
       if (!ok) return;
 
-
     // chiedi permessi foreground
     const { status: fgStatus } = await Location.requestForegroundPermissionsAsync();
     if (fgStatus !== 'granted') {
@@ -387,12 +386,14 @@ export default function App() {
         return;
       }
 
+      console.log(`Aggiungo marker ${tipo} con nome ${tipo}_${markers.length + 1}`);
+
       setMarkers(prev => [...prev, {
         latitude: last.latitude, 
         longitude: last.longitude, 
         timestamp: Date.now(), 
-        tipo: tipo=== 'Porcino' ? 'Porcino' : 'Finferlo', 
-        name: `Porcino_${prev.length + 1}`
+        tipo: tipo === 'Porcino' ? 'Porcino' : 'Finferlo', 
+        name: `${tipo}_${prev.length + 1}`
       }]);
 
     } catch (e) {
@@ -484,11 +485,25 @@ export default function App() {
         <Tab.Navigator
           screenOptions={{
             headerShown: false,
-            tabBarStyle: { height: 60, backgroundColor: isDark ? '#121212' : '#ffffff' }
+            tabBarStyle: {
+              height: 70,
+              backgroundColor: isDark ? '#121212' : '#ffffff',
+              borderTopWidth: 0,
+            },
+            tabBarItemStyle: {
+              justifyContent: 'center', // centra verticalmente
+              alignItems: 'center', // centra orizzontalmente
+            },
+            tabBarLabelPosition: 'below-icon', // testo sotto l’icona
+            tabBarLabelStyle: {
+              fontSize: 14,
+              fontWeight: '600',
+              marginTop: 4,
+            },
           }}
         >
           <Tab.Screen
-            name="MapScreen"
+            name="Mappa"
             children={() => 
               <MainUI
                 recording={recording}
@@ -515,14 +530,34 @@ export default function App() {
                 routesOnMap = {routesOnMap}
               />}
             options={{
-              tabBarIcon: () => <Text>🗺️</Text>,
+              tabBarIcon: ({ focused }) => (
+                <Text
+                  style={{
+                    fontSize: focused ? 24 : 22,
+                    marginBottom: -2,
+                  }}
+                >
+                  🗺️
+                </Text>
+              ),
+              tabBarLabel: 'Mappa',
             }}
           />
           <Tab.Screen
-            name="ManageRoutes"
+            name="Archivio"
             children={() => <ManageRoutesScreen addedRoutes={addedRoutes} setAddedRoutes={setAddedRoutes} />}
             options={{
-              tabBarIcon: () => <Text>📂</Text>,
+              tabBarIcon: ({ focused }) => (
+                <Text
+                  style={{
+                    fontSize: focused ? 24 : 22,
+                    marginBottom: -2,
+                  }}
+                >
+                  📂
+                </Text>
+              ),
+              tabBarLabel: 'Archivio',
             }}
           />
         </Tab.Navigator>
@@ -736,7 +771,7 @@ function MainUI(props: any) {
           <TouchableOpacity
             style={[styles.smallButton, styles.markerButton, !recording && { opacity: 0.5 }]}
             onPress={() => addMarker('Finferlo')}
-            disabled={!recording}
+            disabled={!recording || path.length < 1}
           >
             <Text style={styles.buttonText}>Finferlo</Text>
           </TouchableOpacity>
@@ -744,7 +779,7 @@ function MainUI(props: any) {
           <TouchableOpacity
             style={[styles.smallButton, styles.markerButton, !recording && { opacity: 0.5 }]}
             onPress={() => addMarker('Porcino')}
-            disabled={!recording}
+            disabled={!recording || path.length < 1}
           >
             <Text style={styles.buttonText}>Porcino</Text>
           </TouchableOpacity>
@@ -759,7 +794,7 @@ function MainUI(props: any) {
                 "Sei sicuro di voler terminare la registrazione?",
                 [
                   { text: "Annulla", style: "cancel" },
-                  { text: "OK", onPress: stopRecording() },
+                  { text: "OK", onPress: stopRecording },
                 ],
                 { cancelable: true }
               );
@@ -785,6 +820,9 @@ function MainUI(props: any) {
               latitudeDelta: 0.001,
               longitudeDelta: 0.001,
             }, 500);
+          }
+          if (region && mapRef.current) {
+            mapRef.current.animateToRegion(region, 500);
           }
         }}
       >
@@ -893,21 +931,45 @@ function ManageRoutesScreen(props: any) {
   const { addedRoutes, setAddedRoutes } = props;
 
   const [routes, setRoutes] = React.useState<any[]>([]);
+  const [refreshing, setRefreshing] = React.useState(false);
+  const [selectedRoute, setSelectedRoute] = React.useState<any>(null);
+  const [modalVisible, setModalVisible] = React.useState(false);
+
+  const fetchAllRoutes = React.useCallback(async () => {
+    try {
+      console.log('Fetching routes from DB...');
+      const fetched = await getAllRoutes();
+      setRoutes(fetched);
+      console.log(`Loaded ${fetched.length} routes`);
+    } catch (err) {
+      console.error('Errore getAllRoutes:', err);
+      setRoutes([]);
+    }
+  }, []);
 
   React.useEffect(() => {
-    const fetchAllRoutes = async () => {
+    let mounted = true;
+
+    const fetch = async () => {
       try {
+        console.log('Fetching routes from DB...');
         const fetched = await getAllRoutes();
+        if (!mounted) return;
         setRoutes(fetched);
+        console.log(`Loaded ${fetched.length} routes`);
       } catch (err) {
         console.error('Errore getAllRoutes:', err);
-        setRoutes([]);
+        if (mounted) setRoutes([]);
       }
     };
 
-    fetchAllRoutes();
-  }, []);
+    void fetch();
 
+    return () => {
+      mounted = false;
+    };
+  }, [fetchAllRoutes]);
+  
 
   const toggleRoute = (route_id: string) => {
     if (addedRoutes.includes(route_id)) {
@@ -917,38 +979,133 @@ function ManageRoutesScreen(props: any) {
     }
   };
 
-return (
-  <SafeAreaView style={styles_archive.container}>
+  const handleDelete = async () => {
+    if (!selectedRoute) return;
+    Alert.alert(
+      'Conferma eliminazione',
+      `Vuoi eliminare il percorso "${selectedRoute.name}"?`,
+      [
+        { text: 'Annulla', style: 'cancel' },
+        { 
+          text: 'Elimina', 
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await deleteRoute(selectedRoute.route_id);
+              console.log(`Route ${selectedRoute.route_id} eliminata`);
+              setModalVisible(false);
+              await fetchAllRoutes();
+            } catch (err) {
+              console.error('Errore deleteRoute:', err);
+            }
+          }
+        }
+      ]
+    );
+  };
 
-      <View style={styles.titleContainer}>
-        <Text style={styles.title}>Funghi Tracker</Text>
-      </View>
+  return (
+    <SafeAreaView style={styles_archive.container}>
 
-    <ScrollView contentContainerStyle={styles_archive.scrollContainer}>
-      {routes.map(r => {
-        const isAdded = addedRoutes.includes(r.route_id);
-        return (
-          <View key={r.route_id} style={styles_archive.routeRow}>
-            <TouchableOpacity
-              onPress={() => toggleRoute(r.route_id)}
-              style={[
-                styles_archive.toggleButton,
-                { backgroundColor: isAdded ? '#ff4d4d' : '#4caf50' } // rosso per '-', verde per '+'
-              ]}
-            >
-              <Text style={styles_archive.toggleText}>{isAdded ? '-' : '+'}</Text>
-            </TouchableOpacity>
-            <View style={styles_archive.routeInfo}>
-              <Text style={styles_archive.routeName}>{r.name}</Text>
-              <Text style={styles_archive.routeDate}>{r.date}</Text>
+        <View style={styles.titleContainer}>
+          <Text style={styles.title}>Funghi Tracker</Text>
+        </View>
+
+      <ScrollView 
+        contentContainerStyle={styles_archive.scrollContainer}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={async () => {
+              setRefreshing(true);
+              console.log('Aggiorno la lista dei percorsi salvati...');
+              await fetchAllRoutes();
+              setRefreshing(false);
+            }}
+          />
+      }>
+        {routes.map(r => {
+          const isAdded = addedRoutes.includes(r.route_id);
+          return (
+            <View key={r.route_id} style={styles_archive.routeRow}>
+              <TouchableOpacity
+                onPress={() => toggleRoute(r.route_id)}
+                style={[
+                  styles_archive.toggleButton,
+                  { backgroundColor: isAdded ? '#ff4d4d' : '#4caf50' } // rosso per '-', verde per '+'
+                ]}
+              >
+                <Text style={styles_archive.toggleText}>{isAdded ? '-' : '+'}</Text>
+              </TouchableOpacity>
+
+              <View style={styles_archive.routeInfo}>
+                <Text style={styles_archive.routeName}>{r.name}</Text>
+                <Text style={styles_archive.routeDate}>{r.date}</Text>
+              </View>
+
+              {/* Icona dei tre puntini */}
+              <TouchableOpacity
+                onPress={() => {
+                  setSelectedRoute(r);
+                  setModalVisible(true);
+                }}
+                style={{ padding: 10 }}
+              >
+                <Text style={{ fontSize: 18, color: '#555', fontWeight: 900 }}>⋮</Text>
+              </TouchableOpacity>
             </View>
+          );
+        })}
+      </ScrollView>
+
+      {/* Modal con opzioni */}
+      <Modal
+        visible={modalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setModalVisible(false)}
+      >
+        <TouchableOpacity
+          style={{
+            flex: 1,
+            backgroundColor: 'rgba(0,0,0,0.4)',
+            justifyContent: 'center',
+            alignItems: 'center'
+          }}
+          activeOpacity={1}
+          onPressOut={() => setModalVisible(false)}
+        >
+          <View style={{
+            backgroundColor: 'white',
+            borderRadius: 12,
+            padding: 20,
+            width: '70%',
+            shadowColor: '#000',
+            shadowOpacity: 0.3,
+            shadowRadius: 8,
+            elevation: 5,
+          }}>
+            <Text style={{ fontSize: 18, fontWeight: 'bold', marginBottom: 10 }}>
+              {selectedRoute?.name}
+            </Text>
+            <TouchableOpacity onPress={() => {
+              if (addedRoutes.includes(selectedRoute?.route_id)) {toggleRoute(selectedRoute?.route_id)};
+              handleDelete();}}>
+              <Text style={{ fontSize: 16, color: 'red', marginVertical: 8 }}>
+                Elimina da archivio
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setModalVisible(false)}>
+              <Text style={{ fontSize: 16, color: '#007AFF', marginVertical: 8 }}>
+                Annulla
+              </Text>
+            </TouchableOpacity>
           </View>
-        );
-      })}
-    </ScrollView>
-  </SafeAreaView>
-);
-}
+        </TouchableOpacity>
+      </Modal>
+    </SafeAreaView>
+  );
+  }
 
 
 const styles = StyleSheet.create({
@@ -979,41 +1136,27 @@ const styles = StyleSheet.create({
 
 const styles_archive = StyleSheet.create({
   container: {
-    flex: 1,
-    paddingHorizontal: 16,
-    paddingTop: 100,
-    backgroundColor: '#fff',
+    flex: 1, paddingHorizontal: 16, paddingTop: 100, backgroundColor: '#fff',
   },
   scrollContainer: {
     paddingBottom: 16,
   },
   routeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 12,
+    flexDirection: 'row', alignItems: 'center', marginBottom: 12,
   },
   toggleButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 12,
+    width: 40, height: 40, borderRadius: 20, justifyContent: 'center', alignItems: 'center', marginRight: 12,
   },
   toggleText: {
-    color: '#fff',
-    fontSize: 24,
-    fontWeight: 'bold',
+    color: '#fff', fontSize: 24, fontWeight: 'bold',
   },
   routeInfo: {
     flex: 1,
   },
   routeName: {
-    fontSize: 16,
-    fontWeight: '600',
+    fontSize: 16, fontWeight: '600',
   },
   routeDate: {
-    fontSize: 14,
-    color: '#666',
+    fontSize: 14, color: '#666',
   },
 });

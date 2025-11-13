@@ -18,6 +18,7 @@ import { initDB, insertRoute, getAllRoutes, getRouteById, deleteRoute } from './
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { NavigationContainer } from '@react-navigation/native' ; 
 import uuid from 'react-native-uuid';
+import * as Updates from 'expo-updates';
 
 type Coordinate = {
   latitude: number;
@@ -26,8 +27,11 @@ type Coordinate = {
 };
 type MarkerData = Coordinate & { tipo: 'Porcino' | 'Finferlo', name: string };
 type RouteData = {
+  name: string;
+  date: string;
   path: Coordinate[];
   markers: MarkerData[];
+  route_id?: string;
 };
 type Route = {
   route_id: string;
@@ -138,7 +142,7 @@ export default function App() {
   const [showAll, setShowAll] = React.useState(false);
   const [addedRoutes, setAddedRoutes] = React.useState<string[]>([]);
   const [routesOnMap, setRoutesOnMap] = React.useState<RouteData[]>([]);
-
+  const [highlightedRoute, setHighlightedRoute] = React.useState<string | null>(null);
 
   const followLocationRef = React.useRef(true);
   const mapRef = React.useRef<MapView>(null);
@@ -147,6 +151,39 @@ export default function App() {
   const isDark = colorScheme === 'dark';
   
   const visibleMarkers = showAll ? markers : markers.slice(0, 5);
+
+  React.useEffect(() => {
+    const checkForUpdates = async () => {
+      try {
+        const update = await Updates.checkForUpdateAsync();
+        if (update.isAvailable) {
+          // Aggiornamento disponibile, lo scarichiamo
+          await Updates.fetchUpdateAsync();
+          Alert.alert(
+            'Aggiornamento disponibile',
+            'È disponibile una nuova versione. Vuoi aggiornare ora?',
+            [
+              {
+                text: 'Più tardi',
+                style: 'cancel',
+              },
+              {
+                text: 'Aggiorna ora',
+                onPress: () => Updates.reloadAsync(),
+              },
+            ]
+          );
+        } else {
+          console.log('Nessun aggiornamento disponibile');
+        }
+      } catch (err) {
+        console.log('Errore durante il controllo update:', err);
+      }
+    };
+
+    checkForUpdates();
+  }, []);
+
 
   React.useEffect(() => {
     const setupDB = async () => {
@@ -283,6 +320,13 @@ export default function App() {
   }, [syncPathFromFile]);
 
 
+  // HIGHLIGHT ROUTE
+  const highlightRoute = (routeId: string) => {
+    setHighlightedRoute(routeId);
+    setTimeout(() => setHighlightedRoute(null), 1000); // evidenzia per 1 secondo
+  };
+
+
   // START RECORDING
   const startRecording = async () => {
       const ok = await checkAndOpenSettingsIfNeeded();
@@ -393,7 +437,7 @@ export default function App() {
         longitude: last.longitude, 
         timestamp: Date.now(), 
         tipo: tipo === 'Porcino' ? 'Porcino' : 'Finferlo', 
-        name: `${tipo}_${prev.length + 1}`
+        name: `${tipo}_${prev.filter(m => m.tipo === tipo).length + 1}`
       }]);
 
     } catch (e) {
@@ -526,8 +570,11 @@ export default function App() {
                 handleDeleteMarker = {handleDeleteMarker}
                 setShowAll = {setShowAll}
                 addedRoutes={addedRoutes}
+                setAddedRoutes={setAddedRoutes}
                 setRoutesOnMap = {setRoutesOnMap}
                 routesOnMap = {routesOnMap}
+                highlightRoute = {highlightRoute}
+                highlightedRoute = {highlightedRoute}
               />}
             options={{
               tabBarIcon: ({ focused }) => (
@@ -573,7 +620,8 @@ function MainUI(props: any) {
     path, markers, modalVisible, setModalVisible,
     fileName, setFileName, saveAndShareGPX, isDark, 
     mapRef, region, followLocationRef, showAll, visibleMarkers,
-    handleDeleteMarker, setShowAll, addedRoutes, setRoutesOnMap, routesOnMap
+    handleDeleteMarker, setShowAll, addedRoutes, setAddedRoutes, setRoutesOnMap, routesOnMap,
+    highlightRoute, highlightedRoute
   } = props;
 
 
@@ -592,8 +640,11 @@ function MainUI(props: any) {
           name: wp.name,
         }));
         const routeData: RouteData = {
+          name: route.name,
+          date: route.date,
           path: route.path,
-          markers,
+          markers: markers,
+          route_id: route.route_id,
         };
         if (route) newRoutes.push(routeData);
       }
@@ -685,17 +736,12 @@ function MainUI(props: any) {
 
         {/* Percorsi salvati */}
         {routesOnMap.map((route: RouteData, idx: number) => {
-          // Log dei path
-          console.log(`Route ${idx} path:`, route.path);
-          // Log dei marker
-          console.log(`Route ${idx} markers:`, route.markers);
-
           return (
             <React.Fragment key={idx}>
               <Polyline
                 coordinates={route.path.filter(p => p.latitude != null && p.longitude != null)}
-                strokeColor="#1e8fff91"
-                strokeWidth={1.5}
+                strokeColor={highlightedRoute === route.route_id ? '#00FFFF' : '#1e8fff91'}
+                strokeWidth={highlightedRoute === route.route_id ? 4 : 1.5}
               />
               {route.markers
                 .filter(m => m.latitude != null && m.longitude != null)
@@ -703,13 +749,13 @@ function MainUI(props: any) {
                   <Marker 
                     key={m.name} 
                     coordinate={{ latitude: m.latitude, longitude: m.longitude }} 
-                    title={m.name}
+                    title={`${route.name} (${route.date})`}
                     anchor={{ x: 0.38, y: 0.38 }}
                   >
                     <View style={{
-                      width: 20,
-                      height: 20,
-                      borderRadius: 10,
+                      width: highlightedRoute === route.route_id ? 28 : 20,
+                      height: highlightedRoute === route.route_id ? 28 : 20,
+                      borderRadius: highlightedRoute === route.route_id ? 14 : 10,
                       backgroundColor: m.tipo === 'Porcino'? '#965123bb' : '#ffd900bb',
                       borderWidth: 1,
                       borderColor: '#000',
@@ -724,32 +770,6 @@ function MainUI(props: any) {
             </React.Fragment>
           );
         })}
-        {false && routesOnMap.map((route: RouteData, idx: number) => (
-          <React.Fragment key={idx}>
-            <Polyline coordinates={route.path} strokeColor="#1e8fff91" strokeWidth={1.5} />
-            {route.markers.map(m => (
-              <Marker 
-                key={m.name} 
-                coordinate={{ latitude: m.latitude, longitude: m.longitude }} 
-                title={m.name}
-                anchor={{ x: 0.38, y: 0.38 }}>
-            <View style={{
-              width: 20,
-              height: 20,
-              borderRadius: 10,
-              backgroundColor: m.tipo === 'Porcino'? '#965123bb' : '#ffd900bb',
-              borderWidth: 1,
-              borderColor: '#000',
-              shadowColor: '#000',
-              shadowOffset: { width: 0, height: 2 },
-              shadowOpacity: 0.8,
-              shadowRadius: 4,
-              elevation: 6,
-            }} />
-              </Marker>
-            ))}
-          </React.Fragment>
-        ))}
 
       </MapView>
 
@@ -760,7 +780,7 @@ function MainUI(props: any) {
       <Animated.View style={[
         {
           position: 'absolute',
-          bottom: 25,    // distanza dal fondo
+          bottom: 15,    // distanza dal fondo
           left: 0,
           right: 0,
           alignItems: 'center',
@@ -833,7 +853,7 @@ function MainUI(props: any) {
       {recording && markers.length > 0 &&
         <View style={{
           position: 'absolute',
-          top: 120, right: 10,
+          top: 120, right: 6,
           backgroundColor: 'rgba(255,255,255,0.9)',
           borderRadius: 12,
           padding: 8,
@@ -890,12 +910,125 @@ function MainUI(props: any) {
         </View>
       }
 
+      {/* Overlay lista percorsi caricati dall'archivio */}
+      {routesOnMap.length > 0 && (
+        <View
+          style={{
+            position: 'absolute',
+            top: 120,
+            left: 6,
+            backgroundColor: 'rgba(255,255,255,0.9)',
+            borderRadius: 12,
+            padding: 8,
+            maxHeight: 300,
+            width: 180,
+            shadowColor: '#000000ff',
+            shadowOpacity: 0.1,
+            shadowRadius: 3,
+          }}
+        >
+          <Text style={{ fontSize: 15, fontWeight: 'bold', marginBottom: 4 }}>
+            Percorsi in mappa ({routesOnMap.length})
+          </Text>
+
+          <ScrollView>
+            {routesOnMap.map((route, idx) => (
+              <View
+                key={idx}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  marginBottom: 4,
+                }}
+              >
+                <View
+                  style={{
+                    width: 16,
+                    height: 16,
+                    borderRadius: 8,
+                    backgroundColor: '#1e8fff',
+                    borderWidth: 1,
+                    borderColor: '#2e2e2e',
+                    marginRight: 8,
+                    shadowColor: '#000',
+                    shadowOffset: { width: 0, height: 1 },
+                    shadowOpacity: 0.3,
+                    shadowRadius: 2,
+                    elevation: 2,
+                  }}
+                />
+                <TouchableOpacity 
+                  style={{ flex: 1 }}
+                  onPress={() => {
+                    const coordinates = route.path.filter(p => p.latitude && p.longitude);
+                    if (coordinates.length === 0 || !mapRef.current) return;
+
+                    const lats = coordinates.map(c => c.latitude);
+                    const lons = coordinates.map(c => c.longitude);
+                    const minLat = Math.min(...lats);
+                    const maxLat = Math.max(...lats);
+                    const minLon = Math.min(...lons);
+                    const maxLon = Math.max(...lons);
+
+                    const center = {
+                      latitude: (minLat + maxLat) / 2,
+                      longitude: (minLon + maxLon) / 2,
+                    };
+
+                    mapRef.current.animateToRegion(
+                      {
+                        ...center,
+                        latitudeDelta: (maxLat - minLat) * 1.5 || 0.005,
+                        longitudeDelta: (maxLon - minLon) * 1.5 || 0.005,
+                      },
+                      1000
+                    );
+
+                    highlightRoute(route.route_id);
+                  }}
+                  >
+                  <Text
+                    style={{ fontSize: 12 }}
+                    numberOfLines={1}
+                    ellipsizeMode="tail"
+                  >
+                    {route.name}
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={() => {
+                    Alert.alert(
+                      'Conferma rimozione',
+                      'Vuoi rimuovere questa rotta dalla mappa?',
+                      [
+                        { text: 'Annulla', style: 'cancel' },
+                        {
+                          text: 'Rimuovi',
+                          style: 'destructive',
+                          onPress: () => {
+                            setAddedRoutes(prev => prev.filter(r => r !== route.route_id));
+                          },
+                        },
+                      ]
+                    );
+                  }}
+                >
+                  <Text style={{ color: 'red', fontSize: 14 }}>✕</Text>
+                </TouchableOpacity>
+              </View>
+            ))}
+          </ScrollView>
+        </View>
+      )}
+
       {recording && (
         <View style={[
           styles.stats,
           {
             position: 'absolute',
-            bottom: 170,    // distanza dal fondo
+            bottom: 155,    // distanza dal fondo
             left: 0,
             right: 0,
             alignItems: 'center',
@@ -1121,14 +1254,14 @@ const styles = StyleSheet.create({
   modalContent: { backgroundColor: 'white', padding: 20, borderRadius: 10, width: '80%' },
   input: { borderWidth: 1, borderColor: '#ccc', padding: 10, marginVertical: 10, borderRadius: 5 },
   bigButton: { width: 290, paddingVertical: 15, borderRadius: 10, marginVertical: 8, alignItems: 'center', backgroundColor: '#4CAF50' },
-  smallButton: { width: 140, paddingVertical: 15, borderRadius: 10, marginVertical: 8, alignItems: 'center', backgroundColor: '#4CAF50' },
+  smallButton: { width: 140, paddingVertical: 12, borderRadius: 10, marginVertical: 8, alignItems: 'center', backgroundColor: '#4CAF50' },
   startButton: { backgroundColor: '#4CAF50' },
   stopButton: { backgroundColor: '#F44336' },
   markerButton: { backgroundColor: '#2196F3' },
   buttonText: { color: 'white', fontSize: 18, fontWeight: 'bold' },
   stats: { position: 'absolute', bottom: 10, alignItems: 'center' },
   centerButton: {
-    position: 'absolute', bottom: 200, left: 30, width: 50, height: 50, borderRadius: 25,
+    position: 'absolute', bottom: 190, left: 30, width: 50, height: 50, borderRadius: 25,
     backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'center', alignItems: 'center',
 },
 });

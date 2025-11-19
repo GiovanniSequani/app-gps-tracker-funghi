@@ -1,6 +1,3 @@
-// App.tsx — versione corretta per background tracking (Android)
-// Note: richiede `expo install expo-task-manager expo-location expo-file-system expo-sharing`
-
 import React from 'react';
 import {
   StyleSheet, Text, View, Button, useColorScheme, Alert, TextInput, Modal, Linking,
@@ -136,7 +133,7 @@ export default function App() {
   const [recording, setRecording] = React.useState(false);
   const [path, setPath] = React.useState<Coordinate[]>([]);
   const [markers, setMarkers] = React.useState<MarkerData[]>([]);
-  const [modalVisible, setModalVisible] = React.useState(false);
+  const [saveVisible, setSaveVisible] = React.useState(false);
   const [fileName, setFileName] = React.useState('percorso');
   const [region, setRegion] = React.useState<Region | null>(null);
   const [showAll, setShowAll] = React.useState(false);
@@ -397,8 +394,8 @@ export default function App() {
     }
 
     Alert.alert(
-      'Salvare GPX?',
-      'Vuoi salvare il percorso registrato come file GPX?',
+      'Salva',
+      'Vuoi salvare il percorso registrato?',
       [
         { text: 'No', style: 'cancel' },
         { text: 'Sì', onPress: async () => {
@@ -410,8 +407,6 @@ export default function App() {
             console.error('Errore salvataggio percorso:', err);
             Alert.alert('Errore', 'Impossibile salvare il percorso nel database.');
           }
-
-          setModalVisible(true);
         }, },
       ]
     );
@@ -472,16 +467,31 @@ export default function App() {
 
 
   // SAVE AND SHARE GPX
-  const saveAndShareGPX = async () => {
+  const handleShare = async (route_id: string) => {
     try {
       // aggiorna path con i punti scritti in background (ma non consumare file qui)
-      const updatedPath = await syncPathFromFile(true) ?? path;
+      const route = await getRouteById(route_id) as Route & { waypoints: Waypoint[] };
 
-      console.log("updatedPath completo:", updatedPath);
-      console.log("updatedPath length:", updatedPath.length);
-      console.log(updatedPath.map(p => p.timestamp));
+      const markers: MarkerData[] = route.waypoints.map(wp => ({
+        latitude: wp.lat,
+        longitude: wp.lon,
+        timestamp: wp.timestamp,
+        tipo: wp.type as 'Porcino' | 'Finferlo',
+        name: wp.name,
+      }));
+      const routeData: RouteData = {
+        name: route.name,
+        date: route.date,
+        path: route.path,
+        markers: markers,
+        route_id: route.route_id,
+      };
+
+      console.log("updatedPath completo:", routeData.path);
+      console.log("updatedPath length:", routeData.path.length);
+      console.log(routeData.path.map(p => p.timestamp));
       
-      const gpxData = generateGPX(updatedPath, markers);
+      const gpxData = generateGPX(routeData.path, routeData.markers);
       let uri: string | undefined;
 
       try {
@@ -517,7 +527,7 @@ export default function App() {
       console.error('saveAndShareGPX errore', error);
       Alert.alert('Errore durante il salvataggio o condivisione', error?.message ?? String(error));
     } finally {
-      setModalVisible(false);
+      setSaveVisible(false);
       setFileName('percorso');
     }
   };
@@ -556,11 +566,6 @@ export default function App() {
                 addMarker={addMarker}
                 path={path}
                 markers={markers}
-                modalVisible={modalVisible}
-                setModalVisible={setModalVisible}
-                fileName={fileName}
-                setFileName={setFileName}
-                saveAndShareGPX={saveAndShareGPX}
                 isDark={isDark}
                 mapRef={mapRef}
                 region={region}
@@ -592,7 +597,16 @@ export default function App() {
           />
           <Tab.Screen
             name="Archivio"
-            children={() => <ManageRoutesScreen addedRoutes={addedRoutes} setAddedRoutes={setAddedRoutes} />}
+            children={() => 
+            <ManageRoutesScreen 
+              addedRoutes={addedRoutes} 
+              setAddedRoutes={setAddedRoutes}
+              handleShare={handleShare}
+              saveVisible={saveVisible}
+              setSaveVisible={setSaveVisible}
+              fileName={fileName}
+              setFileName={setFileName}
+            />}
             options={{
               tabBarIcon: ({ focused }) => (
                 <Text
@@ -617,9 +631,7 @@ export default function App() {
 function MainUI(props: any) {
   const {
     recording, startRecording, stopRecording, addMarker,
-    path, markers, modalVisible, setModalVisible,
-    fileName, setFileName, saveAndShareGPX, isDark, 
-    mapRef, region, followLocationRef, showAll, visibleMarkers,
+    path, markers, isDark, mapRef, region, followLocationRef, showAll, visibleMarkers,
     handleDeleteMarker, setShowAll, addedRoutes, setAddedRoutes, setRoutesOnMap, routesOnMap,
     highlightRoute, highlightedRoute
   } = props;
@@ -656,6 +668,31 @@ function MainUI(props: any) {
   }, [addedRoutes]);
 
 
+  const pulseValue = React.useRef(new Animated.Value(0)).current;
+  const currentHighlightedRoute = React.useRef<string | null>(null);
+
+  const triggerPulse = (route_id: string) => {
+    pulseValue.setValue(0);
+    currentHighlightedRoute.current = route_id;
+
+    Animated.timing(pulseValue, {
+      toValue: 1,
+      duration: 500,
+      useNativeDriver: false,
+    }).start(() => {
+      Animated.timing(pulseValue, {
+        toValue: 0,
+        duration: 500,
+        useNativeDriver: false,
+      }).start();
+    });
+  };
+
+  // Colore della luce: da trasparente → giallo → trasparente
+  const rowBackgroundColor = pulseValue.interpolate({
+    inputRange: [0, 1],
+    outputRange: ["transparent", "rgba(255, 255, 0, 0.3)"],
+  });
 
 
 
@@ -740,7 +777,7 @@ function MainUI(props: any) {
             <React.Fragment key={idx}>
               <Polyline
                 coordinates={route.path.filter(p => p.latitude != null && p.longitude != null)}
-                strokeColor={highlightedRoute === route.route_id ? '#00FFFF' : '#1e8fff91'}
+                strokeColor={highlightedRoute === route.route_id ? '#003cffff' : '#1e8fff91'}
                 strokeWidth={highlightedRoute === route.route_id ? 4 : 1.5}
               />
               {route.markers
@@ -942,60 +979,58 @@ function MainUI(props: any) {
                   marginBottom: 4,
                 }}
               >
-                <View
-                  style={{
-                    width: 16,
-                    height: 16,
-                    borderRadius: 8,
-                    backgroundColor: '#1e8fff',
-                    borderWidth: 1,
-                    borderColor: '#2e2e2e',
-                    marginRight: 8,
-                    shadowColor: '#000',
-                    shadowOffset: { width: 0, height: 1 },
-                    shadowOpacity: 0.3,
-                    shadowRadius: 2,
-                    elevation: 2,
-                  }}
-                />
-                <TouchableOpacity 
-                  style={{ flex: 1 }}
-                  onPress={() => {
-                    const coordinates = route.path.filter(p => p.latitude && p.longitude);
-                    if (coordinates.length === 0 || !mapRef.current) return;
+                <Animated.View style={{ backgroundColor: currentHighlightedRoute.current == route.route_id ? rowBackgroundColor : 'transparent', borderRadius: 8 }}>
+                  <TouchableOpacity 
+                    style={{ flex: 1, flexDirection: "row", alignItems: "center", padding: 3 }}
+                    onPress={() => {
+                      triggerPulse(route.route_id);
+                      const coordinates = route.path.filter(p => p.latitude && p.longitude);
+                      if (coordinates.length === 0 || !mapRef.current) return;
 
-                    const lats = coordinates.map(c => c.latitude);
-                    const lons = coordinates.map(c => c.longitude);
-                    const minLat = Math.min(...lats);
-                    const maxLat = Math.max(...lats);
-                    const minLon = Math.min(...lons);
-                    const maxLon = Math.max(...lons);
+                      const lats = coordinates.map(c => c.latitude);
+                      const lons = coordinates.map(c => c.longitude);
+                      const minLat = Math.min(...lats);
+                      const maxLat = Math.max(...lats);
+                      const minLon = Math.min(...lons);
+                      const maxLon = Math.max(...lons);
 
-                    const center = {
-                      latitude: (minLat + maxLat) / 2,
-                      longitude: (minLon + maxLon) / 2,
-                    };
+                      const center = {
+                        latitude: (minLat + maxLat) / 2,
+                        longitude: (minLon + maxLon) / 2,
+                      };
 
-                    mapRef.current.animateToRegion(
-                      {
-                        ...center,
-                        latitudeDelta: (maxLat - minLat) * 1.5 || 0.005,
-                        longitudeDelta: (maxLon - minLon) * 1.5 || 0.005,
-                      },
-                      1000
-                    );
+                      mapRef.current.animateToRegion(
+                        {
+                          ...center,
+                          latitudeDelta: (maxLat - minLat) * 1.5 || 0.005,
+                          longitudeDelta: (maxLon - minLon) * 1.5 || 0.005,
+                        },
+                        1000
+                      );
 
-                    highlightRoute(route.route_id);
-                  }}
-                  >
-                  <Text
-                    style={{ fontSize: 12 }}
-                    numberOfLines={1}
-                    ellipsizeMode="tail"
-                  >
-                    {route.name}
-                  </Text>
-                </TouchableOpacity>
+                      highlightRoute(route.route_id);
+                    }}
+                    >
+                    <View
+                      style={{
+                        width: 15,
+                        height: 3,
+                        borderRadius: 1,
+                        backgroundColor: '#1e8fff',
+                        borderWidth: 0.4,
+                        borderColor: '#0065caff',
+                        marginRight: 8
+                      }}
+                    />
+                    <Text
+                      style={{ fontSize: 12 }}
+                      numberOfLines={1}
+                      ellipsizeMode="tail"
+                    >
+                      {route.name}
+                    </Text>
+                  </TouchableOpacity>
+                </Animated.View>
 
                 <TouchableOpacity
                   onPress={() => {
@@ -1037,31 +1072,14 @@ function MainUI(props: any) {
           <Text style={{ color: isDark ? '#ffffff' : '#000000' }}>Porcini: {markers.filter(m => m.tipo === 'Porcino').length} - Finferli: {markers.filter(m => m.tipo === 'Finferlo').length}</Text>
         </View>
       )}
-
-      <Modal visible={modalVisible} transparent animationType="slide">
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text>Inserisci nome file GPX:</Text>
-            <TextInput
-              style={styles.input}
-              value={fileName}
-              onChangeText={setFileName}
-              placeholder="Nome file"
-              autoFocus
-            />
-            <Button title="Salva e Condividi" onPress={saveAndShareGPX} />
-            <Button title="Annulla" onPress={() => setModalVisible(false)} />
-          </View>
-        </View>
-      </Modal>
-      {/*</View>*/}
     </SafeAreaView>
   );
 }
 
 
 function ManageRoutesScreen(props: any) {
-  const { addedRoutes, setAddedRoutes } = props;
+  const { addedRoutes, setAddedRoutes, handleShare, saveVisible, setSaveVisible,
+    fileName, setFileName, saveAndShareGPX } = props;
 
   const [routes, setRoutes] = React.useState<any[]>([]);
   const [refreshing, setRefreshing] = React.useState(false);
@@ -1223,6 +1241,13 @@ function ManageRoutesScreen(props: any) {
             </Text>
             <TouchableOpacity onPress={() => {
               if (addedRoutes.includes(selectedRoute?.route_id)) {toggleRoute(selectedRoute?.route_id)};
+              handleShare(selectedRoute.route_id);}}>
+              <Text style={{ fontSize: 16, color: '#007AFF', marginVertical: 8 }}>
+                Condividi
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => {
+              if (addedRoutes.includes(selectedRoute?.route_id)) {toggleRoute(selectedRoute?.route_id)};
               handleDelete();}}>
               <Text style={{ fontSize: 16, color: 'red', marginVertical: 8 }}>
                 Elimina da archivio
@@ -1236,6 +1261,24 @@ function ManageRoutesScreen(props: any) {
           </View>
         </TouchableOpacity>
       </Modal>
+
+      <Modal visible={saveVisible} transparent animationType="slide">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text>Inserisci nome file GPX:</Text>
+            <TextInput
+              style={styles.input}
+              value={fileName}
+              onChangeText={setFileName}
+              placeholder="Nome file"
+              autoFocus
+            />
+            <Button title="Salva e Condividi" onPress={saveAndShareGPX} />
+            <Button title="Annulla" onPress={() => setSaveVisible(false)} />
+          </View>
+        </View>
+      </Modal>
+      
     </SafeAreaView>
   );
   }

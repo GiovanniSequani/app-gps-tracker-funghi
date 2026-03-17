@@ -48,7 +48,7 @@ import type { ActiveLayer } from './IndiceScreen';
 // ─── Parametri globali ────────────────────────────────────────────────────────
 
 /** Numero massimo di poligoni renderizzati contemporaneamente */
-const MAX_POLYGONS = 300;
+const MAX_POLYGONS = 500;
 
 /**
  * Livelli LOD — ordine: dal più dettagliato (step piccolo) al più grossolano.
@@ -56,13 +56,13 @@ const MAX_POLYGONS = 300;
  * L'ultimo livello (maxLatDelta: Infinity) è il fallback per zoom molto out.
  */
 const LOD_LEVELS: Array<{ maxLatDelta: number; step: number; label: string }> = [
-  { maxLatDelta: 0.005,  step: 0.000225, label: '25m'   },
-  { maxLatDelta: 0.015,  step: 0.001,    label: '111m'  },
-  { maxLatDelta: 0.05,   step: 0.003,    label: '333m'  },
-  { maxLatDelta: 0.15,   step: 0.008,    label: '890m'  },
-  { maxLatDelta: 0.40,   step: 0.02,     label: '2.2km' },
-  { maxLatDelta: 1.0,    step: 0.05,     label: '5.5km' },
-  { maxLatDelta: Infinity, step: 0.12,   label: '13km'  },
+  { maxLatDelta: 0.005,  step: 0.00025, label: '25m'   },
+  { maxLatDelta: 0.015,  step: 0.00100,    label: '111m'  },
+  { maxLatDelta: 0.05,   step: 0.00300,    label: '333m'  },
+  { maxLatDelta: 0.15,   step: 0.00800,    label: '890m'  },
+  { maxLatDelta: 0.40,   step: 0.02000,     label: '2.2km' },
+  { maxLatDelta: 1.0,    step: 0.05000,     label: '5.5km' },
+  { maxLatDelta: Infinity, step: 0.12000,   label: '13km'  },
 ];
 
 // ─── Area di copertura ────────────────────────────────────────────────────────

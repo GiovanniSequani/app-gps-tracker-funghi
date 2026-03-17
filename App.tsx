@@ -16,7 +16,8 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { NavigationContainer } from '@react-navigation/native';
 import uuid from 'react-native-uuid';
 import * as Updates from 'expo-updates';
-import IndiceScreen from './IndiceScreen';
+import IndiceScreen, { ActiveLayer } from './IndiceScreen';
+import { IndiceLayerWebView } from './IndiceLayers';
 
 // ─── Tipi (IDENTICI ALL'ORIGINALE) ────────────────────────────────────────────
 type Coordinate = {
@@ -157,6 +158,8 @@ export default function App() {
   const [addedRoutes, setAddedRoutes] = React.useState<string[]>([]);
   const [routesOnMap, setRoutesOnMap] = React.useState<RouteData[]>([]);
   const [highlightedRoute, setHighlightedRoute] = React.useState<string | null>(null);
+  const [activeLayer, setActiveLayer] = React.useState<ActiveLayer>('off');
+  const [currentRegion, setCurrentRegion] = React.useState<Region | null>(null);
 
   const followLocationRef = React.useRef(true);
   const mapRef = React.useRef<MapView>(null);
@@ -528,6 +531,8 @@ export default function App() {
                 routesOnMap={routesOnMap}
                 highlightRoute={highlightRoute}
                 highlightedRoute={highlightedRoute}
+                activeLayer={activeLayer}
+                onRegionChange={setCurrentRegion}
               />}
             options={{
               tabBarIcon: ({ color }) => (
@@ -536,6 +541,7 @@ export default function App() {
               tabBarLabel: 'Mappa',
             }}
           />
+
           <Tab.Screen
             name="Archivio"
             children={() =>
@@ -555,9 +561,14 @@ export default function App() {
               tabBarLabel: 'Archivio',
             }}
           />
+
           <Tab.Screen
             name="Indice"
-            component={IndiceScreen}
+            children={() =>
+              <IndiceScreen
+                activeLayer={activeLayer}
+                setActiveLayer={setActiveLayer}
+              />}
             options={{
               tabBarIcon: ({ color }) => (
                 <Text style={{ fontSize: 20, color }}>🍄</Text>
@@ -579,8 +590,11 @@ function MainUI(props: any) {
     recording, startRecording, stopRecording, addMarker,
     path, markers, isDark, mapRef, region, followLocationRef, showAll, visibleMarkers,
     handleDeleteMarker, setShowAll, addedRoutes, setAddedRoutes, setRoutesOnMap, routesOnMap,
-    highlightRoute, highlightedRoute
+    highlightRoute, highlightedRoute, activeLayer, onRegionChange,
   } = props;
+
+  // Stato locale per la regione corrente (per sincronizzare la WebView)
+  const [currentRegion, setCurrentRegion] = React.useState<Region | null>(null);
 
   // fetchRoutes (IDENTICO)
   React.useEffect(() => {
@@ -659,6 +673,10 @@ function MainUI(props: any) {
         initialRegion={region || { latitude: 45.4384, longitude: 10.9916, latitudeDelta: 0.001, longitudeDelta: 0.001 }}
         mapType="satellite"
         onPanDrag={() => { followLocationRef.current = false; }}
+        onRegionChangeComplete={(r) => {   // ← AGGIUNTA
+          setCurrentRegion(r);
+          onRegionChange?.(r);
+        }}
       >
         {/* Posizione corrente - cerchio GPS */}
         {(path.length < 1 && region) && (
@@ -739,6 +757,12 @@ function MainUI(props: any) {
           </React.Fragment>
         ))}
       </MapView>
+
+      <IndiceLayerWebView
+        activeLayer={activeLayer}
+        region={currentRegion}
+      />
+      <View style={mStyles.headerPill} pointerEvents="none"></View>
 
       {/* ── HEADER PILL (titolo + indicatore REC) ─────────────────────── */}
       <View style={mStyles.headerPill} pointerEvents="none">

@@ -16,6 +16,7 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { NavigationContainer } from '@react-navigation/native';
 import uuid from 'react-native-uuid';
 import * as Updates from 'expo-updates';
+import IndiceScreen from './IndiceScreen';
 
 // ─── Tipi (IDENTICI ALL'ORIGINALE) ────────────────────────────────────────────
 type Coordinate = {
@@ -552,6 +553,16 @@ export default function App() {
                 <Text style={{ fontSize: 20, color }}>📂</Text>
               ),
               tabBarLabel: 'Archivio',
+            }}
+          />
+          <Tab.Screen
+            name="Indice"
+            component={IndiceScreen}
+            options={{
+              tabBarIcon: ({ color }) => (
+                <Text style={{ fontSize: 20, color }}>🍄</Text>
+              ),
+              tabBarLabel: 'Indice',
             }}
           />
         </Tab.Navigator>

@@ -17,7 +17,7 @@ import { NavigationContainer } from '@react-navigation/native';
 import uuid from 'react-native-uuid';
 import * as Updates from 'expo-updates';
 import IndiceScreen, { ActiveLayer } from './IndiceScreen';
-import { IndiceLayerWebView } from './IndiceLayers';
+import { IndiceLayerPolygons } from './IndiceLayers';
 
 // ─── Tipi (IDENTICI ALL'ORIGINALE) ────────────────────────────────────────────
 type Coordinate = {
@@ -678,6 +678,8 @@ function MainUI(props: any) {
           onRegionChange?.(r);
         }}
       >
+        <IndiceLayerPolygons activeLayer={activeLayer} region={currentRegion} />
+
         {/* Posizione corrente - cerchio GPS */}
         {(path.length < 1 && region) && (
           <Circle
@@ -758,11 +760,6 @@ function MainUI(props: any) {
         ))}
       </MapView>
 
-      <IndiceLayerWebView
-        activeLayer={activeLayer}
-        region={currentRegion}
-      />
-      <View style={mStyles.headerPill} pointerEvents="none"></View>
 
       {/* ── HEADER PILL (titolo + indicatore REC) ─────────────────────── */}
       <View style={mStyles.headerPill} pointerEvents="none">

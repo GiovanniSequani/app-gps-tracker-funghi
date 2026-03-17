@@ -1,58 +1,84 @@
 /**
- * IndiceLayers.tsx
+ * IndiceLayers.tsx  — v4
  *
- * WebView trasparente sovrapposta a react-native-maps che mostra
- * il layer dell'indice funghi (porcini o finferli).
+ * Layer indice funghi su react-native-maps con:
+ *  - LOD adattivo: celle più piccole a zoom in, più grandi a zoom out
+ *  - Cap hard a MAX_POLYGONS poligoni visibili contemporaneamente
+ *  - Risoluzione massima ~25m (step 0.000225°) a zoom altissimo
+ *  - Cache pre-calcolata per livello LOD (build lazy al primo uso)
  *
- * Logica:
- *  • Montata lazy al primo attivazione del layer, poi rimane viva
- *  • Visibile solo se activeLayer !== 'off'
- *  • Riceve la regione corrente via postMessage e aggiorna il viewport Leaflet
- *  • pointer-events: none tranne al tap su una cella (popup info)
+ * ─── COME MODIFICARE LE SOGLIE ───────────────────────────────────────────────
  *
- * Utilizzo in MainUI:
+ * Tutto si controlla con due costanti:
  *
- *   import { IndiceLayerWebView } from './IndiceLayers';
+ * 1. MAX_POLYGONS (riga ~30)
+ *    Numero massimo di poligoni renderizzati contemporaneamente.
+ *    Aumenta se il dispositivo regge, diminuisci se lag persiste.
+ *    Default: 150
  *
- *   // Nella MapView, aggiungi onRegionChangeComplete:
- *   <MapView
- *     ...
- *     onRegionChangeComplete={(r) => setCurrentRegion(r)}
- *   >
- *     ...
- *   </MapView>
+ * 2. LOD_LEVELS (riga ~40)
+ *    Array di livelli LOD, dal più dettagliato al più grossolano.
+ *    Ogni livello ha:
+ *      maxLatDelta : latitudeDelta massimo per cui questo livello è attivo
+ *                    (se la mappa mostra meno di questo → usa questo step)
+ *      step        : dimensione cella in gradi (lat ≈ lon a queste latitudini)
+ *      label       : stringa descrittiva (solo per debug)
  *
- *   // Dopo la MapView, sovrapposto:
- *   <IndiceLayerWebView
- *     activeLayer={activeLayer}
- *     region={currentRegion}
- *   />
+ *    Esempi di conversione step → dimensione reale a lat 46°N:
+ *      0.000225° ≈  25 m   (massima risoluzione)
+ *      0.001°    ≈ 111 m
+ *      0.003°    ≈ 333 m
+ *      0.008°    ≈ 890 m
+ *      0.02°     ≈ 2.2 km
+ *      0.05°     ≈ 5.5 km
+ *      0.12°     ≈  13 km  (minima risoluzione)
+ *
+ *    Per aggiungere un livello: inserisci un nuovo oggetto nell'array
+ *    mantenendo l'ordine crescente di maxLatDelta.
+ *    Per rimuovere un livello: elimina la riga corrispondente.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 
 import React from 'react';
-import { View, StyleSheet } from 'react-native';
-import { WebView } from 'react-native-webview';
+import { Polygon } from 'react-native-maps';
 import type { Region } from 'react-native-maps';
 import type { ActiveLayer } from './IndiceScreen';
 
-// ─── URL tile Supabase (da sostituire quando Python è pronto) ─────────────────
-// Formato: https://<project>.supabase.co/storage/v1/object/public/tiles/{specie}/{z}/{x}/{y}.png
-const TILE_URLS: Record<'porcini' | 'finferli', string> = {
-  porcini:  'PLACEHOLDER_PORCINI',
-  finferli: 'PLACEHOLDER_FINFERLI',
-};
+// ─── Parametri globali ────────────────────────────────────────────────────────
 
-// ─── Hotspot placeholder per area Trentino + Alpi Venete ─────────────────────
+/** Numero massimo di poligoni renderizzati contemporaneamente */
+const MAX_POLYGONS = 300;
+
+/**
+ * Livelli LOD — ordine: dal più dettagliato (step piccolo) al più grossolano.
+ * maxLatDelta: se region.latitudeDelta < questo valore, usa questo livello.
+ * L'ultimo livello (maxLatDelta: Infinity) è il fallback per zoom molto out.
+ */
+const LOD_LEVELS: Array<{ maxLatDelta: number; step: number; label: string }> = [
+  { maxLatDelta: 0.005,  step: 0.000225, label: '25m'   },
+  { maxLatDelta: 0.015,  step: 0.001,    label: '111m'  },
+  { maxLatDelta: 0.05,   step: 0.003,    label: '333m'  },
+  { maxLatDelta: 0.15,   step: 0.008,    label: '890m'  },
+  { maxLatDelta: 0.40,   step: 0.02,     label: '2.2km' },
+  { maxLatDelta: 1.0,    step: 0.05,     label: '5.5km' },
+  { maxLatDelta: Infinity, step: 0.12,   label: '13km'  },
+];
+
+// ─── Area di copertura ────────────────────────────────────────────────────────
+const COVERAGE = { south: 45.6, north: 47.1, west: 10.4, east: 12.5 };
+
+// ─── Hotspot placeholder ──────────────────────────────────────────────────────
 const HOTSPOTS: Record<'porcini' | 'finferli', Array<{ lat: number; lon: number; r: number; strength: number }>> = {
   porcini: [
-    { lat: 46.12, lon: 11.05, r: 0.35, strength: 95 }, // Adamello
-    { lat: 46.45, lon: 11.85, r: 0.30, strength: 90 }, // Lagorai
-    { lat: 46.25, lon: 10.85, r: 0.28, strength: 85 }, // Val di Sole
-    { lat: 46.20, lon: 12.10, r: 0.32, strength: 88 }, // Bellunesi N
-    { lat: 46.55, lon: 11.35, r: 0.25, strength: 82 }, // Alto Adige S
-    { lat: 46.08, lon: 11.40, r: 0.22, strength: 78 }, // Altopiani
-    { lat: 46.38, lon: 12.55, r: 0.20, strength: 75 }, // Comelico
-    { lat: 46.70, lon: 10.95, r: 0.28, strength: 80 }, // Val Venosta
+    { lat: 46.12, lon: 11.05, r: 0.35, strength: 95 },
+    { lat: 46.45, lon: 11.85, r: 0.30, strength: 90 },
+    { lat: 46.25, lon: 10.85, r: 0.28, strength: 85 },
+    { lat: 46.20, lon: 12.10, r: 0.32, strength: 88 },
+    { lat: 46.55, lon: 11.35, r: 0.25, strength: 82 },
+    { lat: 46.08, lon: 11.40, r: 0.22, strength: 78 },
+    { lat: 46.38, lon: 12.55, r: 0.20, strength: 75 },
+    { lat: 46.70, lon: 10.95, r: 0.28, strength: 80 },
   ],
   finferli: [
     { lat: 46.05, lon: 11.10, r: 0.40, strength: 92 },
@@ -66,178 +92,166 @@ const HOTSPOTS: Record<'porcini' | 'finferli', Array<{ lat: number; lon: number;
   ],
 };
 
-// ─── HTML Leaflet (sfondo trasparente, solo celle) ────────────────────────────
-function buildHTML(species: 'porcini' | 'finferli'): string {
-  const isPorcini = species === 'porcini';
-  const hotspots = JSON.stringify(HOTSPOTS[species]);
+// ─── Tipi ─────────────────────────────────────────────────────────────────────
+type Cell = { key: string; lat: number; lon: number; score: number };
+type CacheKey = string; // `${species}_${step}`
 
-  return `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <style>
-    * { margin:0; padding:0; box-sizing:border-box; }
-    html, body { width:100%; height:100%; background:transparent; }
-    #map { width:100%; height:100%; background:transparent; }
-    .leaflet-container { background: transparent !important; }
-    .leaflet-control-zoom, .leaflet-control-attribution { display:none !important; }
-    .leaflet-popup-content-wrapper {
-      background:#111a12; border:1px solid #2d4030; border-radius:10px;
-      color:#dde8cc; box-shadow:0 4px 20px rgba(0,0,0,0.7);
+// ─── Cache globale (sopravvive ai re-render) ──────────────────────────────────
+// Le celle vengono calcolate una volta per (specie, step) e riutilizzate.
+const CELL_CACHE = new Map<CacheKey, Cell[]>();
+
+// ─── PRNG deterministico ──────────────────────────────────────────────────────
+function makePRNG(speciesSeed: number) {
+  let s = speciesSeed;
+  return () => {
+    s = (s * 16807) % 2147483647;
+    return (s - 1) / 2147483646;
+  };
+}
+
+// ─── Calcola score per una singola cella ──────────────────────────────────────
+function calcScore(
+  lat: number,
+  lon: number,
+  hotspots: typeof HOTSPOTS['porcini'],
+  rand: () => number,
+): number {
+  let score = 0;
+  for (const h of hotspots) {
+    const dlat = lat - h.lat;
+    const dlon = lon - h.lon;
+    score += h.strength * Math.exp(-(dlat * dlat + dlon * dlon) / (2 * h.r * h.r));
+  }
+  return Math.min(100, Math.max(0, score + (rand() - 0.5) * 15));
+}
+
+// ─── Costruisce (o recupera dalla cache) le celle per (specie, step) ──────────
+function getCells(species: 'porcini' | 'finferli', step: number): Cell[] {
+  const key: CacheKey = `${species}_${step}`;
+  if (CELL_CACHE.has(key)) return CELL_CACHE.get(key)!;
+
+  const hotspots = HOTSPOTS[species];
+  const rand = makePRNG(species === 'porcini' ? 42 : 137);
+  const cells: Cell[] = [];
+  const { south, north, west, east } = COVERAGE;
+
+  // Per step molto piccoli (25m) costruiamo la griglia solo su richiesta
+  // ma NON su tutta l'area — sarebbe troppo. La griglia fine viene
+  // costruita "lazy per tile" in getVisibleCells() sotto.
+  // Per step >= 0.003 costruiamo tutta l'area (max ~50k celle, gestibile).
+  if (step >= 0.003) {
+    for (let lat = south; lat < north; lat += step) {
+      for (let lon = west; lon < east; lon += step) {
+        const score = calcScore(lat, lon, hotspots, rand);
+        if (score < 8) continue;
+        const latR = Math.round(lat / step) * step;
+        const lonR = Math.round(lon / step) * step;
+        cells.push({ key: `${latR.toFixed(6)}_${lonR.toFixed(6)}`, lat: latR, lon: lonR, score: Math.round(score) });
+      }
     }
-    .leaflet-popup-tip { background:#111a12; }
-    .leaflet-popup-content { margin:12px 14px; font-family:monospace; font-size:12px; }
-    .ptitle { font-size:13px; font-weight:700; letter-spacing:1px; margin-bottom:6px; }
-    .pscore { font-size:22px; font-weight:900; margin:6px 0 4px; }
-    .pbar-wrap { background:#0a110b; border-radius:4px; height:6px; overflow:hidden; }
-    .pbar { height:100%; border-radius:4px; }
-    .prow { font-size:11px; color:#8ba67a; margin:3px 0; }
-    .prow span { color:#dde8cc; font-weight:600; }
-    .pnote { font-size:9px; color:#4d6352; margin-top:8px; }
-  </style>
-</head>
-<body>
-<div id="map"></div>
-<script>
-  var map = L.map('map', {
-    center:[46.35,11.45], zoom:9,
-    zoomControl:false, attributionControl:false,
-    minZoom:7, maxZoom:14,
-  });
+    CELL_CACHE.set(key, cells);
+  }
+  // Per step < 0.003 (alta risoluzione) non pre-calcoliamo tutta l'area:
+  // getCells restituisce [] e getVisibleCells calcola al volo solo il viewport.
+  return cells;
+}
 
-  // Sfondo trasparente: no tile layer base
-  // Se i tile reali sono disponibili, aggiungili qui:
-  // L.tileLayer('${TILE_URLS[species]}', { opacity:0.75, tms:false }).addTo(map);
+// ─── Filtra/calcola le celle visibili nel viewport ────────────────────────────
+function getVisibleCells(
+  species: 'porcini' | 'finferli',
+  step: number,
+  region: Region,
+): Cell[] {
+  const margin = step * 1.5;
+  const vSouth = region.latitude  - region.latitudeDelta  / 2 - margin;
+  const vNorth = region.latitude  + region.latitudeDelta  / 2 + margin;
+  const vWest  = region.longitude - region.longitudeDelta / 2 - margin;
+  const vEast  = region.longitude + region.longitudeDelta / 2 + margin;
 
-  var species = '${species}';
-  var isPorcini = ${isPorcini};
-  var hotspots = ${hotspots};
-
-  function indexToColor(v) {
-    if (v < 8) return null;
-    var a = Math.min(0.88, 0.35 + v / 100 * 0.53);
-    if (isPorcini) {
-      if (v < 20) return 'rgba(74,32,16,'+a+')';
-      if (v < 40) return 'rgba(139,94,60,'+a+')';
-      if (v < 60) return 'rgba(176,122,80,'+a+')';
-      if (v < 80) return 'rgba(200,131,42,'+a+')';
-      return 'rgba(232,160,64,'+a+')';
-    } else {
-      if (v < 20) return 'rgba(42,32,0,'+a+')';
-      if (v < 40) return 'rgba(106,80,16,'+a+')';
-      if (v < 60) return 'rgba(201,144,26,'+a+')';
-      if (v < 80) return 'rgba(224,170,48,'+a+')';
-      return 'rgba(255,220,80,'+a+')';
-    }
+  if (step >= 0.003) {
+    // Usa cache globale, filtra per viewport
+    const all = getCells(species, step);
+    return all.filter(c => c.lat >= vSouth && c.lat <= vNorth && c.lon >= vWest && c.lon <= vEast);
   }
 
-  var step = 0.04;
-  var allCells = [];
+  // Alta risoluzione (step < 0.003): calcola solo le celle del viewport
+  // Cache per viewport (chiave = specie + step + viewport arrotondato)
+  const vpKey: CacheKey = `${species}_${step}_${vSouth.toFixed(4)}_${vNorth.toFixed(4)}_${vWest.toFixed(4)}_${vEast.toFixed(4)}`;
+  if (CELL_CACHE.has(vpKey)) return CELL_CACHE.get(vpKey)!;
 
-  // Genera tutte le celle sull'area coperta
-  var south=45.6, north=47.1, west=10.4, east=12.5;
-  for (var lat=south; lat<north; lat+=step) {
-    for (var lon=west; lon<east; lon+=step) {
-      var score = 0;
-      for (var i=0;i<hotspots.length;i++){
-        var h=hotspots[i];
-        var d=Math.sqrt(Math.pow(lat-h.lat,2)+Math.pow(lon-h.lon,2));
-        score += h.strength * Math.exp(-(d*d)/(2*h.r*h.r));
-      }
-      score = Math.min(100, score + (Math.random()-0.5)*15);
+  const hotspots = HOTSPOTS[species];
+  const rand = makePRNG(species === 'porcini' ? 42 : 137);
+  const cells: Cell[] = [];
+
+  // Allinea il punto di partenza alla griglia globale
+  const startLat = Math.floor(vSouth / step) * step;
+  const startLon = Math.floor(vWest  / step) * step;
+
+  for (let lat = startLat; lat <= vNorth; lat += step) {
+    for (let lon = startLon; lon <= vEast; lon += step) {
+      if (lat < COVERAGE.south || lat > COVERAGE.north) continue;
+      if (lon < COVERAGE.west  || lon > COVERAGE.east)  continue;
+      const score = calcScore(lat, lon, hotspots, rand);
       if (score < 8) continue;
-      allCells.push({ lat:parseFloat(lat.toFixed(4)), lon:parseFloat(lon.toFixed(4)), score:Math.round(score) });
+      const latR = parseFloat(lat.toFixed(6));
+      const lonR = parseFloat(lon.toFixed(6));
+      cells.push({ key: `${latR}_${lonR}`, lat: latR, lon: lonR, score: Math.round(score) });
     }
   }
 
-  var visibleRects = {};
-  var halfStep = step / 2;
-
-  function renderCells(bounds) {
-    var s=bounds.getSouth()-step, n=bounds.getNorth()+step;
-    var w=bounds.getWest()-step,  e=bounds.getEast()+step;
-
-    // Rimuovi celle fuori viewport
-    Object.keys(visibleRects).forEach(function(k){
-      var c = visibleRects[k];
-      if (c.lat < s || c.lat > n || c.lon < w || c.lon > e) {
-        c.rect.remove();
-        delete visibleRects[k];
-      }
-    });
-
-    // Aggiungi celle nel viewport non ancora presenti
-    allCells.forEach(function(c){
-      if (c.lat < s || c.lat > n || c.lon < w || c.lon > e) return;
-      var k = c.lat+'_'+c.lon;
-      if (visibleRects[k]) return;
-
-      var color = indexToColor(c.score);
-      if (!color) return;
-
-      var rect = L.rectangle(
-        [[c.lat-halfStep, c.lon-halfStep],[c.lat+halfStep, c.lon+halfStep]],
-        { color:'transparent', fillColor:color, fillOpacity:1, weight:0 }
-      );
-
-      rect.on('click', function(e){
-        L.DomEvent.stopPropagation(e);
-        var emoji = isPorcini ? '🍄' : '🌼';
-        var label = isPorcini ? 'Porcini' : 'Finferli';
-        var barColor = c.score>=80?'#6db85f':c.score>=60?'#e8c060':c.score>=40?'#c8832a':'#8c3030';
-        var cond = c.score>=80?'🟢 Eccellente':c.score>=60?'🟡 Buono':c.score>=40?'🟠 Discreto':'🔴 Scarso';
-        L.popup({maxWidth:220})
-          .setLatLng(e.latlng)
-          .setContent(
-            '<div class="ptitle">'+emoji+' '+label.toUpperCase()+'</div>'+
-            '<div class="pscore" style="color:'+barColor+'">'+c.score+'<small style="font-size:13px;color:#8ba67a"> / 100</small></div>'+
-            '<div class="pbar-wrap"><div class="pbar" style="width:'+c.score+'%;background:'+barColor+'"></div></div>'+
-            '<div class="prow" style="margin-top:8px">Condizione: <span>'+cond+'</span></div>'+
-            '<div class="prow">Lat/Lon: <span>'+c.lat.toFixed(3)+', '+c.lon.toFixed(3)+'</span></div>'+
-            '<div class="pnote">⚠ Dati placeholder — indice reale in sviluppo</div>'
-          )
-          .openOn(map);
-      });
-
-      rect.addTo(map);
-      visibleRects[k] = { lat:c.lat, lon:c.lon, rect:rect };
-    });
+  // Cache viewport (max 200 entry per non sprecare memoria)
+  if (CELL_CACHE.size > 200) {
+    // Rimuovi le entry di viewport (contengono '_' multipli nella key)
+    for (const k of CELL_CACHE.keys()) {
+      if (k.split('_').length > 3) { CELL_CACHE.delete(k); break; }
+    }
   }
+  CELL_CACHE.set(vpKey, cells);
+  return cells;
+}
 
-  map.on('moveend', function(){ renderCells(map.getBounds()); });
-
-  // Ascolta messaggi da React Native: { type:'setRegion', lat, lon, latDelta, lonDelta }
-  document.addEventListener('message', handleMsg);
-  window.addEventListener('message', handleMsg);
-  function handleMsg(event) {
-    try {
-      var msg = JSON.parse(event.data);
-      if (msg.type === 'setRegion') {
-        map.setView([msg.lat, msg.lon], latDeltaToZoom(msg.latDelta), { animate:false });
-      }
-    } catch(e){}
+// ─── Seleziona il livello LOD in base a latitudeDelta ─────────────────────────
+function selectStep(latitudeDelta: number): number {
+  for (const level of LOD_LEVELS) {
+    if (latitudeDelta < level.maxLatDelta) return level.step;
   }
+  return LOD_LEVELS[LOD_LEVELS.length - 1].step;
+}
 
-  function latDeltaToZoom(latDelta) {
-    // Approssimazione: zoom = log2(360/latDelta) - 1
-    var z = Math.round(Math.log(360/latDelta) / Math.LN2) - 1;
-    return Math.max(7, Math.min(14, z));
+// ─── Applica il cap MAX_POLYGONS (prendi le celle con score più alto) ─────────
+function applyCapByScore(cells: Cell[]): Cell[] {
+  if (cells.length <= MAX_POLYGONS) return cells;
+  // Ordina per score decrescente, prendi le top MAX_POLYGONS
+  return [...cells].sort((a, b) => b.score - a.score).slice(0, MAX_POLYGONS);
+}
+
+// ─── Colore cella ─────────────────────────────────────────────────────────────
+function scoreToFillColor(score: number, species: 'porcini' | 'finferli'): string {
+  const alpha = Math.round((0.28 + (score / 100) * 0.54) * 255)
+    .toString(16).padStart(2, '0');
+  if (species === 'porcini') {
+    if (score < 20) return `#4a2010${alpha}`;
+    if (score < 40) return `#8B5E3C${alpha}`;
+    if (score < 60) return `#b07a50${alpha}`;
+    if (score < 80) return `#c8832a${alpha}`;
+    return `#e8c040${alpha}`;
+  } else {
+    if (score < 20) return `#2a2000${alpha}`;
+    if (score < 40) return `#6a5010${alpha}`;
+    if (score < 60) return `#C9901A${alpha}`;
+    if (score < 80) return `#e0aa30${alpha}`;
+    return `#ffe060${alpha}`;
   }
+}
 
-  // Render iniziale
-  renderCells(map.getBounds());
-
-  // Segnala pronto
-  setTimeout(function(){
-    if (window.ReactNativeWebView)
-      window.ReactNativeWebView.postMessage(JSON.stringify({type:'ready'}));
-  }, 600);
-</script>
-</body>
-</html>`;
+// ─── Coordinate del rettangolo cella ─────────────────────────────────────────
+function cellCoords(lat: number, lon: number, half: number) {
+  return [
+    { latitude: lat - half, longitude: lon - half },
+    { latitude: lat - half, longitude: lon + half },
+    { latitude: lat + half, longitude: lon + half },
+    { latitude: lat + half, longitude: lon - half },
+  ];
 }
 
 // ─── Componente ───────────────────────────────────────────────────────────────
@@ -246,88 +260,28 @@ interface Props {
   region: Region | null;
 }
 
-export function IndiceLayerWebView({ activeLayer, region }: Props) {
-  const webviewRef = React.useRef<WebView>(null);
-  // Montata lazy: una volta montata, rimane viva (solo si nasconde)
-  const [mounted, setMounted] = React.useState(false);
-  // Quale specie è attualmente caricata nella WebView
-  const [loadedSpecies, setLoadedSpecies] = React.useState<'porcini' | 'finferli' | null>(null);
+export function IndiceLayerPolygons({ activeLayer, region }: Props) {
+  if (activeLayer === 'off' || !region) return null;
 
-  const currentSpecies = activeLayer !== 'off' ? activeLayer : null;
+  const species = activeLayer as 'porcini' | 'finferli';
+  const step = selectStep(region.latitudeDelta);
+  const half = step / 2;
 
-  // Monta al primo attivazione
-  React.useEffect(() => {
-    if (currentSpecies && !mounted) {
-      setMounted(true);
-      setLoadedSpecies(currentSpecies);
-    }
-  }, [currentSpecies, mounted]);
-
-  // Quando cambia specie, ricarica l'HTML (la WebView usa key)
-  const webviewKey = React.useRef(0);
-  const [webviewVersion, setWebviewVersion] = React.useState(0);
-  React.useEffect(() => {
-    if (!currentSpecies) return;
-    if (currentSpecies !== loadedSpecies) {
-      webviewKey.current += 1;
-      setWebviewVersion(webviewKey.current);
-      setLoadedSpecies(currentSpecies);
-    }
-  }, [currentSpecies, loadedSpecies]);
-
-  // Sincronizza regione → WebView
-  const lastRegionRef = React.useRef<Region | null>(null);
-  React.useEffect(() => {
-    if (!region || !webviewRef.current || activeLayer === 'off') return;
-    // Throttle: manda solo se la regione è cambiata di almeno ~100m
-    const prev = lastRegionRef.current;
-    if (prev) {
-      const dlat = Math.abs(region.latitude - prev.latitude);
-      const dlon = Math.abs(region.longitude - prev.longitude);
-      if (dlat < 0.0005 && dlon < 0.0005) return;
-    }
-    lastRegionRef.current = region;
-    webviewRef.current.postMessage(JSON.stringify({
-      type: 'setRegion',
-      lat: region.latitude,
-      lon: region.longitude,
-      latDelta: region.latitudeDelta,
-      lonDelta: region.longitudeDelta,
-    }));
-  }, [region, activeLayer]);
-
-  if (!mounted) return null;
-
-  const isVisible = activeLayer !== 'off';
+  const rawVisible = getVisibleCells(species, step, region);
+  const visible = applyCapByScore(rawVisible);
 
   return (
-    <View
-      style={[StyleSheet.absoluteFillObject, !isVisible && { opacity: 0, pointerEvents: 'none' }]}
-      pointerEvents={isVisible ? 'box-none' : 'none'}
-    >
-      <WebView
-        key={webviewVersion}
-        ref={webviewRef}
-        source={{ html: buildHTML(loadedSpecies ?? 'porcini') }}
-        style={styles.webview}
-        javaScriptEnabled
-        domStorageEnabled
-        originWhitelist={['*']}
-        scrollEnabled={false}
-        bounces={false}
-        showsHorizontalScrollIndicator={false}
-        showsVerticalScrollIndicator={false}
-        backgroundColor="transparent"
-        // onMessage gestisce il popup tap (nessuna azione necessaria lato RN)
-        onMessage={() => {}}
-      />
-    </View>
+    <>
+      {visible.map((cell) => (
+        <Polygon
+          key={`${species}_${cell.key}_${step}`}
+          coordinates={cellCoords(cell.lat, cell.lon, half)}
+          fillColor={scoreToFillColor(cell.score, species)}
+          strokeColor="transparent"
+          strokeWidth={0}
+          tappable={false}
+        />
+      ))}
+    </>
   );
 }
-
-const styles = StyleSheet.create({
-  webview: {
-    flex: 1,
-    backgroundColor: 'transparent',
-  },
-});

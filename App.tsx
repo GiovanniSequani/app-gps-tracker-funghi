@@ -17,7 +17,7 @@ import { NavigationContainer } from '@react-navigation/native';
 import uuid from 'react-native-uuid';
 import * as Updates from 'expo-updates';
 import IndiceScreen, { ActiveLayer } from './IndiceScreen';
-import { IndiceLayerPolygons } from './IndiceLayers';
+import { IndiceLayerTiles } from './IndiceLayers';
 
 // ─── Tipi (IDENTICI ALL'ORIGINALE) ────────────────────────────────────────────
 type Coordinate = {
@@ -678,7 +678,7 @@ function MainUI(props: any) {
           onRegionChange?.(r);
         }}
       >
-        <IndiceLayerPolygons activeLayer={activeLayer} region={currentRegion} />
+        <IndiceLayerTiles activeLayer={activeLayer} />
 
         {/* Posizione corrente - cerchio GPS */}
         {(path.length < 1 && region) && (

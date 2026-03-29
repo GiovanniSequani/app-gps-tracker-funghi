@@ -1,22 +1,18 @@
 /**
- * IndiceLayers.tsx  — v5
+ * IndiceLayers.tsx  — v6 (MapLibre)
  *
- * Layer indice funghi via tile PNG XYZ su react-native-maps.
- * Nessun Polygon, nessun bug Android, performance native.
+ * Layer indice funghi via RasterSource + RasterLayer di MapLibre.
+ * Nessun bug di tile fantasma: il motore OpenGL di MapLibre gestisce
+ * tutto internamente, incluse invalidazione cache e zoom transitions.
  *
- * Le tile vengono servite da Supabase Storage e caricate da
- * react-native-maps tramite il componente UrlTile nativo.
- *
- * Per aggiornare l'URL delle tile (quando cambiano su Supabase),
- * modifica solo SUPABASE_URL qui sotto.
+ * Usare dentro <MapView> di @maplibre/maplibre-react-native.
  */
 
 import React from 'react';
-import { UrlTile } from 'react-native-maps';
+import { RasterLayer, RasterSource } from '@maplibre/maplibre-react-native';
 import type { ActiveLayer } from './IndiceScreen';
 
 // ─── URL Supabase ─────────────────────────────────────────────────────────────
-// Sostituisci con il tuo Project URL
 const SUPABASE_URL    = 'https://ovdfsehovsrdzcoqdlfh.supabase.co';
 const SUPABASE_BUCKET = 'tiles';
 
@@ -33,17 +29,23 @@ export function IndiceLayerTiles({ activeLayer }: Props) {
   if (activeLayer === 'off') return null;
 
   const species = activeLayer as 'porcini' | 'finferli';
+  const sourceId = `funghi-source-${species}`;
+  const layerId  = `funghi-layer-${species}`;
 
   return (
-    <UrlTile
+    <RasterSource
       key={species}
-      urlTemplate={tileUrl(species)}
-      opacity={0.75}
-      zIndex={1}
-      maximumZ={14}
-      minimumZ={8}
-      shouldReplaceMapContent={false}
+      id={sourceId}
+      tileUrlTemplates={[tileUrl(species)]}
       tileSize={256}
-    />
+      minZoomLevel={8}
+      maxZoomLevel={14}
+    >
+      <RasterLayer
+        id={layerId}
+        sourceID={sourceId}
+        style={{ rasterOpacity: 0.75 }}
+      />
+    </RasterSource>
   );
 }

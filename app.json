@@ -58,7 +58,8 @@
           "locationWhenInUsePermission": "L'app usa la tua posizione per registrare il percorso."
         }
       ],
-      "expo-sqlite"
+      "expo-sqlite",
+      "@maplibre/maplibre-react-native"
     ],
     "runtimeVersion": {
       "policy": "appVersion"

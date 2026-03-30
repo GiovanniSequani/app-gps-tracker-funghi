@@ -6,6 +6,8 @@ node_modules/
 # output directories
 output/
 tiles/
+tiles_local/
+tmp_gdal/
 
 # Expo
 .expo/

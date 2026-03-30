@@ -15,9 +15,10 @@ import type { ActiveLayer } from './IndiceScreen';
 // ─── URL Supabase ─────────────────────────────────────────────────────────────
 const SUPABASE_URL    = 'https://ovdfsehovsrdzcoqdlfh.supabase.co';
 const SUPABASE_BUCKET = 'tiles';
+const DATE            = '2026-03-30'
 
 function tileUrl(species: 'porcini' | 'finferli'): string {
-  return `${SUPABASE_URL}/storage/v1/object/public/${SUPABASE_BUCKET}/${species}/{z}/{x}/{y}.png`;
+  return `${SUPABASE_URL}/storage/v1/object/public/${SUPABASE_BUCKET}/${DATE}/${species}/{z}/{x}/{y}.png`;
 }
 
 // ─── Componente ───────────────────────────────────────────────────────────────
@@ -34,7 +35,7 @@ export function IndiceLayerTiles({ activeLayer }: Props) {
 
   return (
     <RasterSource
-      key={species}
+      key={`${DATE}-${species}`}
       id={sourceId}
       tileUrlTemplates={[tileUrl(species)]}
       tileSize={256}
@@ -44,7 +45,7 @@ export function IndiceLayerTiles({ activeLayer }: Props) {
       <RasterLayer
         id={layerId}
         sourceID={sourceId}
-        style={{ rasterOpacity: 0.75 }}
+        style={{ rasterOpacity: 0.85 }}
       />
     </RasterSource>
   );

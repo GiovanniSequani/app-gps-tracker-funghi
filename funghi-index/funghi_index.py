@@ -13,12 +13,16 @@ Uso:
     python funghi_index.py                    # calcola e uploada
     python funghi_index.py --lod 3 4 5        # solo LOD specificati
     python funghi_index.py --species porcini  # solo una specie
+
+Per ora:
+    python funghi_index.py --dry-run --species porcini --lod 2
 """
 
 import argparse
 import json
 import os
 import time
+from tqdm import tqdm
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -301,6 +305,10 @@ def trapezoid_vec(x: np.ndarray, lo_bad, lo_ok, hi_ok, hi_bad) -> np.ndarray:
     return result
 
 
+def compute_scores_vec_test(elevation):
+    score = trapezoid_vec(elevation, 400, 700, 1700, 2200)
+    return np.round(score * 100, 1).astype(np.float32)
+
 def compute_scores_vec(
     meteo: dict,
     elevation: np.ndarray,
@@ -358,7 +366,8 @@ def compute_scores_vec(
 # 4. EXPORT GEOJSON
 # ══════════════════════════════════════════════════════════════════════════════
 
-def generate_geojson_lod(species: str, lod: dict, meteo_grid: dict, elev_grid: dict) -> dict:
+#def generate_geojson_lod(species: str, lod: dict, meteo_grid: dict, elev_grid: dict) -> dict:
+def generate_geojson_lod(species: str, lod: dict, elev_grid: dict) -> dict:
     """
     Genera il GeoJSON per un LOD. Tutto vettoriale — nessun loop Python per cella.
     """
@@ -369,10 +378,12 @@ def generate_geojson_lod(species: str, lod: dict, meteo_grid: dict, elev_grid: d
     N = len(lats)
     print(f"  [{species} LOD{lod['lod']} {lod['label']}] {N} celle…", end=" ", flush=True)
 
-    meteo     = aggregate_meteo_features(meteo_grid, lats, lons)
+    #meteo     = aggregate_meteo_features(meteo_grid, lats, lons)
     elevation = interpolate_elevation_vec(elev_grid, lats, lons)
     landcover = landcover_from_elevation(elevation)
-    scores    = compute_scores_vec(meteo, elevation, landcover, species)
+    #scores    = compute_scores_vec(meteo, elevation, landcover, species)
+
+    scores = scores = compute_scores_vec_test(elevation)
 
     mask     = scores >= 5.0
     lats_f   = lats[mask];     lons_f  = lons[mask]
@@ -462,14 +473,15 @@ def main():
     print("=" * 55)
 
     print("\n[1/3] Download dati griglia…")
-    meteo_grid = download_meteo_grid()
+    #meteo_grid = download_meteo_grid()
     elev_grid  = download_elevation_grid()
 
     print("\n[2/3] Calcolo indice…")
     generated = []
     for species in species_list:
-        for lod in active_lods:
-            geojson  = generate_geojson_lod(species, lod, meteo_grid, elev_grid)
+        for lod in tqdm(active_lods, desc=species):
+            #geojson  = generate_geojson_lod(species, lod, meteo_grid, elev_grid)
+            geojson  = generate_geojson_lod(species, lod, elev_grid)
             filename = f"{species}_lod{lod['lod']}.geojson"
             content  = json.dumps(geojson, separators=(",", ":"))
             (output_dir / filename).write_text(content, encoding="utf-8")

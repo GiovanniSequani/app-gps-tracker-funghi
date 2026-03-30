@@ -247,6 +247,7 @@ def generate_xyz_tiles(
         sys.executable,
         "-m",
         "osgeo_utils.gdal2tiles",
+        "--xyz",
         "-z", z_arg,
         "--processes", str(processes),
         "-w", "none",

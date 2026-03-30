@@ -35,13 +35,13 @@ from __future__ import annotations
 
 import argparse
 import os
+import time
 import shutil
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Iterable
-
 import requests
 from dotenv import load_dotenv
 
@@ -260,13 +260,13 @@ def generate_xyz_tiles(
 # ──────────────────────────────────────────────────────────────────────────────
 
 def upload_one_file(
-    session: requests.Session,
     local_path: Path,
     remote_path: str,
+    max_retries: int = 10,
 ) -> tuple[bool, str]:
     """
     Carica un file nel bucket tiles.
-    Restituisce (ok, remote_path).
+    Restituisce (ok, msg).
     """
     url = f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/{remote_path}"
     headers = {
@@ -275,14 +275,29 @@ def upload_one_file(
         "x-upsert": "true",
     }
 
-    try:
-        with local_path.open("rb") as f:
-            resp = session.post(url, headers=headers, data=f.read(), timeout=60)
-        if resp.status_code in (200, 201):
-            return True, remote_path
-        return False, f"{remote_path} HTTP {resp.status_code}: {resp.text[:200]}"
-    except Exception as e:
-        return False, f"{remote_path}: {e}"
+    for attempt in range(1, max_retries + 1):
+        try:
+            with local_path.open("rb") as f:
+                resp = requests.post(url, headers=headers, data=f, timeout=120)
+
+            if resp.status_code in (200, 201):
+                return True, remote_path
+
+            # retry solo su errori temporanei
+            if resp.status_code in (408, 409, 425, 429, 500, 502, 503, 504):
+                if attempt < max_retries:
+                    time.sleep(1.5 * attempt)
+                    continue
+
+            return False, f"{remote_path} HTTP {resp.status_code}: {resp.text[:500]}"
+
+        except requests.RequestException as e:
+            if attempt < max_retries:
+                time.sleep(1.5 * attempt)
+                continue
+            return False, f"{remote_path}: {type(e).__name__}: {e}"
+
+    return False, f"{remote_path}: errore sconosciuto"
 
 
 def iter_png_files(root: Path) -> Iterable[Path]:
@@ -296,12 +311,8 @@ def upload_tiles_to_supabase(
     species_tile_dir: Path,
     workers: int,
 ) -> None:
-    """
-    Carica:
-        species_tile_dir/{z}/{x}/{y}.png
-    su:
-        tiles/{date}/{species}/{z}/{x}/{y}.png
-    """
+    global DATE
+
     ensure_exists(species_tile_dir, "dir")
 
     png_files = list(iter_png_files(species_tile_dir))
@@ -316,34 +327,32 @@ def upload_tiles_to_supabase(
     fail_count = 0
     failures: list[str] = []
 
-    with requests.Session() as session:
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {}
-            for local_path in png_files:
-                rel = local_path.relative_to(species_tile_dir).as_posix()
-                remote_path = f"{species}/{rel}"
-                future = executor.submit(upload_one_file, session, local_path, remote_path)
-                futures[future] = remote_path
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {}
+        for local_path in png_files:
+            rel = local_path.relative_to(species_tile_dir).as_posix()
+            remote_path = f"{DATE}/{species}/{rel}"
+            future = executor.submit(upload_one_file, local_path, remote_path)
+            futures[future] = remote_path
 
-            done = 0
-            for future in as_completed(futures):
-                done += 1
-                ok, msg = future.result()
-                if ok:
-                    ok_count += 1
-                else:
-                    fail_count += 1
-                    failures.append(msg)
+        done = 0
+        for future in as_completed(futures):
+            done += 1
+            ok, msg = future.result()
+            if ok:
+                ok_count += 1
+            else:
+                fail_count += 1
+                failures.append(msg)
+                print(f"[FAIL] {msg}")
 
-                if done % 250 == 0 or done == total:
-                    print(f"  {done}/{total}... ok={ok_count}, fail={fail_count}")
+            if done % 250 == 0 or done == total:
+                print(f"  {done}/{total}... ok={ok_count}, fail={fail_count}", flush=True)
 
     if failures:
-        print("\n[UPLOAD ERRORS]")
-        for err in failures[:20]:
-            print(" ", err)
-        if len(failures) > 20:
-            print(f"  ... altri {len(failures) - 20} errori")
+        err_file = species_tile_dir.parent / f"{species}_upload_failures.txt"
+        err_file.write_text("\n".join(failures), encoding="utf-8")
+        print(f"\n[UPLOAD ERRORS] salvati in: {err_file}")
 
     if fail_count > 0:
         raise RuntimeError(

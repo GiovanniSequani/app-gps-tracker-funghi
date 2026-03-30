@@ -15,10 +15,12 @@ import type { ActiveLayer } from './IndiceScreen';
 // ─── URL Supabase ─────────────────────────────────────────────────────────────
 const SUPABASE_URL    = 'https://ovdfsehovsrdzcoqdlfh.supabase.co';
 const SUPABASE_BUCKET = 'tiles';
-const DATE            = '2026-03-30'
+const DATE            = '2026-03-30';
+const VERSION         = '1';
 
 function tileUrl(species: 'porcini' | 'finferli'): string {
-  return `${SUPABASE_URL}/storage/v1/object/public/${SUPABASE_BUCKET}/${DATE}/${species}/{z}/{x}/{y}.png`;
+  console.log(`Caricamento tile con url: ${SUPABASE_URL}/storage/v1/object/public/${SUPABASE_BUCKET}/${DATE}_v${VERSION}/${species}/{z}/{x}/{y}.png`);
+  return `${SUPABASE_URL}/storage/v1/object/public/${SUPABASE_BUCKET}/${DATE}_v${VERSION}/${species}/{z}/{x}/{y}.png`;
 }
 
 // ─── Componente ───────────────────────────────────────────────────────────────
@@ -35,7 +37,7 @@ export function IndiceLayerTiles({ activeLayer }: Props) {
 
   return (
     <RasterSource
-      key={`${DATE}-${species}`}
+      key={`${DATE}-v${VERSION}-${species}`}
       id={sourceId}
       tileUrlTemplates={[tileUrl(species)]}
       tileSize={256}

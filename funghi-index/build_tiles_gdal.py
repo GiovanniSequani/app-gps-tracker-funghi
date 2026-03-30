@@ -60,6 +60,7 @@ DEFAULT_SPECIES = ["porcini", "finferli"]
 DEFAULT_ZOOMS = list(range(8, 15))
 
 DATE = '2026-03-30'
+VERSION = '1'
 
 # Step del LOD sorgente. Per ora useremo lod2 come base finale.
 LOD_STEPS = {
@@ -311,7 +312,7 @@ def upload_tiles_to_supabase(
     species_tile_dir: Path,
     workers: int,
 ) -> None:
-    global DATE
+    global DATE, VERSION
 
     ensure_exists(species_tile_dir, "dir")
 
@@ -331,7 +332,7 @@ def upload_tiles_to_supabase(
         futures = {}
         for local_path in png_files:
             rel = local_path.relative_to(species_tile_dir).as_posix()
-            remote_path = f"{DATE}/{species}/{rel}"
+            remote_path = f"{DATE}_v{VERSION}/{species}/{rel}"
             future = executor.submit(upload_one_file, local_path, remote_path)
             futures[future] = remote_path
 
@@ -379,7 +380,7 @@ def build_species_tiles(
     keep_intermediate: bool,
 ) -> None:
     
-    global DATE
+    global DATE, VERSION
 
     if source_lod not in LOD_STEPS:
         raise ValueError(f"LOD sorgente non supportato: {source_lod}")
@@ -390,7 +391,7 @@ def build_species_tiles(
     ensure_exists(geojson_path, "file")
 
     species_work_dir = work_dir / species
-    species_tile_dir = tile_dir / DATE / species
+    species_tile_dir = tile_dir / f'{DATE}_v{VERSION}' / species
     species_work_dir.mkdir(parents=True, exist_ok=True)
     clean_dir(species_tile_dir)
 

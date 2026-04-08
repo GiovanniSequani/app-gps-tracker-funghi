@@ -15,20 +15,22 @@ import type { ActiveLayer } from './IndiceScreen';
 // ─── URL Supabase ─────────────────────────────────────────────────────────────
 const SUPABASE_URL    = 'https://ovdfsehovsrdzcoqdlfh.supabase.co';
 const SUPABASE_BUCKET = 'tiles';
-const DATE            = '2026-03-30';
-const VERSION         = '1';
 
-function tileUrl(species: 'porcini' | 'finferli'): string {
-  console.log(`Caricamento tile con url: ${SUPABASE_URL}/storage/v1/object/public/${SUPABASE_BUCKET}/${DATE}_v${VERSION}/${species}/{z}/{x}/{y}.png`);
-  return `${SUPABASE_URL}/storage/v1/object/public/${SUPABASE_BUCKET}/${DATE}_v${VERSION}/${species}/{z}/{x}/{y}.png`;
+
+function tileUrl(species: 'porcini' | 'finferli', date: string, version: string): string {
+  const url = `${SUPABASE_URL}/storage/v1/object/public/${SUPABASE_BUCKET}/${date}_v${version}/${species}/{z}/{x}/{y}.png`;
+  console.log(`Caricamento tile con url: ${url}`);
+  return url;
 }
 
 // ─── Componente ───────────────────────────────────────────────────────────────
 interface Props {
   activeLayer: ActiveLayer;
+  date: string;
+  version: string;
 }
 
-export function IndiceLayerTiles({ activeLayer }: Props) {
+export function IndiceLayerTiles({ activeLayer, date, version }: Props) {
   if (activeLayer === 'off') return null;
 
   const species = activeLayer as 'porcini' | 'finferli';
@@ -37,9 +39,9 @@ export function IndiceLayerTiles({ activeLayer }: Props) {
 
   return (
     <RasterSource
-      key={`${DATE}-v${VERSION}-${species}`}
+      key={`${date}-v${version}-${species}`}
       id={sourceId}
-      tileUrlTemplates={[tileUrl(species)]}
+      tileUrlTemplates={[tileUrl(species, date, version)]}
       tileSize={256}
       minZoomLevel={8}
       maxZoomLevel={14}

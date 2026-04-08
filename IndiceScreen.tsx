@@ -15,7 +15,7 @@
 import React from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet,
-  ScrollView, StatusBar, Animated, Easing,
+  ScrollView, StatusBar, Animated, Easing, TextInput
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -61,10 +61,22 @@ type SpeciesKey = keyof typeof SPECIES;
 interface Props {
   activeLayer: ActiveLayer;
   setActiveLayer: (l: ActiveLayer) => void;
+  tileDate: string;
+  setTileDate: (v: string) => void;
+  tileVersion: string;
+  setTileVersion: (v: string) => void;
 }
 
 // ─── Componente ───────────────────────────────────────────────────────────────
-export default function IndiceScreen({ activeLayer, setActiveLayer }: Props) {
+export default function IndiceScreen({
+  activeLayer,
+  setActiveLayer,
+  tileDate,
+  setTileDate,
+  tileVersion,
+  setTileVersion,
+}: Props) {
+
   const [expandedSpecies, setExpandedSpecies] = React.useState<SpeciesKey | null>(null);
   const expandAnim = React.useRef<Record<SpeciesKey, Animated.Value>>({
     porcini: new Animated.Value(0),
@@ -148,6 +160,46 @@ export default function IndiceScreen({ activeLayer, setActiveLayer }: Props) {
               </TouchableOpacity>
             );
           })}
+        </View>
+
+        {/* ── Config tiles ─────────────────────────────────────────────── */}
+        <View style={s.section}>
+          <Text style={s.sectionTitle}>CONFIGURAZIONE TILE</Text>
+          <Text style={s.sectionSub}>
+            Scegli data e versione del dataset da caricare da Supabase
+          </Text>
+
+          <View style={s.inputGroup}>
+            <Text style={s.inputLabel}>DATA</Text>
+            <TextInput
+              style={s.textInput}
+              value={tileDate}
+              onChangeText={setTileDate}
+              placeholder="YYYY-MM-DD"
+              placeholderTextColor={UI.textMut}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+          </View>
+
+          <View style={s.inputGroup}>
+            <Text style={s.inputLabel}>VERSIONE</Text>
+            <TextInput
+              style={s.textInput}
+              value={tileVersion}
+              onChangeText={setTileVersion}
+              placeholder="1"
+              placeholderTextColor={UI.textMut}
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="numeric"
+            />
+          </View>
+
+          <View style={s.updateRow}>
+            <Text style={s.updateLabel}>Path attuale</Text>
+            <Text style={s.updateVal}>{tileDate}_v{tileVersion}</Text>
+          </View>
         </View>
 
         {/* ── Legenda ─────────────────────────────────────────────────── */}
@@ -337,4 +389,27 @@ const s = StyleSheet.create({
   },
   placeholderTitle: { color: UI.amberBri, fontSize: 11, fontWeight: '800', letterSpacing: 1.5, marginBottom: 5 },
   placeholderBody: { color: UI.amber, fontSize: 11, lineHeight: 16 },
+
+  // Inputs
+  inputGroup: {
+    gap: 6,
+    marginTop: 4,
+  },
+  inputLabel: {
+    color: UI.textSec,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+  textInput: {
+    backgroundColor: UI.bg2,
+    borderWidth: 1,
+    borderColor: UI.border,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: UI.textPri,
+    fontSize: 13,
+    fontWeight: '600',
+  },
 });

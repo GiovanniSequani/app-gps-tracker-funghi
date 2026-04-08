@@ -4,10 +4,20 @@
 node_modules/
 
 # output directories
-output/
-tiles/
-tiles_local/
-tmp_gdal/
+legacy-funghi-index/
+
+# Data
+*.png
+*.nc
+*.tif
+*.xml
+*.geojson
+*.vrt
+*.npz
+*.tif
+*.tar.gz
+__pycache__/
+icon_d2/
 
 # Expo
 .expo/

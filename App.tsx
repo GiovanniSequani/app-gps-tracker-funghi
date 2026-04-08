@@ -209,6 +209,8 @@ export default function App() {
   const [routesOnMap, setRoutesOnMap] = React.useState<RouteData[]>([]);
   const [highlightedRoute, setHighlightedRoute] = React.useState<string | null>(null);
   const [activeLayer, setActiveLayer] = React.useState<ActiveLayer>('off');
+  const [tileDate, setTileDate] = React.useState('2026-03-30');
+  const [tileVersion, setTileVersion] = React.useState('1');
 
   const followLocationRef = React.useRef(true);
   // Camera ref: tipo è il componente Camera stesso
@@ -466,6 +468,8 @@ export default function App() {
                 highlightRoute={highlightRoute}
                 highlightedRoute={highlightedRoute}
                 activeLayer={activeLayer}
+                tileDate={tileDate}
+                tileVersion={tileVersion}
               />
             )}
             options={{ tabBarIcon: ({ color }) => <Text style={{ fontSize: 20, color }}>🗺️</Text>, tabBarLabel: 'Mappa' }}
@@ -487,7 +491,16 @@ export default function App() {
           />
           <Tab.Screen
             name="Indice"
-            children={() => <IndiceScreen activeLayer={activeLayer} setActiveLayer={setActiveLayer} />}
+            children={() => (
+              <IndiceScreen
+                activeLayer={activeLayer}
+                setActiveLayer={setActiveLayer}
+                tileDate={tileDate}
+                setTileDate={setTileDate}
+                tileVersion={tileVersion}
+                setTileVersion={setTileVersion}
+              />
+            )}
             options={{ tabBarIcon: ({ color }) => <Text style={{ fontSize: 20, color }}>🍄</Text>, tabBarLabel: 'Indice' }}
           />
         </Tab.Navigator>
@@ -505,7 +518,7 @@ function MainUI(props: any) {
     path, markers, cameraRef, followLocationRef, initialCenter,
     showAll, visibleMarkers, handleDeleteMarker, setShowAll,
     addedRoutes, setAddedRoutes, setRoutesOnMap, routesOnMap,
-    highlightRoute, highlightedRoute, activeLayer,
+    highlightRoute, highlightedRoute, activeLayer, tileDate, tileVersion
   } = props;
 
   // fetch percorsi salvati quando cambiano gli addedRoutes
@@ -579,7 +592,7 @@ function MainUI(props: any) {
         />
 
         {/* Layer indice funghi — RasterSource, nessun tile fantasma */}
-        <IndiceLayerTiles activeLayer={activeLayer} />
+        <IndiceLayerTiles activeLayer={activeLayer} date={tileDate} version={tileVersion}/>
 
         {/* Dot posizione GPS corrente */}
         {currentPosGeoJSON && (

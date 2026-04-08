@@ -1,3 +1,8 @@
+# ======================================= #
+# BISOGNA MODIFICARE IN MODO DA LEGGERE   #
+# GEOTIFF DELL'INDICE E PRODURRE LE TILES #
+# ======================================= #
+
 """
 build_tiles_gdal.py
 ===================
@@ -59,7 +64,7 @@ SUPABASE_BUCKET = "tiles"
 DEFAULT_SPECIES = ["porcini", "finferli"]
 DEFAULT_ZOOMS = list(range(8, 15))
 
-DATE = '2026-03-30'
+DATE = '2026-03-31'
 VERSION = '1'
 
 # Step del LOD sorgente. Per ora useremo lod2 come base finale.

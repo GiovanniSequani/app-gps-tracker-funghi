@@ -1,0 +1,26 @@
+from pathlib import Path
+
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+DATA_DIR = BACKEND_DIR / "data"
+RAW_DIR = DATA_DIR / "raw"
+INTERMEDIATE_DIR = DATA_DIR / "intermediate"
+FINAL_DIR = DATA_DIR / "final"
+OUTPUTS_DIR = BACKEND_DIR / "outputs"
+TMP_DIR = BACKEND_DIR / "tmp"
+
+RAW_DEM_DIR = RAW_DIR / "dem"
+RAW_FOREST_DIR = RAW_DIR / "forest"
+RAW_METEO_DIR = RAW_DIR / "meteo"
+
+INT_TERRAIN_DIR = INTERMEDIATE_DIR / "terrain"
+INT_FOREST_DIR = INTERMEDIATE_DIR / "forest"
+INT_METEO_DIR = INTERMEDIATE_DIR / "meteo"
+
+FINAL_STATIC_DIR = FINAL_DIR / "static"
+FINAL_METEO_DIR = FINAL_DIR / "meteo"
+
+OUT_GEOJSON_DIR = OUTPUTS_DIR / "index_geojson"
+OUT_TIF_DIR = OUTPUTS_DIR / "index_tif"
+OUT_TILES_DIR = OUTPUTS_DIR / "tiles_local"
+LOG_DIR = OUTPUTS_DIR / "logs"
+TMP_GDAL_DIR = TMP_DIR / "gdal"

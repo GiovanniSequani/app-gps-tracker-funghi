@@ -180,6 +180,7 @@ def regrid_daily_to_target(ds_in: xr.Dataset) -> xr.Dataset:
             ),
             "source": ds_in.attrs.get("source", "DWD ICON-D2 open data"),
             "input_timezone_daily": ds_in.attrs.get("timezone_daily", ""),
+            "source_latest_run_time_utc": ds_in.attrs.get("source_latest_run_time_utc", ""),
             "target_crs": TARGET_CRS,
             "target_step_deg": np.float32(TARGET_STEP_DEG),
             "bbox_south": np.float32(BBOX["south"]),

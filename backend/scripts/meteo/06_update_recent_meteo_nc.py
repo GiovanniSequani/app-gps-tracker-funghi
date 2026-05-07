@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from backend.config.meteo import (
     INTERMEDIATE_METEO_DIR,
     ROLLING_DAILY_WINDOW_DAYS,
 )
+from backend.config.paths import FINAL_METEO_HISTORIC_DIR
 
 UTC = timezone.utc
 EXPECTED_DAILY_VARS = tuple(DAILY_FINAL_VARIABLES)
@@ -79,6 +81,44 @@ def save_dataset(ds: xr.Dataset, out_path: Path) -> None:
         if tmp_path.exists():
             tmp_path.unlink()
         raise
+
+
+def parse_utc_iso(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
+
+def copy_historic_snapshot_if_complete(
+    ds: xr.Dataset,
+    rolling_path: Path,
+    run: str | None,
+) -> Path | None:
+    """
+    Salva un'istantanea del rolling recente solo quando il dataset termina con la run delle 21 UTC.
+    In quel caso il giorno locale risultante è completo e vale la pena conservarne una copia storica.
+    """
+    if run is None or len(run) != 10 or not run.isdigit() or int(run[-2:]) != 21:
+        return None
+
+    time_end = parse_utc_iso(str(ds.attrs.get("time_end", "")))
+    if time_end is None:
+        return None
+
+    FINAL_METEO_HISTORIC_DIR.mkdir(parents=True, exist_ok=True)
+    snapshot_name = f"{rolling_path.stem}_{time_end.strftime('%Y%m%d')}{rolling_path.suffix}"
+    snapshot_path = FINAL_METEO_HISTORIC_DIR / snapshot_name
+    if snapshot_path.exists():
+        return snapshot_path
+
+    shutil.copy2(rolling_path, snapshot_path)
+    return snapshot_path
 
 
 # ------------------------------------------------------------------------------
@@ -186,6 +226,10 @@ def merge_recent_daily(
             "Built by merging regridded daily fields and keeping the most recent version for duplicate days."
         ),
         source=ds_new.attrs.get("source", "DWD ICON-D2 open data"),
+        latest_run_time_utc=ds_new.attrs.get(
+            "source_latest_run_time_utc",
+            ds_old.attrs.get("latest_run_time_utc", "") if ds_old is not None else "",
+        ),
         rolling_daily_window_days=int(window_days),
         duplicate_time_policy="new_input_wins",
         created_utc=datetime.now(UTC).isoformat(),
@@ -219,6 +263,12 @@ def main() -> None:
         default=str(default_final_recent_path()),
         help="Path output meteo_recent_003deg.nc",
     )
+    parser.add_argument(
+        "--run",
+        type=str,
+        default=None,
+        help="Run YYYYmmddHH that produced the latest daily update. Used to gate the historic snapshot.",
+    )
     args = parser.parse_args()
 
     daily_path = Path(args.daily)
@@ -229,6 +279,7 @@ def main() -> None:
     print(f"Input daily        : {daily_path}")
     print(f"Output final       : {out_path}")
     print(f"Window days        : {ROLLING_DAILY_WINDOW_DAYS}")
+    print(f"Run                : {args.run if args.run else '[unknown]'}")
     print("=" * 78)
 
     ds_new = open_dataset(daily_path)
@@ -258,11 +309,17 @@ def main() -> None:
 
     save_dataset(ds_out, out_path)
 
+    snapshot_path = copy_historic_snapshot_if_complete(ds_out, out_path, args.run)
+
     print("\n[OK] Dataset finale aggiornato")
     print(f"Output             : {out_path.resolve()}")
     print(f"n_days             : {ds_out.sizes['time']}")
     print(f"time start         : {str(ds_out['time'].values[0])}")
     print(f"time end           : {str(ds_out['time'].values[-1])}")
+    if snapshot_path is not None:
+        print(f"historic snapshot   : {snapshot_path.resolve()}")
+    else:
+        print("historic snapshot   : skipped (not a 21 UTC completion)")
     print("\nDone ✓")
 
 

@@ -56,10 +56,70 @@ type Waypoint = {
   type: string;
 };
 
+type TileSet = {
+  date: string;
+  version: string;
+};
+
 // ─── Costanti ─────────────────────────────────────────────────────────────────
 const Tab = createBottomTabNavigator();
 const LOCATION_TASK_NAME = 'background-location-task';
 const BG_POSITIONS_FILE = `${FileSystemLegacy.cacheDirectory}bg_positions.json`;
+const SUPABASE_URL = 'https://ovdfsehovsrdzcoqdlfh.supabase.co';
+const SUPABASE_BUCKET = 'tiles';
+const SUPABASE_ANON_KEY =
+  ((globalThis as any)?.process?.env?.EXPO_PUBLIC_SUPABASE_ANON_KEY as string | undefined) ?? '';
+const TILE_SET_REGEX = /^(\d{4})_(\d{2})_(\d{2})_v(\d+)$/;
+
+async function getLatestTileSet(): Promise<TileSet> {
+  const url = `${SUPABASE_URL}/storage/v1/object/list/${SUPABASE_BUCKET}`;
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (SUPABASE_ANON_KEY) {
+    headers.apikey = SUPABASE_ANON_KEY;
+    headers.Authorization = `Bearer ${SUPABASE_ANON_KEY}`;
+  }
+  const response = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ prefix: '', limit: 1000, offset: 0 }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Supabase list failed: ${response.status}`);
+  }
+
+  const items = (await response.json()) as Array<{ name?: string }>;
+  const candidates = items
+    .map((item) => item.name ?? '')
+    .map((name) => {
+      const match = name.match(TILE_SET_REGEX);
+      if (!match) return null;
+      return {
+        name,
+        date: `${match[1]}_${match[2]}_${match[3]}`,
+        year: Number(match[1]),
+        month: Number(match[2]),
+        day: Number(match[3]),
+        versionNum: Number(match[4]),
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => item !== null)
+    .sort((a, b) => {
+      if (a.year !== b.year) return b.year - a.year;
+      if (a.month !== b.month) return b.month - a.month;
+      if (a.day !== b.day) return b.day - a.day;
+      return b.versionNum - a.versionNum;
+    });
+
+  if (candidates.length === 0) {
+    throw new Error('No valid tile set found under tiles/');
+  }
+
+  return {
+    date: candidates[0].date,
+    version: String(candidates[0].versionNum),
+  };
+}
 
 // ─── Stile mappa: satellite Esri (gratuito, no API key) ───────────────────────
 const SATELLITE_STYLE = {
@@ -209,12 +269,14 @@ export default function App() {
   const [routesOnMap, setRoutesOnMap] = React.useState<RouteData[]>([]);
   const [highlightedRoute, setHighlightedRoute] = React.useState<string | null>(null);
   const [activeLayer, setActiveLayer] = React.useState<ActiveLayer>('off');
-  const [tileDate, setTileDate] = React.useState('2026-03-30');
-  const [tileVersion, setTileVersion] = React.useState('1');
+  const [tileDate, setTileDate] = React.useState('');
+  const [tileVersion, setTileVersion] = React.useState('');
+  const [tilesLoading, setTilesLoading] = React.useState(true);
+  const [tilesError, setTilesError] = React.useState<string | null>(null);
 
   const followLocationRef = React.useRef(true);
   // Camera ref: tipo è il componente Camera stesso
-  const cameraRef = React.useRef<Camera>(null);
+  const cameraRef = React.useRef<React.ElementRef<typeof Camera>>(null);
   const recordingRef = React.useRef(recording);
 
   const visibleMarkers = showAll ? markers : markers.slice(0, 5);
@@ -241,6 +303,27 @@ export default function App() {
   // init DB
   React.useEffect(() => {
     initDB().then(() => console.log('DB inizializzato')).catch(console.error);
+  }, []);
+
+  React.useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        setTilesLoading(true);
+        setTilesError(null);
+        const latest = await getLatestTileSet();
+        if (!mounted) return;
+        setTileDate(latest.date);
+        setTileVersion(latest.version);
+      } catch (err) {
+        if (!mounted) return;
+        const message = err instanceof Error ? err.message : 'Errore caricamento tiles';
+        setTilesError(message);
+      } finally {
+        if (mounted) setTilesLoading(false);
+      }
+    })();
+    return () => { mounted = false; };
   }, []);
 
   // posizione iniziale
@@ -470,6 +553,8 @@ export default function App() {
                 activeLayer={activeLayer}
                 tileDate={tileDate}
                 tileVersion={tileVersion}
+                tilesLoading={tilesLoading}
+                tilesError={tilesError}
               />
             )}
             options={{ tabBarIcon: ({ color }) => <Text style={{ fontSize: 20, color }}>🗺️</Text>, tabBarLabel: 'Mappa' }}
@@ -518,7 +603,8 @@ function MainUI(props: any) {
     path, markers, cameraRef, followLocationRef, initialCenter,
     showAll, visibleMarkers, handleDeleteMarker, setShowAll,
     addedRoutes, setAddedRoutes, setRoutesOnMap, routesOnMap,
-    highlightRoute, highlightedRoute, activeLayer, tileDate, tileVersion
+    highlightRoute, highlightedRoute, activeLayer, tileDate, tileVersion,
+    tilesLoading, tilesError
   } = props;
 
   // fetch percorsi salvati quando cambiano gli addedRoutes
@@ -592,7 +678,9 @@ function MainUI(props: any) {
         />
 
         {/* Layer indice funghi — RasterSource, nessun tile fantasma */}
-        <IndiceLayerTiles activeLayer={activeLayer} date={tileDate} version={tileVersion}/>
+        {!tilesLoading && tileDate && tileVersion && (
+          <IndiceLayerTiles activeLayer={activeLayer} date={tileDate} version={tileVersion} />
+        )}
 
         {/* Dot posizione GPS corrente */}
         {currentPosGeoJSON && (
@@ -691,6 +779,17 @@ function MainUI(props: any) {
         <Text style={mStyles.headerTitle}>FUNGHI TRACKER</Text>
         {recording && <Animated.View style={[mStyles.recDot, { opacity: recPulse }]} />}
       </View>
+
+      {tilesLoading && (
+        <View style={mStyles.tileStatusPill}>
+          <Text style={mStyles.tileStatusText}>Caricamento layer indice...</Text>
+        </View>
+      )}
+      {!!tilesError && (
+        <View style={mStyles.tileStatusPillError}>
+          <Text style={mStyles.tileStatusText}>Layer indice non disponibile</Text>
+        </View>
+      )}
 
       {/* ── OVERLAY LISTA FUNGHI (destra) ────────────────────────────────── */}
       {recording && markers.length > 0 && (
@@ -977,6 +1076,9 @@ const mStyles = StyleSheet.create({
   headerEmoji: { fontSize: 16 },
   headerTitle: { color: UI.textPri, fontSize: 13, fontWeight: '800', letterSpacing: 2.5 },
   recDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: UI.redBri, marginLeft: 4 },
+  tileStatusPill: { position: 'absolute', top: 86, alignSelf: 'center', backgroundColor: 'rgba(10,17,11,0.88)', borderWidth: 1, borderColor: UI.border, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 6 },
+  tileStatusPillError: { position: 'absolute', top: 86, alignSelf: 'center', backgroundColor: 'rgba(140,48,48,0.92)', borderWidth: 1, borderColor: UI.redBri, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 6 },
+  tileStatusText: { color: UI.textPri, fontSize: 11, fontWeight: '700' },
   overlayRight: { position: 'absolute', top: 110, right: 8, backgroundColor: 'rgba(10,17,11,0.92)', borderWidth: 1, borderColor: UI.border, borderRadius: 12, padding: 10, width: 168 },
   overlayLeft: { position: 'absolute', top: 110, left: 8, backgroundColor: 'rgba(10,17,11,0.92)', borderWidth: 1, borderColor: UI.border, borderRadius: 12, padding: 10, width: 176 },
   overlayHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },

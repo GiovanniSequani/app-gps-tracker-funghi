@@ -82,8 +82,8 @@ def step_05_regrid_daily(py: str, overwrite_daily_target: bool) -> int:
     return run_cmd(cmd, allow_failure=True)
 
 
-def step_06_update_recent(py: str) -> int:
-    cmd = [py, "-m", "backend.scripts.meteo.06_update_recent_meteo_nc"]
+def step_06_update_recent(py: str, run: str) -> int:
+    cmd = [py, "-m", "backend.scripts.meteo.06_update_recent_meteo_nc", "--run", run]
     return run_cmd(cmd, allow_failure=True)
 
 
@@ -204,7 +204,7 @@ def main() -> None:
 
     # 06) Update recent final dataset
     print("\n[STEP 06] Update recent daily final NetCDF")
-    rc06 = step_06_update_recent(py=py)
+    rc06 = step_06_update_recent(py=py, run=run)
 
     if rc06 != 0:
         print("[WARN] 06 non eseguito con successo.")

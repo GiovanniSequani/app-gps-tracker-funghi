@@ -1,89 +1,58 @@
-# ======================================= #
-# BISOGNA MODIFICARE IN MODO DA LEGGERE   #
-# GEOTIFF DELL'INDICE E PRODURRE LE TILES #
-# ======================================= #
-
-"""
-build_tiles_gdal.py
-===================
-
-Nuova pipeline tile basata su GDAL.
-
-Flusso:
-    GeoJSON (LOD sorgente, default lod2)
-    -> GeoTIFF grayscale
-    -> GeoTIFF colorato RGBA
-    -> tiles XYZ PNG
-    -> upload su Supabase
-
-Uso tipico:
-    python build_tiles_gdal.py --species porcini
-    python build_tiles_gdal.py --species finferli
-    python build_tiles_gdal.py
-    python build_tiles_gdal.py --dry-run
-    python build_tiles_gdal.py --zoom 8 9 10 11 12 13 14
-
-Prerequisiti:
-    - GDAL installato e disponibile nel PATH
-    - Python con osgeo_utils.gdal2tiles disponibile
-    - .env con:
-        SUPABASE_URL=...
-        SUPABASE_SERVICE_KEY=...
-
-Note:
-    - Questo script usa come sorgente SOLO il GeoJSON di un LOD, di default lod2.
-    - L'output finale su Supabase è nel formato standard:
-        tiles/{species}/{z}/{x}/{y}.png
-"""
-
 from __future__ import annotations
 
 import argparse
 import os
-import time
 import shutil
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Iterable
+
 import requests
 from dotenv import load_dotenv
 
+from backend.config.index_config import INDEX_OUTPUT_TEMPLATE
+from backend.config.paths import OUT_TILES_DIR, TMP_GDAL_DIR
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Config
-# ──────────────────────────────────────────────────────────────────────────────
 
-load_dotenv()
-
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+ROOT_DIR = Path(__file__).resolve().parents[3]
 SUPABASE_BUCKET = "tiles"
-
 DEFAULT_SPECIES = ["porcini", "finferli"]
 DEFAULT_ZOOMS = list(range(8, 15))
+LOD_STEPS = {2: 0.003, 3: 0.008, 4: 0.02, 5: 0.05, 6: 0.12}
 
-DATE = '2026-03-31'
-VERSION = '1'
-
-# Step del LOD sorgente. Per ora useremo lod2 come base finale.
-LOD_STEPS = {
-    2: 0.003,
-    3: 0.008,
-    4: 0.02,
-    5: 0.05,
-    6: 0.12,
-}
+SUPABASE_URL = None
+SUPABASE_KEY = None
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Utilità
-# ──────────────────────────────────────────────────────────────────────────────
+def load_env(env_file: str | None = None) -> None:
+    candidates = []
+    if env_file:
+        candidates.append(Path(env_file))
+    candidates.extend(
+        [
+            ROOT_DIR / ".env",
+            ROOT_DIR / "backend" / ".env",
+            ROOT_DIR / "legacy-funghi-index" / ".env",
+        ]
+    )
+    for path in candidates:
+        if path.is_file():
+            load_dotenv(path)
+            return
+
+
+def refresh_env(env_file: str | None = None) -> None:
+    global SUPABASE_URL, SUPABASE_KEY
+    load_env(env_file)
+    SUPABASE_URL = os.getenv("SUPABASE_URL")
+    SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+
 
 def run_cmd(cmd: list[str], cwd: Path | None = None) -> None:
-    """Esegue un comando e fallisce con errore chiaro se qualcosa va storto."""
-    print("\n[CMD]", " ".join(str(c) for c in cmd))
+    print("\n[CMD]", " ".join(str(c) for c in cmd), flush=True)
     result = subprocess.run(
         cmd,
         cwd=str(cwd) if cwd else None,
@@ -95,14 +64,14 @@ def run_cmd(cmd: list[str], cwd: Path | None = None) -> None:
     if result.returncode != 0:
         if result.stderr.strip():
             print(result.stderr)
-        raise RuntimeError(f"Comando fallito con exit code {result.returncode}")
+        raise RuntimeError(f"Command failed with exit code {result.returncode}")
 
 
 def ensure_exists(path: Path, kind: str = "file") -> None:
     if kind == "file" and not path.is_file():
-        raise FileNotFoundError(f"File non trovato: {path}")
+        raise FileNotFoundError(f"File not found: {path}")
     if kind == "dir" and not path.is_dir():
-        raise FileNotFoundError(f"Directory non trovata: {path}")
+        raise FileNotFoundError(f"Directory not found: {path}")
 
 
 def clean_dir(path: Path) -> None:
@@ -111,44 +80,44 @@ def clean_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def zooms_to_gdal_arg(zooms: list[int]) -> str:
-    """
-    Converte una lista di zoom in stringa per gdal2tiles.
-    Esempi:
-        [8,9,10,11,12,13,14] -> "8-14"
-        [8,10,11,13] -> "8,10-11,13"
-    """
-    if not zooms:
-        raise ValueError("Lista zoom vuota")
+def find_gdal2tiles_cmd() -> list[str]:
+    configured = os.getenv("GDAL2TILES_EXE")
+    if configured and Path(configured).exists():
+        return [configured]
 
+    found = shutil.which("gdal2tiles") or shutil.which("gdal2tiles.py") or shutil.which("gdal2tiles.exe")
+    if found:
+        return [found]
+
+    osgeo_root = Path(os.getenv("OSGEO4W_ROOT", r"C:\Users\giova\AppData\Local\Programs\OSGeo4W"))
+    exe = osgeo_root / "apps" / "Python312" / "Scripts" / "gdal2tiles.exe"
+    py = osgeo_root / "apps" / "Python312" / "python.exe"
+    if exe.exists():
+        return [str(exe)]
+    if py.exists():
+        return [str(py), "-m", "osgeo_utils.gdal2tiles"]
+
+    return [sys.executable, "-m", "osgeo_utils.gdal2tiles"]
+
+
+def zooms_to_gdal_arg(zooms: list[int]) -> str:
     zooms = sorted(set(zooms))
+    if not zooms:
+        raise ValueError("Empty zoom list")
+
     ranges = []
     start = prev = zooms[0]
-
     for z in zooms[1:]:
         if z == prev + 1:
             prev = z
             continue
         ranges.append((start, prev))
         start = prev = z
-
     ranges.append((start, prev))
-
-    parts = []
-    for a, b in ranges:
-        parts.append(str(a) if a == b else f"{a}-{b}")
-    return ",".join(parts)
+    return ",".join(str(a) if a == b else f"{a}-{b}" for a, b in ranges)
 
 
 def write_colormap_file(path: Path) -> None:
-    """
-    Colormap richiesta:
-    bianco -> azzurro -> verde -> giallo -> rosso -> marrone
-
-    Nota:
-    - 'nv' e score 0 hanno alpha 0, quindi background trasparente.
-    - Il resto cresce gradualmente come opacità.
-    """
     content = """nv 255 255 255 0
 0   255 255 255 0
 5   255 255 255 40
@@ -164,117 +133,91 @@ def write_colormap_file(path: Path) -> None:
 
 
 def check_environment(dry_run: bool) -> None:
-    """Controlli minimi su GDAL e credenziali."""
-    try:
-        run_cmd(["gdalinfo", "--version"])
-    except Exception as e:
-        raise RuntimeError(
-            "GDAL non disponibile nel PATH. Verifica che gdalinfo funzioni dal terminale."
-        ) from e
-
-    try:
-        run_cmd([sys.executable, "-m", "osgeo_utils.gdal2tiles", "--help"])
-    except Exception as e:
-        raise RuntimeError(
-            "gdal2tiles non disponibile nel Python corrente. "
-            "Lancia lo script con il Python corretto (quello che vede osgeo_utils)."
-        ) from e
-
-    if not dry_run:
-        if not SUPABASE_URL or not SUPABASE_KEY:
-            raise RuntimeError(
-                "SUPABASE_URL o SUPABASE_SERVICE_KEY mancanti nel .env"
-            )
+    run_cmd(["gdalinfo", "--version"])
+    run_cmd([*find_gdal2tiles_cmd(), "--help"])
+    if not dry_run and (not SUPABASE_URL or not SUPABASE_KEY):
+        raise RuntimeError("SUPABASE_URL or SUPABASE_SERVICE_KEY missing. Add .env or pass --env-file.")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# GDAL pipeline
-# ──────────────────────────────────────────────────────────────────────────────
+def translate_index_netcdf(index_nc: Path, species: str, tif_path: Path) -> None:
+    ensure_exists(index_nc)
+    variable_name = f"{species}_score"
+    src = f"NETCDF:{index_nc}:{variable_name}"
+    cmd = [
+        "gdal_translate",
+        "-of",
+        "GTiff",
+        "-ot",
+        "Float32",
+        "-a_srs",
+        "EPSG:4326",
+        "-co",
+        "COMPRESS=DEFLATE",
+        "-co",
+        "PREDICTOR=2",
+        "-co",
+        "ZLEVEL=6",
+        src,
+        str(tif_path),
+    ]
+    run_cmd(cmd)
 
-def rasterize_geojson(
-    geojson_path: Path,
-    tif_path: Path,
-    step_deg: float,
-) -> None:
-    """
-    Rasterizza il GeoJSON usando il campo 'score'.
 
-    Salviamo in Float32 per preservare i decimali in questa fase.
-    """
+def rasterize_geojson(geojson_path: Path, tif_path: Path, step_deg: float) -> None:
+    ensure_exists(geojson_path)
     cmd = [
         "gdal_rasterize",
-        "-a", "score",
-        "-of", "GTiff",
-        "-tr", str(step_deg), str(step_deg),
-        "-ot", "Float32",
-        "-a_nodata", "0",
-        "-co", "COMPRESS=DEFLATE",
-        "-co", "PREDICTOR=2",
-        "-co", "ZLEVEL=6",
+        "-a",
+        "score",
+        "-of",
+        "GTiff",
+        "-tr",
+        str(step_deg),
+        str(step_deg),
+        "-ot",
+        "Float32",
+        "-a_nodata",
+        "0",
+        "-co",
+        "COMPRESS=DEFLATE",
+        "-co",
+        "PREDICTOR=2",
+        "-co",
+        "ZLEVEL=6",
         str(geojson_path),
         str(tif_path),
     ]
     run_cmd(cmd)
 
 
-def colorize_tif(
-    src_tif: Path,
-    colormap_txt: Path,
-    dst_tif: Path,
-) -> None:
-    """
-    Applica la colormap e produce un TIFF RGBA con alpha.
-    """
-    cmd = [
-        "gdaldem",
-        "color-relief",
-        str(src_tif),
-        str(colormap_txt),
-        str(dst_tif),
-        "-alpha",
-    ]
+def colorize_tif(src_tif: Path, colormap_txt: Path, dst_tif: Path) -> None:
+    cmd = ["gdaldem", "color-relief", str(src_tif), str(colormap_txt), str(dst_tif), "-alpha"]
     run_cmd(cmd)
 
 
-def generate_xyz_tiles(
-    color_tif: Path,
-    tile_output_dir: Path,
-    zooms: list[int],
-    processes: int,
-) -> None:
-    """
-    Genera tiles XYZ nel formato:
-        tile_output_dir/{z}/{x}/{y}.png
-    """
-    z_arg = zooms_to_gdal_arg(zooms)
-
+def generate_xyz_tiles(color_tif: Path, tile_output_dir: Path, zooms: list[int], processes: int) -> None:
     cmd = [
-        sys.executable,
-        "-m",
-        "osgeo_utils.gdal2tiles",
+        *find_gdal2tiles_cmd(),
         "--xyz",
-        "-z", z_arg,
-        "--processes", str(processes),
-        "-w", "none",
+        "-z",
+        zooms_to_gdal_arg(zooms),
+        "--processes",
+        str(processes),
+        "-w",
+        "none",
         str(color_tif),
         str(tile_output_dir),
     ]
     run_cmd(cmd)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Upload Supabase
-# ──────────────────────────────────────────────────────────────────────────────
+def iter_png_files(root: Path) -> Iterable[Path]:
+    for path in root.rglob("*.png"):
+        if path.is_file():
+            yield path
 
-def upload_one_file(
-    local_path: Path,
-    remote_path: str,
-    max_retries: int = 10,
-) -> tuple[bool, str]:
-    """
-    Carica un file nel bucket tiles.
-    Restituisce (ok, msg).
-    """
+
+def upload_one_file(local_path: Path, remote_path: str, max_retries: int = 8) -> tuple[bool, str]:
     url = f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/{remote_path}"
     headers = {
         "Authorization": f"Bearer {SUPABASE_KEY}",
@@ -286,95 +229,59 @@ def upload_one_file(
         try:
             with local_path.open("rb") as f:
                 resp = requests.post(url, headers=headers, data=f, timeout=120)
-
             if resp.status_code in (200, 201):
                 return True, remote_path
-
-            # retry solo su errori temporanei
-            if resp.status_code in (408, 409, 425, 429, 500, 502, 503, 504):
-                if attempt < max_retries:
-                    time.sleep(1.5 * attempt)
-                    continue
-
+            if resp.status_code in (408, 409, 425, 429, 500, 502, 503, 504) and attempt < max_retries:
+                time.sleep(1.5 * attempt)
+                continue
             return False, f"{remote_path} HTTP {resp.status_code}: {resp.text[:500]}"
-
-        except requests.RequestException as e:
+        except requests.RequestException as exc:
             if attempt < max_retries:
                 time.sleep(1.5 * attempt)
                 continue
-            return False, f"{remote_path}: {type(e).__name__}: {e}"
+            return False, f"{remote_path}: {type(exc).__name__}: {exc}"
 
-    return False, f"{remote_path}: errore sconosciuto"
-
-
-def iter_png_files(root: Path) -> Iterable[Path]:
-    for path in root.rglob("*.png"):
-        if path.is_file():
-            yield path
+    return False, f"{remote_path}: unknown upload error"
 
 
-def upload_tiles_to_supabase(
-    species: str,
-    species_tile_dir: Path,
-    workers: int,
-) -> None:
-    global DATE, VERSION
-
-    ensure_exists(species_tile_dir, "dir")
-
+def upload_tiles_to_supabase(date: str, version: str, species: str, species_tile_dir: Path, workers: int) -> None:
     png_files = list(iter_png_files(species_tile_dir))
     total = len(png_files)
     if total == 0:
-        print(f"[WARN] Nessuna tile PNG trovata in {species_tile_dir}")
-        return
+        raise RuntimeError(f"No PNG tiles found in {species_tile_dir}")
 
-    print(f"\n[UPLOAD] {species}: {total} tile da caricare su Supabase...")
-
+    print(f"\n[UPLOAD] {species}: {total} PNG tiles")
     ok_count = 0
-    fail_count = 0
-    failures: list[str] = []
-
+    failures = []
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {}
         for local_path in png_files:
             rel = local_path.relative_to(species_tile_dir).as_posix()
-            remote_path = f"{DATE}_v{VERSION}/{species}/{rel}"
-            future = executor.submit(upload_one_file, local_path, remote_path)
-            futures[future] = remote_path
+            remote_path = f"{date}_v{version}/{species}/{rel}"
+            futures[executor.submit(upload_one_file, local_path, remote_path)] = remote_path
 
-        done = 0
-        for future in as_completed(futures):
-            done += 1
+        for done, future in enumerate(as_completed(futures), start=1):
             ok, msg = future.result()
             if ok:
                 ok_count += 1
             else:
-                fail_count += 1
                 failures.append(msg)
                 print(f"[FAIL] {msg}")
-
             if done % 250 == 0 or done == total:
-                print(f"  {done}/{total}... ok={ok_count}, fail={fail_count}", flush=True)
+                print(f"  {done}/{total} ok={ok_count} fail={len(failures)}", flush=True)
 
     if failures:
-        err_file = species_tile_dir.parent / f"{species}_upload_failures.txt"
-        err_file.write_text("\n".join(failures), encoding="utf-8")
-        print(f"\n[UPLOAD ERRORS] salvati in: {err_file}")
+        failure_path = species_tile_dir.parent / f"{species}_upload_failures.txt"
+        failure_path.write_text("\n".join(failures), encoding="utf-8")
+        raise RuntimeError(f"Upload incomplete for {species}. Failure log: {failure_path}")
 
-    if fail_count > 0:
-        raise RuntimeError(
-            f"Upload incompleto per {species}: {ok_count} ok, {fail_count} fallite"
-        )
-
-    print(f"[UPLOAD OK] {species}: {ok_count} tile caricate")
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Main pipeline
-# ──────────────────────────────────────────────────────────────────────────────
 
 def build_species_tiles(
+    date: str,
+    version: str,
     species: str,
+    source_mode: str,
+    index_nc: Path,
     source_lod: int,
     zooms: list[int],
     geojson_dir: Path,
@@ -385,51 +292,43 @@ def build_species_tiles(
     dry_run: bool,
     keep_intermediate: bool,
 ) -> None:
-    
-    global DATE, VERSION
-
-    if source_lod not in LOD_STEPS:
-        raise ValueError(f"LOD sorgente non supportato: {source_lod}")
-
-    step_deg = LOD_STEPS[source_lod]
-
-    geojson_path = geojson_dir / f"{species}_lod{source_lod}.geojson"
-    ensure_exists(geojson_path, "file")
-
-    species_work_dir = work_dir / species
-    species_tile_dir = tile_dir / f'{DATE}_v{VERSION}' / species
+    species_work_dir = work_dir / f"{date}_v{version}" / species
+    species_tile_dir = tile_dir / f"{date}_v{version}" / species
     species_work_dir.mkdir(parents=True, exist_ok=True)
     clean_dir(species_tile_dir)
 
-    raw_tif = species_work_dir / f"{species}_lod{source_lod}.tif"
-    color_tif = species_work_dir / f"{species}_lod{source_lod}_color.tif"
+    raw_tif = species_work_dir / f"{species}_score.tif"
+    color_tif = species_work_dir / f"{species}_color.tif"
     colormap_txt = species_work_dir / "funghi_colormap.txt"
 
-    print("\n" + "=" * 70)
-    print(f"[{species.upper()}]")
-    print(f"GeoJSON sorgente : {geojson_path}")
-    print(f"LOD sorgente     : {source_lod}")
-    print(f"Step raster      : {step_deg}")
-    print(f"Zoom             : {zooms}")
-    print(f"Tile output dir  : {species_tile_dir}")
-    print("=" * 70)
+    print("\n" + "=" * 72)
+    print(f"[{species.upper()}] source={source_mode} zooms={zooms}")
+    print(f"Work dir : {species_work_dir}")
+    print(f"Tiles dir: {species_tile_dir}")
+    print("=" * 72)
 
     write_colormap_file(colormap_txt)
 
-    print("\n[1/4] Rasterizzazione GeoJSON -> TIFF...")
-    rasterize_geojson(geojson_path, raw_tif, step_deg)
+    print("\n[1/4] Build score GeoTIFF")
+    if source_mode == "index-nc":
+        translate_index_netcdf(index_nc, species, raw_tif)
+    else:
+        if source_lod not in LOD_STEPS:
+            raise ValueError(f"Unsupported source LOD: {source_lod}")
+        geojson_path = geojson_dir / f"{species}_lod{source_lod}.geojson"
+        rasterize_geojson(geojson_path, raw_tif, LOD_STEPS[source_lod])
 
-    print("\n[2/4] Applicazione colormap...")
+    print("\n[2/4] Apply RGBA colormap")
     colorize_tif(raw_tif, colormap_txt, color_tif)
 
-    print("\n[3/4] Generazione tiles XYZ...")
+    print("\n[3/4] Generate XYZ tiles")
     generate_xyz_tiles(color_tif, species_tile_dir, zooms, gdal_processes)
 
     if dry_run:
-        print(f"\n[4/4] Dry run: upload saltato. Tile locali in: {species_tile_dir.resolve()}")
+        print(f"\n[4/4] Dry run: upload skipped. Tiles at {species_tile_dir.resolve()}")
     else:
-        print("\n[4/4] Upload su Supabase...")
-        upload_tiles_to_supabase(species, species_tile_dir, upload_workers)
+        print("\n[4/4] Upload Supabase")
+        upload_tiles_to_supabase(date, version, species, species_tile_dir, upload_workers)
 
     if not keep_intermediate:
         for path in (raw_tif, color_tif, colormap_txt):
@@ -438,50 +337,71 @@ def build_species_tiles(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--species", nargs="+", choices=DEFAULT_SPECIES)
-    parser.add_argument("--source-lod", type=int, default=2,
-                        help="LOD GeoJSON sorgente da usare come base finale (default: 2)")
-    parser.add_argument("--zoom", nargs="+", type=int, default=DEFAULT_ZOOMS,
-                        help="Lista zoom da generare (default: 8 9 10 11 12 13 14)")
-    parser.add_argument("--geojson-dir", default="output")
-    parser.add_argument("--work-dir", default="tmp_gdal")
-    parser.add_argument("--tile-dir", default="tiles_local")
-    parser.add_argument("--gdal-processes", type=int, default=os.cpu_count() or 4,
-                        help="Numero processi per gdal2tiles")
-    parser.add_argument("--upload-workers", type=int, default=8,
-                        help="Numero worker per upload Supabase")
+    parser = argparse.ArgumentParser(description="Build and upload mushroom index XYZ tiles.")
+    parser.add_argument("--date", required=True, help="Dataset date YYYY-MM-DD")
+    parser.add_argument("--version", default="1", help="Dataset version used in tile path")
+    parser.add_argument("--species", nargs="+", choices=DEFAULT_SPECIES, default=DEFAULT_SPECIES)
+    parser.add_argument("--source-mode", choices=["index-nc", "geojson"], default="index-nc")
+    parser.add_argument("--index-nc", default=None)
+    parser.add_argument("--source-lod", type=int, default=2)
+    parser.add_argument("--zoom", nargs="+", type=int, default=DEFAULT_ZOOMS)
+    parser.add_argument("--geojson-dir", default=str(ROOT_DIR / "backend" / "outputs" / "index_geojson"))
+    parser.add_argument("--work-dir", default=str(TMP_GDAL_DIR))
+    parser.add_argument("--tile-dir", default=str(OUT_TILES_DIR))
+    parser.add_argument("--gdal-processes", type=int, default=max(1, (os.cpu_count() or 4) // 2))
+    parser.add_argument("--upload-workers", type=int, default=8)
+    parser.add_argument("--env-file", default=None)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--upload-only", action="store_true", help="Upload existing local tiles without rebuilding them.")
     parser.add_argument("--keep-intermediate", action="store_true")
     args = parser.parse_args()
 
-    species_list = args.species if args.species else DEFAULT_SPECIES
+    refresh_env(args.env_file)
+    index_nc = Path(args.index_nc) if args.index_nc else Path(str(INDEX_OUTPUT_TEMPLATE).format(date=args.date))
     geojson_dir = Path(args.geojson_dir)
     work_dir = Path(args.work_dir)
     tile_dir = Path(args.tile_dir)
 
-    ensure_exists(geojson_dir, "dir")
+    if args.upload_only:
+        pass
+    elif args.source_mode == "index-nc":
+        ensure_exists(index_nc)
+    else:
+        ensure_exists(geojson_dir, "dir")
     work_dir.mkdir(parents=True, exist_ok=True)
     tile_dir.mkdir(parents=True, exist_ok=True)
 
-    print("=" * 70)
-    print("BUILD TILES GDAL")
-    print(f"Specie           : {species_list}")
-    print(f"Source LOD       : {args.source_lod}")
-    print(f"Zoom             : {args.zoom}")
-    print(f"GeoJSON dir      : {geojson_dir.resolve()}")
-    print(f"Work dir         : {work_dir.resolve()}")
-    print(f"Tile dir         : {tile_dir.resolve()}")
-    print(f"GDAL processes   : {args.gdal_processes}")
-    print(f"Upload workers   : {args.upload_workers}")
-    print(f"Dry run          : {args.dry_run}")
-    print("=" * 70)
+    print("=" * 72)
+    print("BUILD FUNGI INDEX TILES")
+    print(f"Date/version  : {args.date}_v{args.version}")
+    print(f"Species       : {args.species}")
+    print(f"Source mode   : {args.source_mode}")
+    print(f"Index NetCDF  : {index_nc.resolve() if args.source_mode == 'index-nc' else '[unused]'}")
+    print(f"Zooms         : {args.zoom}")
+    print(f"Tile dir      : {tile_dir.resolve()}")
+    print(f"Dry run       : {args.dry_run}")
+    print(f"Upload only   : {args.upload_only}")
+    print("=" * 72)
 
     check_environment(dry_run=args.dry_run)
 
-    for species in species_list:
+    if args.upload_only:
+        if args.dry_run:
+            raise SystemExit("--upload-only cannot be combined with --dry-run")
+        for species in args.species:
+            species_tile_dir = tile_dir / f"{args.date}_v{args.version}" / species
+            ensure_exists(species_tile_dir, "dir")
+            upload_tiles_to_supabase(args.date, args.version, species, species_tile_dir, args.upload_workers)
+        print("\nDone")
+        return
+
+    for species in args.species:
         build_species_tiles(
+            date=args.date,
+            version=args.version,
             species=species,
+            source_mode=args.source_mode,
+            index_nc=index_nc,
             source_lod=args.source_lod,
             zooms=args.zoom,
             geojson_dir=geojson_dir,
@@ -493,7 +413,7 @@ def main() -> None:
             keep_intermediate=args.keep_intermediate,
         )
 
-    print("\nDone ✓")
+    print("\nDone")
 
 
 if __name__ == "__main__":

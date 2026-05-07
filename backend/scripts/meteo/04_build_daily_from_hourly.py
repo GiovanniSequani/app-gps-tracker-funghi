@@ -300,6 +300,7 @@ def build_daily_candidates(ds_hourly: xr.Dataset, tz_name: str) -> xr.Dataset:
             ),
             "input_valid_time_start_utc": ds_hourly.attrs.get("valid_time_start_utc", ""),
             "input_valid_time_end_utc": ds_hourly.attrs.get("valid_time_end_utc", ""),
+            "source_latest_run_time_utc": ds_hourly.attrs.get("latest_run_time_utc", ""),
             "created_utc": datetime.now(UTC).isoformat(),
         },
     )

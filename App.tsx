@@ -1,7 +1,7 @@
 import React from 'react';
 import {
   StyleSheet, Text, View, Button, useColorScheme, Alert, TextInput, Modal, Linking,
-  TouchableOpacity, Animated, StatusBar, Platform, ScrollView, RefreshControl, PanResponder
+  TouchableOpacity, Animated, StatusBar, Platform, ScrollView, RefreshControl, PanResponder, useWindowDimensions
 } from 'react-native';
 import MapLibreGL, {
   MapView,
@@ -73,9 +73,16 @@ type TileSet = {
 const Tab = createBottomTabNavigator();
 const LOCATION_TASK_NAME = 'background-location-task';
 const BG_POSITIONS_FILE = `${FileSystemLegacy.cacheDirectory}bg_positions.json`;
-const SUPABASE_URL =
+const DEFAULT_SUPABASE_URL = 'https://ovdfsehovsrdzcoqdlfh.supabase.co';
+const ENV_SUPABASE_URL =
   process.env?.EXPO_PUBLIC_SUPABASE_URL ??
-  ((Constants.expoConfig?.extra?.supabaseUrl as string | undefined) ?? 'https://ovdfsehovsrdzcoqdlfh.supabase.co');
+  ((Constants.expoConfig?.extra?.supabaseUrl as string | undefined) ?? '');
+const isValidSupabaseUrl = (value: string) =>
+  /^https:\/\/[a-z0-9]+\.supabase\.co$/i.test(value) &&
+  !value.includes('xxxxx') &&
+  !value.includes('your-project');
+const SUPABASE_URL =
+  isValidSupabaseUrl(ENV_SUPABASE_URL) ? ENV_SUPABASE_URL : DEFAULT_SUPABASE_URL;
 const SUPABASE_BUCKET = 'tiles';
 const DEFAULT_TILE_SET: TileSet = { date: '2026-05-05', version: '1' };
 const SUPABASE_ANON_KEY =
@@ -295,8 +302,6 @@ export default function App() {
   const [tileVersion, setTileVersion] = React.useState(DEFAULT_TILE_SET.version);
   const [tileSets, setTileSets] = React.useState<TileSet[]>([]);
   const [tileOpacity, setTileOpacity] = React.useState(0.85);
-  const [indexPanelSide, setIndexPanelSide] = React.useState<'left' | 'right'>('right');
-  const [indexPanelCollapsed, setIndexPanelCollapsed] = React.useState(false);
   const [tilesLoading, setTilesLoading] = React.useState(true);
   const [tilesError, setTilesError] = React.useState<string | null>(null);
 
@@ -612,10 +617,6 @@ export default function App() {
                 tileSets={tileSets}
                 tileOpacity={tileOpacity}
                 setTileOpacity={setTileOpacity}
-                indexPanelSide={indexPanelSide}
-                setIndexPanelSide={setIndexPanelSide}
-                indexPanelCollapsed={indexPanelCollapsed}
-                setIndexPanelCollapsed={setIndexPanelCollapsed}
                 tilesLoading={tilesLoading}
                 tilesError={tilesError}
               />
@@ -669,9 +670,9 @@ function MainUI(props: any) {
     highlightRoute, highlightedRoute, activeLayer, setActiveLayer,
     tileDate, setTileDate, tileVersion, setTileVersion, tileSets,
     tileOpacity, setTileOpacity,
-    indexPanelSide, setIndexPanelSide, indexPanelCollapsed, setIndexPanelCollapsed,
     tilesLoading, tilesError
   } = props;
+  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
 
   // fetch percorsi salvati quando cambiano gli addedRoutes
   React.useEffect(() => {
@@ -730,23 +731,54 @@ function MainUI(props: any) {
     setTileVersion(tileSets[normalized].version);
   };
   const opacitySteps = [0.25, 0.5, 0.75, 1];
-  const cameraDefaultSettings = React.useMemo(() => ({
-    centerCoordinate: initialCenter,
-    zoomLevel: 15,
-  }), []);
+  const [indexPanelCollapsed, setIndexPanelCollapsed] = React.useState(false);
+  const [panelSize, setPanelSize] = React.useState({ width: 210, height: 230 });
+  const [panelPos, setPanelPos] = React.useState({ x: 8, y: 96 });
+  const panelStartPosRef = React.useRef(panelPos);
+  const hasPlacedPanelRef = React.useRef(false);
+  const panelWidth = indexPanelCollapsed ? 118 : panelSize.width;
+  const panelBounds = React.useMemo(() => {
+    const minX = 8;
+    const maxX = Math.max(minX, screenWidth - panelWidth - 8);
+    const minY = 56;
+    const maxY = Math.max(minY, screenHeight - panelSize.height - 78);
+    return { minX, maxX, minY, maxY };
+  }, [screenWidth, screenHeight, panelWidth, panelSize.height]);
+  const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+  React.useEffect(() => {
+    if (!hasPlacedPanelRef.current) {
+      setPanelPos((prev) => ({ ...prev, x: panelBounds.maxX }));
+      hasPlacedPanelRef.current = true;
+      return;
+    }
+    setPanelPos((prev) => ({
+      x: clamp(prev.x, panelBounds.minX, panelBounds.maxX),
+      y: clamp(prev.y, panelBounds.minY, panelBounds.maxY),
+    }));
+  }, [panelBounds.minX, panelBounds.maxX, panelBounds.minY, panelBounds.maxY]);
   const panelPanResponder = React.useMemo(
     () => PanResponder.create({
-      onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dx) > 12 && Math.abs(gesture.dx) > Math.abs(gesture.dy),
-      onPanResponderRelease: (_, gesture) => {
-        if (gesture.dx > 20) setIndexPanelSide('right');
-        if (gesture.dx < -20) setIndexPanelSide('left');
+      onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dx) > 3 || Math.abs(gesture.dy) > 3,
+      onPanResponderGrant: () => {
+        panelStartPosRef.current = panelPos;
       },
+      onPanResponderMove: (_, gesture) => {
+        const nextX = clamp(panelStartPosRef.current.x + gesture.dx, panelBounds.minX, panelBounds.maxX);
+        const nextY = clamp(panelStartPosRef.current.y + gesture.dy, panelBounds.minY, panelBounds.maxY);
+        setPanelPos({ x: nextX, y: nextY });
+      },
+      onPanResponderRelease: (_, gesture) => {
+        const releasedX = clamp(panelStartPosRef.current.x + gesture.dx, panelBounds.minX, panelBounds.maxX);
+        const releasedY = clamp(panelStartPosRef.current.y + gesture.dy, panelBounds.minY, panelBounds.maxY);
+        const snapLeftDistance = Math.abs(releasedX - panelBounds.minX);
+        const snapRightDistance = Math.abs(releasedX - panelBounds.maxX);
+        const snappedX = snapLeftDistance <= snapRightDistance ? panelBounds.minX : panelBounds.maxX;
+        setPanelPos({ x: snappedX, y: releasedY });
+      },
+      onPanResponderTerminationRequest: () => true,
     }),
-    [setIndexPanelSide]
+    [panelPos, panelBounds.minX, panelBounds.maxX, panelBounds.minY, panelBounds.maxY]
   );
-  const panelSideStyle = indexPanelSide === 'right'
-    ? { right: 8, left: undefined }
-    : { left: 8, right: undefined };
 
   return (
     <SafeAreaView style={mStyles.root}>
@@ -763,7 +795,6 @@ function MainUI(props: any) {
       >
         <Camera
           ref={cameraRef}
-          defaultSettings={cameraDefaultSettings}
         />
 
         {/* Layer indice funghi — RasterSource, nessun tile fantasma */}
@@ -882,10 +913,20 @@ function MainUI(props: any) {
 
       {activeLayer !== 'off' && !tilesLoading && tileDate && tileVersion && (
         <View
-          style={[mStyles.indexPanel, panelSideStyle, indexPanelCollapsed && mStyles.indexPanelCollapsed]}
-          {...panelPanResponder.panHandlers}
+          style={[
+            mStyles.indexPanel,
+            indexPanelCollapsed && mStyles.indexPanelCollapsed,
+            { left: panelPos.x, top: panelPos.y, width: panelWidth },
+          ]}
+          onLayout={(event) => {
+            const { width, height } = event.nativeEvent.layout;
+            setPanelSize((prev) => {
+              if (Math.abs(prev.width - width) < 1 && Math.abs(prev.height - height) < 1) return prev;
+              return { width, height };
+            });
+          }}
         >
-          <View style={mStyles.indexPanelHeader}>
+          <View style={mStyles.indexPanelHeader} {...panelPanResponder.panHandlers}>
             <Text style={mStyles.indexPanelTitle}>INDICE</Text>
             <View style={mStyles.indexPanelActions}>
               <TouchableOpacity onPress={() => setIndexPanelCollapsed((value: boolean) => !value)} style={mStyles.indexCloseBtn}>
@@ -1253,7 +1294,7 @@ const mStyles = StyleSheet.create({
   tileStatusPill: { position: 'absolute', top: 86, alignSelf: 'center', backgroundColor: 'rgba(10,17,11,0.88)', borderWidth: 1, borderColor: UI.border, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 6 },
   tileStatusPillError: { position: 'absolute', top: 86, alignSelf: 'center', backgroundColor: 'rgba(140,48,48,0.92)', borderWidth: 1, borderColor: UI.redBri, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 6 },
   tileStatusText: { color: UI.textPri, fontSize: 11, fontWeight: '700' },
-  indexPanel: { position: 'absolute', top: 96, right: 8, width: 210, backgroundColor: 'rgba(10,17,11,0.94)', borderWidth: 1, borderColor: UI.borderHi, borderRadius: 10, padding: 10, gap: 9 },
+  indexPanel: { position: 'absolute', backgroundColor: 'rgba(10,17,11,0.94)', borderWidth: 1, borderColor: UI.borderHi, borderRadius: 10, padding: 10, gap: 9 },
   indexPanelCollapsed: { width: 118 },
   indexPanelHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   indexPanelTitle: { color: UI.textPri, fontSize: 11, fontWeight: '900', letterSpacing: 2 },

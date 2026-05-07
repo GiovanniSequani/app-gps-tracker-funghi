@@ -1,7 +1,7 @@
 import React from 'react';
 import {
   StyleSheet, Text, View, Button, useColorScheme, Alert, TextInput, Modal, Linking,
-  TouchableOpacity, Animated, StatusBar, Platform, ScrollView, RefreshControl
+  TouchableOpacity, Animated, StatusBar, Platform, ScrollView, RefreshControl, PanResponder
 } from 'react-native';
 import MapLibreGL, {
   MapView,
@@ -28,6 +28,7 @@ import { IndiceLayerTiles } from './IndiceLayers';
 
 declare const process: {
   env?: {
+    EXPO_PUBLIC_SUPABASE_URL?: string;
     EXPO_PUBLIC_SUPABASE_ANON_KEY?: string;
   };
 };
@@ -72,7 +73,9 @@ type TileSet = {
 const Tab = createBottomTabNavigator();
 const LOCATION_TASK_NAME = 'background-location-task';
 const BG_POSITIONS_FILE = `${FileSystemLegacy.cacheDirectory}bg_positions.json`;
-const SUPABASE_URL = 'https://ovdfsehovsrdzcoqdlfh.supabase.co';
+const SUPABASE_URL =
+  process.env?.EXPO_PUBLIC_SUPABASE_URL ??
+  ((Constants.expoConfig?.extra?.supabaseUrl as string | undefined) ?? 'https://ovdfsehovsrdzcoqdlfh.supabase.co');
 const SUPABASE_BUCKET = 'tiles';
 const DEFAULT_TILE_SET: TileSet = { date: '2026-05-05', version: '1' };
 const SUPABASE_ANON_KEY =
@@ -292,6 +295,8 @@ export default function App() {
   const [tileVersion, setTileVersion] = React.useState(DEFAULT_TILE_SET.version);
   const [tileSets, setTileSets] = React.useState<TileSet[]>([]);
   const [tileOpacity, setTileOpacity] = React.useState(0.85);
+  const [indexPanelSide, setIndexPanelSide] = React.useState<'left' | 'right'>('right');
+  const [indexPanelCollapsed, setIndexPanelCollapsed] = React.useState(false);
   const [tilesLoading, setTilesLoading] = React.useState(true);
   const [tilesError, setTilesError] = React.useState<string | null>(null);
 
@@ -364,6 +369,15 @@ export default function App() {
       setTilesError(null);
     }
   }, [tileDate, tileVersion, tilesError]);
+
+  React.useEffect(() => {
+    console.log('[tiles] Selection changed', {
+      activeLayer,
+      tileDate,
+      tileVersion,
+      tileOpacity,
+    });
+  }, [activeLayer, tileDate, tileVersion, tileOpacity]);
 
   // posizione iniziale
   React.useEffect(() => {
@@ -598,6 +612,10 @@ export default function App() {
                 tileSets={tileSets}
                 tileOpacity={tileOpacity}
                 setTileOpacity={setTileOpacity}
+                indexPanelSide={indexPanelSide}
+                setIndexPanelSide={setIndexPanelSide}
+                indexPanelCollapsed={indexPanelCollapsed}
+                setIndexPanelCollapsed={setIndexPanelCollapsed}
                 tilesLoading={tilesLoading}
                 tilesError={tilesError}
               />
@@ -651,6 +669,7 @@ function MainUI(props: any) {
     highlightRoute, highlightedRoute, activeLayer, setActiveLayer,
     tileDate, setTileDate, tileVersion, setTileVersion, tileSets,
     tileOpacity, setTileOpacity,
+    indexPanelSide, setIndexPanelSide, indexPanelCollapsed, setIndexPanelCollapsed,
     tilesLoading, tilesError
   } = props;
 
@@ -706,11 +725,28 @@ function MainUI(props: any) {
   const selectedTileLabel = tileDate && tileVersion ? `${tileDate.replace(/_/g, '/')}  v${tileVersion}` : 'Nessun dataset';
   const selectTileAt = (index: number) => {
     if (tileSets.length === 0) return;
-    const normalized = (index + tileSets.length) % tileSets.length;
+    const normalized = ((index % tileSets.length) + tileSets.length) % tileSets.length;
     setTileDate(tileSets[normalized].date);
     setTileVersion(tileSets[normalized].version);
   };
-  const opacitySteps = [0.35, 0.55, 0.75, 0.9];
+  const opacitySteps = [0.25, 0.5, 0.75, 1];
+  const cameraDefaultSettings = React.useMemo(() => ({
+    centerCoordinate: initialCenter,
+    zoomLevel: 15,
+  }), []);
+  const panelPanResponder = React.useMemo(
+    () => PanResponder.create({
+      onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dx) > 12 && Math.abs(gesture.dx) > Math.abs(gesture.dy),
+      onPanResponderRelease: (_, gesture) => {
+        if (gesture.dx > 20) setIndexPanelSide('right');
+        if (gesture.dx < -20) setIndexPanelSide('left');
+      },
+    }),
+    [setIndexPanelSide]
+  );
+  const panelSideStyle = indexPanelSide === 'right'
+    ? { right: 8, left: undefined }
+    : { left: 8, right: undefined };
 
   return (
     <SafeAreaView style={mStyles.root}>
@@ -727,10 +763,7 @@ function MainUI(props: any) {
       >
         <Camera
           ref={cameraRef}
-          defaultSettings={{
-            centerCoordinate: initialCenter,
-            zoomLevel: 15,
-          }}
+          defaultSettings={cameraDefaultSettings}
         />
 
         {/* Layer indice funghi — RasterSource, nessun tile fantasma */}
@@ -848,75 +881,87 @@ function MainUI(props: any) {
       )}
 
       {activeLayer !== 'off' && !tilesLoading && tileDate && tileVersion && (
-        <View style={mStyles.indexPanel}>
+        <View
+          style={[mStyles.indexPanel, panelSideStyle, indexPanelCollapsed && mStyles.indexPanelCollapsed]}
+          {...panelPanResponder.panHandlers}
+        >
           <View style={mStyles.indexPanelHeader}>
             <Text style={mStyles.indexPanelTitle}>INDICE</Text>
-            <TouchableOpacity onPress={() => setActiveLayer('off')} style={mStyles.indexCloseBtn}>
-              <Text style={mStyles.indexCloseText}>×</Text>
-            </TouchableOpacity>
+            <View style={mStyles.indexPanelActions}>
+              <TouchableOpacity onPress={() => setIndexPanelCollapsed((value: boolean) => !value)} style={mStyles.indexCloseBtn}>
+                <Text style={mStyles.indexCloseText}>{indexPanelCollapsed ? '+' : '−'}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => setActiveLayer('off')} style={mStyles.indexCloseBtn}>
+                <Text style={mStyles.indexCloseText}>×</Text>
+              </TouchableOpacity>
+            </View>
           </View>
 
-          <View style={mStyles.indexSpeciesRow}>
-            {(['porcini', 'finferli'] as ActiveLayer[]).map((layer) => {
-              const active = activeLayer === layer;
-              const color = layer === 'porcini' ? UI.porcinoHi : UI.finferloHi;
-              return (
+          {!indexPanelCollapsed && (
+            <>
+              <View style={mStyles.indexSpeciesRow}>
+                {(['porcini', 'finferli'] as ActiveLayer[]).map((layer) => {
+                  const active = activeLayer === layer;
+                  const color = layer === 'porcini' ? UI.porcinoHi : UI.finferloHi;
+                  return (
+                    <TouchableOpacity
+                      key={layer}
+                      onPress={() => setActiveLayer(layer)}
+                      style={[mStyles.indexSpeciesBtn, active && { borderColor: color, backgroundColor: `${color}33` }]}
+                    >
+                      <Text style={[mStyles.indexSpeciesText, active && { color }]}>
+                        {layer === 'porcini' ? 'P' : 'F'}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+
+              <View style={mStyles.indexDatasetRow}>
                 <TouchableOpacity
-                  key={layer}
-                  onPress={() => setActiveLayer(layer)}
-                  style={[mStyles.indexSpeciesBtn, active && { borderColor: color, backgroundColor: `${color}33` }]}
+                  onPress={() => selectTileAt(activeTileIndex + 1)}
+                  style={[mStyles.indexArrowBtn, tileSets.length === 0 && mStyles.indexArrowBtnDisabled]}
+                  disabled={tileSets.length === 0}
                 >
-                  <Text style={[mStyles.indexSpeciesText, active && { color }]}>
-                    {layer === 'porcini' ? 'P' : 'F'}
-                  </Text>
+                  <Text style={mStyles.indexArrowText}>‹</Text>
                 </TouchableOpacity>
-              );
-            })}
-          </View>
+                <View style={mStyles.indexDatasetInfo}>
+                  <Text style={mStyles.indexDatasetLabel}>DATA / VERSIONE</Text>
+                  <Text style={mStyles.indexDatasetValue}>{selectedTileLabel}</Text>
+                  {tileSets.length === 0 && (
+                    <Text style={mStyles.indexDatasetHint}>Lista automatica non disponibile</Text>
+                  )}
+                </View>
+                <TouchableOpacity
+                  onPress={() => selectTileAt(activeTileIndex - 1)}
+                  style={[mStyles.indexArrowBtn, tileSets.length === 0 && mStyles.indexArrowBtnDisabled]}
+                  disabled={tileSets.length === 0}
+                >
+                  <Text style={mStyles.indexArrowText}>›</Text>
+                </TouchableOpacity>
+              </View>
 
-          <View style={mStyles.indexDatasetRow}>
-            <TouchableOpacity
-              onPress={() => selectTileAt(activeTileIndex + 1)}
-              style={[mStyles.indexArrowBtn, tileSets.length === 0 && mStyles.indexArrowBtnDisabled]}
-              disabled={tileSets.length === 0}
-            >
-              <Text style={mStyles.indexArrowText}>‹</Text>
-            </TouchableOpacity>
-            <View style={mStyles.indexDatasetInfo}>
-              <Text style={mStyles.indexDatasetLabel}>DATA / VERSIONE</Text>
-              <Text style={mStyles.indexDatasetValue}>{selectedTileLabel}</Text>
-              {tileSets.length === 0 && (
-                <Text style={mStyles.indexDatasetHint}>Lista automatica non disponibile</Text>
-              )}
-            </View>
-            <TouchableOpacity
-              onPress={() => selectTileAt(activeTileIndex - 1)}
-              style={[mStyles.indexArrowBtn, tileSets.length === 0 && mStyles.indexArrowBtnDisabled]}
-              disabled={tileSets.length === 0}
-            >
-              <Text style={mStyles.indexArrowText}>›</Text>
-            </TouchableOpacity>
-          </View>
-
-          <View style={mStyles.indexOpacityRow}>
-            <Text style={mStyles.indexDatasetLabel}>OPACITA'</Text>
-            <View style={mStyles.indexOpacitySteps}>
-              {opacitySteps.map((value) => {
-                const active = Math.abs(tileOpacity - value) < 0.01;
-                return (
-                  <TouchableOpacity
-                    key={value}
-                    onPress={() => setTileOpacity(value)}
-                    style={[mStyles.indexOpacityBtn, active && mStyles.indexOpacityBtnActive]}
-                  >
-                    <Text style={[mStyles.indexOpacityText, active && mStyles.indexOpacityTextActive]}>
-                      {Math.round(value * 100)}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-          </View>
+              <View style={mStyles.indexOpacityRow}>
+                <Text style={mStyles.indexDatasetLabel}>OPACITA'</Text>
+                <View style={mStyles.indexOpacitySteps}>
+                  {opacitySteps.map((value) => {
+                    const active = Math.abs(tileOpacity - value) < 0.01;
+                    return (
+                      <TouchableOpacity
+                        key={value}
+                        onPress={() => setTileOpacity(value)}
+                        style={[mStyles.indexOpacityBtn, active && mStyles.indexOpacityBtnActive]}
+                      >
+                        <Text style={[mStyles.indexOpacityText, active && mStyles.indexOpacityTextActive]}>
+                          {Math.round(value * 100)}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+            </>
+          )}
         </View>
       )}
 
@@ -1209,8 +1254,10 @@ const mStyles = StyleSheet.create({
   tileStatusPillError: { position: 'absolute', top: 86, alignSelf: 'center', backgroundColor: 'rgba(140,48,48,0.92)', borderWidth: 1, borderColor: UI.redBri, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 6 },
   tileStatusText: { color: UI.textPri, fontSize: 11, fontWeight: '700' },
   indexPanel: { position: 'absolute', top: 96, right: 8, width: 210, backgroundColor: 'rgba(10,17,11,0.94)', borderWidth: 1, borderColor: UI.borderHi, borderRadius: 10, padding: 10, gap: 9 },
+  indexPanelCollapsed: { width: 118 },
   indexPanelHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   indexPanelTitle: { color: UI.textPri, fontSize: 11, fontWeight: '900', letterSpacing: 2 },
+  indexPanelActions: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   indexCloseBtn: { width: 26, height: 26, borderRadius: 6, backgroundColor: UI.bg3, alignItems: 'center', justifyContent: 'center' },
   indexCloseText: { color: UI.textSec, fontSize: 18, fontWeight: '800', lineHeight: 22 },
   indexSpeciesRow: { flexDirection: 'row', gap: 6 },

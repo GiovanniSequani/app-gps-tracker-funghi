@@ -28,9 +28,10 @@ interface Props {
   activeLayer: ActiveLayer;
   date: string;
   version: string;
+  opacity?: number;
 }
 
-export function IndiceLayerTiles({ activeLayer, date, version }: Props) {
+export function IndiceLayerTiles({ activeLayer, date, version, opacity = 0.85 }: Props) {
   if (activeLayer === 'off') return null;
 
   const species = activeLayer as 'porcini' | 'finferli';
@@ -49,7 +50,7 @@ export function IndiceLayerTiles({ activeLayer, date, version }: Props) {
       <RasterLayer
         id={layerId}
         sourceID={sourceId}
-        style={{ rasterOpacity: 0.85 }}
+        style={{ rasterOpacity: opacity }}
       />
     </RasterSource>
   );

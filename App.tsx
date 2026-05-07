@@ -22,8 +22,15 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { NavigationContainer } from '@react-navigation/native';
 import uuid from 'react-native-uuid';
 import * as Updates from 'expo-updates';
+import Constants from 'expo-constants';
 import IndiceScreen, { ActiveLayer } from './IndiceScreen';
 import { IndiceLayerTiles } from './IndiceLayers';
+
+declare const process: {
+  env?: {
+    EXPO_PUBLIC_SUPABASE_ANON_KEY?: string;
+  };
+};
 
 // ─── MapLibre: disabilita token (non necessario per tile custom) ──────────────
 MapLibreGL.setAccessToken(null);
@@ -67,17 +74,32 @@ const LOCATION_TASK_NAME = 'background-location-task';
 const BG_POSITIONS_FILE = `${FileSystemLegacy.cacheDirectory}bg_positions.json`;
 const SUPABASE_URL = 'https://ovdfsehovsrdzcoqdlfh.supabase.co';
 const SUPABASE_BUCKET = 'tiles';
+const DEFAULT_TILE_SET: TileSet = { date: '2026-05-05', version: '1' };
 const SUPABASE_ANON_KEY =
-  ((globalThis as any)?.process?.env?.EXPO_PUBLIC_SUPABASE_ANON_KEY as string | undefined) ?? '';
-const TILE_SET_REGEX = /^(\d{4})_(\d{2})_(\d{2})_v(\d+)$/;
+  process.env?.EXPO_PUBLIC_SUPABASE_ANON_KEY ??
+  ((Constants.expoConfig?.extra?.supabaseAnonKey as string | undefined) ?? '');
+const TILE_SET_REGEX = /^(\d{4})([-_])(\d{2})\2(\d{2})_v(\d+)$/;
 
 async function getLatestTileSet(): Promise<TileSet> {
+  const candidates = await getAvailableTileSets();
+  if (candidates.length === 0) {
+    throw new Error('No valid tile set found under tiles/');
+  }
+  return candidates[0];
+}
+
+async function getAvailableTileSets(): Promise<TileSet[]> {
   const url = `${SUPABASE_URL}/storage/v1/object/list/${SUPABASE_BUCKET}`;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (SUPABASE_ANON_KEY) {
     headers.apikey = SUPABASE_ANON_KEY;
     headers.Authorization = `Bearer ${SUPABASE_ANON_KEY}`;
   }
+  console.log('[tiles] Listing Supabase tile sets', {
+    url,
+    bucket: SUPABASE_BUCKET,
+    hasAnonKey: Boolean(SUPABASE_ANON_KEY),
+  });
   const response = await fetch(url, {
     method: 'POST',
     headers,
@@ -85,22 +107,25 @@ async function getLatestTileSet(): Promise<TileSet> {
   });
 
   if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    console.log('[tiles] Supabase list failed', { status: response.status, body });
     throw new Error(`Supabase list failed: ${response.status}`);
   }
 
   const items = (await response.json()) as Array<{ name?: string }>;
-  const candidates = items
-    .map((item) => item.name ?? '')
+  const names = items.map((item) => item.name ?? '');
+  console.log('[tiles] Supabase list result', { count: names.length, names: names.slice(0, 20) });
+  const tileSets = names
     .map((name) => {
       const match = name.match(TILE_SET_REGEX);
       if (!match) return null;
       return {
         name,
-        date: `${match[1]}_${match[2]}_${match[3]}`,
+        date: `${match[1]}${match[2]}${match[3]}${match[2]}${match[4]}`,
         year: Number(match[1]),
-        month: Number(match[2]),
-        day: Number(match[3]),
-        versionNum: Number(match[4]),
+        month: Number(match[3]),
+        day: Number(match[4]),
+        versionNum: Number(match[5]),
       };
     })
     .filter((item): item is NonNullable<typeof item> => item !== null)
@@ -109,16 +134,10 @@ async function getLatestTileSet(): Promise<TileSet> {
       if (a.month !== b.month) return b.month - a.month;
       if (a.day !== b.day) return b.day - a.day;
       return b.versionNum - a.versionNum;
-    });
-
-  if (candidates.length === 0) {
-    throw new Error('No valid tile set found under tiles/');
-  }
-
-  return {
-    date: candidates[0].date,
-    version: String(candidates[0].versionNum),
-  };
+    })
+    .map((item) => ({ date: item.date, version: String(item.versionNum) }));
+  console.log('[tiles] Parsed tile sets', tileSets);
+  return tileSets;
 }
 
 // ─── Stile mappa: satellite Esri (gratuito, no API key) ───────────────────────
@@ -269,8 +288,10 @@ export default function App() {
   const [routesOnMap, setRoutesOnMap] = React.useState<RouteData[]>([]);
   const [highlightedRoute, setHighlightedRoute] = React.useState<string | null>(null);
   const [activeLayer, setActiveLayer] = React.useState<ActiveLayer>('off');
-  const [tileDate, setTileDate] = React.useState('');
-  const [tileVersion, setTileVersion] = React.useState('');
+  const [tileDate, setTileDate] = React.useState(DEFAULT_TILE_SET.date);
+  const [tileVersion, setTileVersion] = React.useState(DEFAULT_TILE_SET.version);
+  const [tileSets, setTileSets] = React.useState<TileSet[]>([]);
+  const [tileOpacity, setTileOpacity] = React.useState(0.85);
   const [tilesLoading, setTilesLoading] = React.useState(true);
   const [tilesError, setTilesError] = React.useState<string | null>(null);
 
@@ -309,15 +330,26 @@ export default function App() {
     let mounted = true;
     (async () => {
       try {
+        console.log('[tiles] Bootstrap start', { fallback: DEFAULT_TILE_SET });
         setTilesLoading(true);
         setTilesError(null);
-        const latest = await getLatestTileSet();
+        const available = await getAvailableTileSets();
+        if (available.length === 0) {
+          throw new Error('No valid tile set found under tiles/');
+        }
+        const latest = available[0];
         if (!mounted) return;
+        console.log('[tiles] Bootstrap selected latest tile set', latest);
+        setTileSets(available);
         setTileDate(latest.date);
         setTileVersion(latest.version);
       } catch (err) {
         if (!mounted) return;
         const message = err instanceof Error ? err.message : 'Errore caricamento tiles';
+        console.log('[tiles] Bootstrap failed, keeping fallback/manual tile set', {
+          message,
+          fallback: DEFAULT_TILE_SET,
+        });
         setTilesError(message);
       } finally {
         if (mounted) setTilesLoading(false);
@@ -325,6 +357,13 @@ export default function App() {
     })();
     return () => { mounted = false; };
   }, []);
+
+  React.useEffect(() => {
+    if (tileDate && tileVersion && tilesError) {
+      console.log('[tiles] Clearing discovery error after valid tile selection', { tileDate, tileVersion });
+      setTilesError(null);
+    }
+  }, [tileDate, tileVersion, tilesError]);
 
   // posizione iniziale
   React.useEffect(() => {
@@ -551,8 +590,14 @@ export default function App() {
                 highlightRoute={highlightRoute}
                 highlightedRoute={highlightedRoute}
                 activeLayer={activeLayer}
+                setActiveLayer={setActiveLayer}
                 tileDate={tileDate}
+                setTileDate={setTileDate}
                 tileVersion={tileVersion}
+                setTileVersion={setTileVersion}
+                tileSets={tileSets}
+                tileOpacity={tileOpacity}
+                setTileOpacity={setTileOpacity}
                 tilesLoading={tilesLoading}
                 tilesError={tilesError}
               />
@@ -603,7 +648,9 @@ function MainUI(props: any) {
     path, markers, cameraRef, followLocationRef, initialCenter,
     showAll, visibleMarkers, handleDeleteMarker, setShowAll,
     addedRoutes, setAddedRoutes, setRoutesOnMap, routesOnMap,
-    highlightRoute, highlightedRoute, activeLayer, tileDate, tileVersion,
+    highlightRoute, highlightedRoute, activeLayer, setActiveLayer,
+    tileDate, setTileDate, tileVersion, setTileVersion, tileSets,
+    tileOpacity, setTileOpacity,
     tilesLoading, tilesError
   } = props;
 
@@ -655,6 +702,15 @@ function MainUI(props: any) {
     () => currentPos ? coordsToGeoJSONPoint(currentPos.latitude, currentPos.longitude) : null,
     [currentPos?.latitude, currentPos?.longitude]
   );
+  const activeTileIndex = tileSets.findIndex((tile: TileSet) => tile.date === tileDate && tile.version === tileVersion);
+  const selectedTileLabel = tileDate && tileVersion ? `${tileDate.replace(/_/g, '/')}  v${tileVersion}` : 'Nessun dataset';
+  const selectTileAt = (index: number) => {
+    if (tileSets.length === 0) return;
+    const normalized = (index + tileSets.length) % tileSets.length;
+    setTileDate(tileSets[normalized].date);
+    setTileVersion(tileSets[normalized].version);
+  };
+  const opacitySteps = [0.35, 0.55, 0.75, 0.9];
 
   return (
     <SafeAreaView style={mStyles.root}>
@@ -679,7 +735,7 @@ function MainUI(props: any) {
 
         {/* Layer indice funghi — RasterSource, nessun tile fantasma */}
         {!tilesLoading && tileDate && tileVersion && (
-          <IndiceLayerTiles activeLayer={activeLayer} date={tileDate} version={tileVersion} />
+          <IndiceLayerTiles activeLayer={activeLayer} date={tileDate} version={tileVersion} opacity={tileOpacity} />
         )}
 
         {/* Dot posizione GPS corrente */}
@@ -785,9 +841,82 @@ function MainUI(props: any) {
           <Text style={mStyles.tileStatusText}>Caricamento layer indice...</Text>
         </View>
       )}
-      {!!tilesError && (
+      {!!tilesError && !tileDate && !tileVersion && (
         <View style={mStyles.tileStatusPillError}>
           <Text style={mStyles.tileStatusText}>Layer indice non disponibile</Text>
+        </View>
+      )}
+
+      {activeLayer !== 'off' && !tilesLoading && tileDate && tileVersion && (
+        <View style={mStyles.indexPanel}>
+          <View style={mStyles.indexPanelHeader}>
+            <Text style={mStyles.indexPanelTitle}>INDICE</Text>
+            <TouchableOpacity onPress={() => setActiveLayer('off')} style={mStyles.indexCloseBtn}>
+              <Text style={mStyles.indexCloseText}>×</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={mStyles.indexSpeciesRow}>
+            {(['porcini', 'finferli'] as ActiveLayer[]).map((layer) => {
+              const active = activeLayer === layer;
+              const color = layer === 'porcini' ? UI.porcinoHi : UI.finferloHi;
+              return (
+                <TouchableOpacity
+                  key={layer}
+                  onPress={() => setActiveLayer(layer)}
+                  style={[mStyles.indexSpeciesBtn, active && { borderColor: color, backgroundColor: `${color}33` }]}
+                >
+                  <Text style={[mStyles.indexSpeciesText, active && { color }]}>
+                    {layer === 'porcini' ? 'P' : 'F'}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          <View style={mStyles.indexDatasetRow}>
+            <TouchableOpacity
+              onPress={() => selectTileAt(activeTileIndex + 1)}
+              style={[mStyles.indexArrowBtn, tileSets.length === 0 && mStyles.indexArrowBtnDisabled]}
+              disabled={tileSets.length === 0}
+            >
+              <Text style={mStyles.indexArrowText}>‹</Text>
+            </TouchableOpacity>
+            <View style={mStyles.indexDatasetInfo}>
+              <Text style={mStyles.indexDatasetLabel}>DATA / VERSIONE</Text>
+              <Text style={mStyles.indexDatasetValue}>{selectedTileLabel}</Text>
+              {tileSets.length === 0 && (
+                <Text style={mStyles.indexDatasetHint}>Lista automatica non disponibile</Text>
+              )}
+            </View>
+            <TouchableOpacity
+              onPress={() => selectTileAt(activeTileIndex - 1)}
+              style={[mStyles.indexArrowBtn, tileSets.length === 0 && mStyles.indexArrowBtnDisabled]}
+              disabled={tileSets.length === 0}
+            >
+              <Text style={mStyles.indexArrowText}>›</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={mStyles.indexOpacityRow}>
+            <Text style={mStyles.indexDatasetLabel}>OPACITA'</Text>
+            <View style={mStyles.indexOpacitySteps}>
+              {opacitySteps.map((value) => {
+                const active = Math.abs(tileOpacity - value) < 0.01;
+                return (
+                  <TouchableOpacity
+                    key={value}
+                    onPress={() => setTileOpacity(value)}
+                    style={[mStyles.indexOpacityBtn, active && mStyles.indexOpacityBtnActive]}
+                  >
+                    <Text style={[mStyles.indexOpacityText, active && mStyles.indexOpacityTextActive]}>
+                      {Math.round(value * 100)}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </View>
         </View>
       )}
 
@@ -1079,6 +1208,28 @@ const mStyles = StyleSheet.create({
   tileStatusPill: { position: 'absolute', top: 86, alignSelf: 'center', backgroundColor: 'rgba(10,17,11,0.88)', borderWidth: 1, borderColor: UI.border, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 6 },
   tileStatusPillError: { position: 'absolute', top: 86, alignSelf: 'center', backgroundColor: 'rgba(140,48,48,0.92)', borderWidth: 1, borderColor: UI.redBri, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 6 },
   tileStatusText: { color: UI.textPri, fontSize: 11, fontWeight: '700' },
+  indexPanel: { position: 'absolute', top: 96, right: 8, width: 210, backgroundColor: 'rgba(10,17,11,0.94)', borderWidth: 1, borderColor: UI.borderHi, borderRadius: 10, padding: 10, gap: 9 },
+  indexPanelHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  indexPanelTitle: { color: UI.textPri, fontSize: 11, fontWeight: '900', letterSpacing: 2 },
+  indexCloseBtn: { width: 26, height: 26, borderRadius: 6, backgroundColor: UI.bg3, alignItems: 'center', justifyContent: 'center' },
+  indexCloseText: { color: UI.textSec, fontSize: 18, fontWeight: '800', lineHeight: 22 },
+  indexSpeciesRow: { flexDirection: 'row', gap: 6 },
+  indexSpeciesBtn: { flex: 1, height: 34, borderRadius: 7, borderWidth: 1, borderColor: UI.border, backgroundColor: UI.bg2, alignItems: 'center', justifyContent: 'center' },
+  indexSpeciesText: { color: UI.textMut, fontSize: 13, fontWeight: '900' },
+  indexDatasetRow: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  indexArrowBtn: { width: 30, height: 38, borderRadius: 7, backgroundColor: UI.bg3, borderWidth: 1, borderColor: UI.border, alignItems: 'center', justifyContent: 'center' },
+  indexArrowBtnDisabled: { opacity: 0.35 },
+  indexArrowText: { color: UI.textPri, fontSize: 24, fontWeight: '700', lineHeight: 28 },
+  indexDatasetInfo: { flex: 1, minWidth: 0 },
+  indexDatasetLabel: { color: UI.textMut, fontSize: 8, fontWeight: '900', letterSpacing: 1.2 },
+  indexDatasetValue: { color: UI.textPri, fontSize: 12, fontWeight: '800', marginTop: 2 },
+  indexDatasetHint: { color: UI.amberBri, fontSize: 9, fontWeight: '700', marginTop: 3 },
+  indexOpacityRow: { gap: 5 },
+  indexOpacitySteps: { flexDirection: 'row', gap: 5 },
+  indexOpacityBtn: { flex: 1, height: 28, borderRadius: 6, backgroundColor: UI.bg2, borderWidth: 1, borderColor: UI.border, alignItems: 'center', justifyContent: 'center' },
+  indexOpacityBtnActive: { backgroundColor: UI.greenDim, borderColor: UI.greenBri },
+  indexOpacityText: { color: UI.textMut, fontSize: 10, fontWeight: '800' },
+  indexOpacityTextActive: { color: UI.greenBri },
   overlayRight: { position: 'absolute', top: 110, right: 8, backgroundColor: 'rgba(10,17,11,0.92)', borderWidth: 1, borderColor: UI.border, borderRadius: 12, padding: 10, width: 168 },
   overlayLeft: { position: 'absolute', top: 110, left: 8, backgroundColor: 'rgba(10,17,11,0.92)', borderWidth: 1, borderColor: UI.border, borderRadius: 12, padding: 10, width: 176 },
   overlayHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },

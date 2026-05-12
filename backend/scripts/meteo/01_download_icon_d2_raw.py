@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import bz2
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -147,7 +148,20 @@ def find_latest_available_run(
     )
 
 
-def download_file(
+def is_valid_bz2_file(path: Path) -> bool:
+    if not path.is_file() or path.stat().st_size <= 0:
+        return False
+
+    try:
+        with bz2.open(path, "rb") as f:
+            while f.read(1024 * 1024):
+                pass
+        return True
+    except (EOFError, OSError):
+        return False
+
+
+def download_file_legacy(
     url: str,
     out_path: Path,
     timeout: int = 120,
@@ -172,6 +186,53 @@ def download_file(
             for chunk in resp.iter_content(chunk_size=1024 * 1024):
                 if chunk:
                     f.write(chunk)
+
+
+def download_file(
+    url: str,
+    out_path: Path,
+    timeout: int = 120,
+    overwrite: bool = False,
+    dry_run: bool = False,
+) -> None:
+    if out_path.exists() and not overwrite:
+        if is_valid_bz2_file(out_path):
+            print(f"[SKIP] Esiste gia': {out_path}")
+            return
+        print(f"[WARN] File locale bz2 corrotto o incompleto, riscarico: {out_path}")
+
+    print(f"[GET] {url}")
+    print(f"      -> {out_path}")
+
+    if dry_run:
+        return
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    part_path = out_path.with_name(f"{out_path.name}.part")
+    if part_path.exists():
+        part_path.unlink()
+
+    with requests.get(url, stream=True, timeout=timeout) as resp:
+        resp.raise_for_status()
+        expected_size = int(resp.headers.get("Content-Length", "0") or "0")
+        bytes_written = 0
+        with part_path.open("wb") as f:
+            for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    f.write(chunk)
+                    bytes_written += len(chunk)
+
+    if expected_size and bytes_written != expected_size:
+        part_path.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"Download incompleto per {url}: {bytes_written} byte su {expected_size}"
+        )
+
+    if not is_valid_bz2_file(part_path):
+        part_path.unlink(missing_ok=True)
+        raise RuntimeError(f"Download bz2 non valido per {url}")
+
+    part_path.replace(out_path)
 
 
 def normalize_variable_keys(var_keys: list[str] | None) -> list[str]:

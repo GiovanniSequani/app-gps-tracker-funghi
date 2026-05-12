@@ -745,9 +745,7 @@ const MemoMapCanvas = React.memo(function MemoMapCanvas(props: any) {
       mapStyle={SATELLITE_STYLE}
       logoEnabled={false}
       attributionEnabled={false}
-      compassEnabled={true}
-      compassViewPosition={2}
-      compassViewMargins={{ x: 16, y: recording ? 140 : 200 }}
+      compassEnabled={false}
       onRegionWillChange={() => { followLocationRef.current = false; }}
     >
       {cameraCommand && (
@@ -1271,6 +1269,21 @@ function MainUI(props: any) {
       </TouchableOpacity>
 
       {/* ── CONTROLLI INFERIORI ───────────────────────────────────────────── */}
+      <TouchableOpacity
+        style={recording ? mStyles.compassBtnRecording : mStyles.compassBtn}
+        onPress={() => {
+          runCameraCommand({
+            heading: 0,
+            animationDuration: 250,
+            animationMode: 'easeTo',
+          });
+        }}
+        activeOpacity={0.75}
+      >
+        <Text style={mStyles.compassNorth}>N</Text>
+        <Text style={mStyles.compassArrow}>^</Text>
+      </TouchableOpacity>
+
       <View style={mStyles.bottomControls}>
         <View style={mStyles.speciesRow}>
           <TouchableOpacity
@@ -1496,6 +1509,10 @@ const mStyles = StyleSheet.create({
   statDivider: { width: 1, height: 28, backgroundColor: UI.border },
   centerBtn: { position: 'absolute', bottom: 146, left: 16, width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(10,17,11,0.90)', borderWidth: 1, borderColor: UI.border, justifyContent: 'center', alignItems: 'center' },
   centerBtnRecording: { position: 'absolute', bottom: 206, left: 16, width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(10,17,11,0.90)', borderWidth: 1, borderColor: UI.border, justifyContent: 'center', alignItems: 'center' },
+  compassBtn: { position: 'absolute', bottom: 200, left: 16, width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(10,17,11,0.90)', borderWidth: 1, borderColor: UI.border, justifyContent: 'center', alignItems: 'center' },
+  compassBtnRecording: { position: 'absolute', bottom: 260, left: 16, width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(10,17,11,0.90)', borderWidth: 1, borderColor: UI.border, justifyContent: 'center', alignItems: 'center' },
+  compassNorth: { color: UI.textPri, fontSize: 11, fontWeight: '900', lineHeight: 13 },
+  compassArrow: { color: UI.greenBri, fontSize: 15, fontWeight: '900', lineHeight: 15 },
   bottomControls: { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: 12, paddingBottom: 16, paddingTop: 8, gap: 8 },
   speciesRow: { flexDirection: 'row', gap: 8 },
   speciesBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 11, borderRadius: 10, borderWidth: 1.5, backgroundColor: 'rgba(10,17,11,0.92)' },

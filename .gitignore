@@ -5,6 +5,8 @@ node_modules/
 
 # output directories
 legacy-funghi-index/
+backend/tmp/
+docs/
 
 # Data
 *.png

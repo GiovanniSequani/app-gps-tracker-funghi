@@ -10,6 +10,7 @@ import MapLibreGL, {
   LineLayer,
   CircleLayer,
 } from '@maplibre/maplibre-react-native';
+import type { CameraStop } from '@maplibre/maplibre-react-native';
 import { Trash2 } from 'lucide-react-native';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
@@ -68,11 +69,18 @@ type TileSet = {
   date: string;
   version: string;
 };
+type CameraCommand = CameraStop & { id: number };
 
 // ─── Costanti ─────────────────────────────────────────────────────────────────
 const Tab = createBottomTabNavigator();
 const LOCATION_TASK_NAME = 'background-location-task';
 const BG_POSITIONS_FILE = `${FileSystemLegacy.cacheDirectory}bg_positions.json`;
+const RECORDING_LOCATION_OPTIONS: Location.LocationOptions = {
+  accuracy: Location.Accuracy.BestForNavigation,
+  timeInterval: 2000,
+  distanceInterval: 1,
+  mayShowUserSettingsDialog: true,
+};
 const DEFAULT_SUPABASE_URL = 'https://ovdfsehovsrdzcoqdlfh.supabase.co';
 const ENV_SUPABASE_URL =
   process.env?.EXPO_PUBLIC_SUPABASE_URL ??
@@ -304,15 +312,60 @@ export default function App() {
   const [tileOpacity, setTileOpacity] = React.useState(0.85);
   const [tilesLoading, setTilesLoading] = React.useState(true);
   const [tilesError, setTilesError] = React.useState<string | null>(null);
-
+  const [cameraCommand, setCameraCommand] = React.useState<CameraCommand | null>(null);
   const followLocationRef = React.useRef(true);
+  const cameraCommandIdRef = React.useRef(0);
   // Camera ref: tipo è il componente Camera stesso
-  const cameraRef = React.useRef<React.ElementRef<typeof Camera>>(null);
   const recordingRef = React.useRef(recording);
 
   const visibleMarkers = showAll ? markers : markers.slice(0, 5);
 
   React.useEffect(() => { recordingRef.current = recording; }, [recording]);
+
+  React.useEffect(() => {
+    if (tileDate && tileVersion && tilesError) {
+      console.log('[tiles] Clearing discovery error after valid tile selection', { tileDate, tileVersion });
+      setTilesError(null);
+    }
+  }, [tileDate, tileVersion, tilesError]);
+
+  React.useEffect(() => {
+    console.log('[tiles] Selection changed', {
+      activeLayer,
+      tileDate,
+      tileVersion,
+      tileOpacity,
+    });
+  }, [activeLayer, tileDate, tileVersion, tileOpacity]);
+
+  const runCameraCommand = React.useCallback((command: CameraStop) => {
+    cameraCommandIdRef.current += 1;
+    const nextCommand: CameraCommand = { ...command, id: cameraCommandIdRef.current };
+    console.log('[camera] Run one-shot command', {
+      id: nextCommand.id,
+      centerCoordinate: nextCommand.centerCoordinate,
+      zoomLevel: nextCommand.zoomLevel,
+      hasBounds: Boolean(nextCommand.bounds),
+      animationDuration: nextCommand.animationDuration,
+      animationMode: nextCommand.animationMode,
+    });
+    setCameraCommand(nextCommand);
+  }, []);
+
+  React.useEffect(() => {
+    if (!cameraCommand) return;
+    const clearAfterMs = Math.max(cameraCommand.animationDuration ?? 0, 300) + 250;
+    const timeout = setTimeout(() => {
+      setCameraCommand((current) => {
+        if (current?.id === cameraCommand.id) {
+          console.log('[camera] Clear one-shot command', { id: cameraCommand.id });
+          return null;
+        }
+        return current;
+      });
+    }, clearAfterMs);
+    return () => clearTimeout(timeout);
+  }, [cameraCommand]);
 
   // check updates
   React.useEffect(() => {
@@ -368,23 +421,7 @@ export default function App() {
     return () => { mounted = false; };
   }, []);
 
-  React.useEffect(() => {
-    if (tileDate && tileVersion && tilesError) {
-      console.log('[tiles] Clearing discovery error after valid tile selection', { tileDate, tileVersion });
-      setTilesError(null);
-    }
-  }, [tileDate, tileVersion, tilesError]);
-
-  React.useEffect(() => {
-    console.log('[tiles] Selection changed', {
-      activeLayer,
-      tileDate,
-      tileVersion,
-      tileOpacity,
-    });
-  }, [activeLayer, tileDate, tileVersion, tileOpacity]);
-
-  // posizione iniziale
+  // posizione iniziale: struttura ripresa dal bundle recuperato
   React.useEffect(() => {
     (async () => {
       const { status } = await Location.requestForegroundPermissionsAsync();
@@ -392,9 +429,14 @@ export default function App() {
       const location = await Location.getCurrentPositionAsync({});
       const center: [number, number] = [location.coords.longitude, location.coords.latitude];
       setInitialCenter(center);
-      cameraRef.current?.flyTo(center, 1000);
+      runCameraCommand({
+        centerCoordinate: center,
+        zoomLevel: CENTER_ZOOM_LEVEL,
+        animationDuration: 1000,
+        animationMode: 'flyTo',
+      });
     })();
-  }, []);
+  }, [runCameraCommand]);
 
   const handleDeleteMarker = (marker: MarkerData) => {
     Alert.alert('Conferma eliminazione', `Vuoi eliminare ${marker.name}?`, [
@@ -432,13 +474,17 @@ export default function App() {
       const currpath = await syncPathFromFile(false);
       if (recordingRef.current && currpath.length > 0 && followLocationRef.current) {
         const latest = currpath[currpath.length - 1];
-        cameraRef.current?.moveTo([latest.longitude, latest.latitude], 500);
+        runCameraCommand({
+          centerCoordinate: [latest.longitude, latest.latitude],
+          animationDuration: 500,
+          animationMode: 'easeTo',
+        });
       }
     };
     void tick();
     const id = setInterval(() => { void tick(); }, 500);
     return () => { mounted = false; clearInterval(id); };
-  }, [syncPathFromFile]);
+  }, [syncPathFromFile, runCameraCommand]);
 
   const highlightRoute = (routeId: string) => {
     setHighlightedRoute(routeId);
@@ -461,9 +507,7 @@ export default function App() {
     const started = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
     if (!started) {
       await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
-        accuracy: Location.Accuracy.BestForNavigation,
-        timeInterval: 2000,
-        distanceInterval: 1,
+        ...RECORDING_LOCATION_OPTIONS,
         showsBackgroundLocationIndicator: true,
         foregroundService: {
           notificationTitle: 'GPS attivo',
@@ -573,6 +617,70 @@ export default function App() {
     }
   };
 
+  const renderMapScreen = React.useCallback(() => (
+    <MainUI
+      recording={recording}
+      startRecording={startRecording}
+      stopRecording={stopRecording}
+      addMarker={addMarker}
+      path={path}
+      markers={markers}
+      cameraCommand={cameraCommand}
+      runCameraCommand={runCameraCommand}
+      followLocationRef={followLocationRef}
+      initialCenter={initialCenter}
+      showAll={showAll}
+      visibleMarkers={visibleMarkers}
+      handleDeleteMarker={handleDeleteMarker}
+      setShowAll={setShowAll}
+      addedRoutes={addedRoutes}
+      setAddedRoutes={setAddedRoutes}
+      setRoutesOnMap={setRoutesOnMap}
+      routesOnMap={routesOnMap}
+      highlightRoute={highlightRoute}
+      highlightedRoute={highlightedRoute}
+      activeLayer={activeLayer}
+      setActiveLayer={setActiveLayer}
+      tileDate={tileDate}
+      setTileDate={setTileDate}
+      tileVersion={tileVersion}
+      setTileVersion={setTileVersion}
+      tileSets={tileSets}
+      tileOpacity={tileOpacity}
+      setTileOpacity={setTileOpacity}
+      tilesLoading={tilesLoading}
+      tilesError={tilesError}
+    />
+  ), [
+    recording, path, markers, cameraCommand, initialCenter, showAll, visibleMarkers,
+    addedRoutes, routesOnMap, highlightedRoute, tileSets, tilesLoading, tilesError,
+    activeLayer, tileDate, tileVersion, tileOpacity,
+    runCameraCommand, addMarker
+  ]);
+
+  const renderArchiveScreen = React.useCallback(() => (
+    <ManageRoutesScreen
+      addedRoutes={addedRoutes}
+      setAddedRoutes={setAddedRoutes}
+      handleShare={handleShare}
+      saveVisible={saveVisible}
+      setSaveVisible={setSaveVisible}
+      fileName={fileName}
+      setFileName={setFileName}
+    />
+  ), [addedRoutes, saveVisible, fileName]);
+
+  const renderIndiceScreen = React.useCallback(() => (
+    <IndiceScreen
+      activeLayer={activeLayer}
+      setActiveLayer={setActiveLayer}
+      tileDate={tileDate}
+      setTileDate={setTileDate}
+      tileVersion={tileVersion}
+      setTileVersion={setTileVersion}
+    />
+  ), [activeLayer, tileDate, tileVersion]);
+
   return (
     <SafeAreaProvider>
       <NavigationContainer>
@@ -587,69 +695,17 @@ export default function App() {
         >
           <Tab.Screen
             name="Mappa"
-            children={() => (
-              <MainUI
-                recording={recording}
-                startRecording={startRecording}
-                stopRecording={stopRecording}
-                addMarker={addMarker}
-                path={path}
-                markers={markers}
-                cameraRef={cameraRef}
-                followLocationRef={followLocationRef}
-                initialCenter={initialCenter}
-                showAll={showAll}
-                visibleMarkers={visibleMarkers}
-                handleDeleteMarker={handleDeleteMarker}
-                setShowAll={setShowAll}
-                addedRoutes={addedRoutes}
-                setAddedRoutes={setAddedRoutes}
-                setRoutesOnMap={setRoutesOnMap}
-                routesOnMap={routesOnMap}
-                highlightRoute={highlightRoute}
-                highlightedRoute={highlightedRoute}
-                activeLayer={activeLayer}
-                setActiveLayer={setActiveLayer}
-                tileDate={tileDate}
-                setTileDate={setTileDate}
-                tileVersion={tileVersion}
-                setTileVersion={setTileVersion}
-                tileSets={tileSets}
-                tileOpacity={tileOpacity}
-                setTileOpacity={setTileOpacity}
-                tilesLoading={tilesLoading}
-                tilesError={tilesError}
-              />
-            )}
+            children={renderMapScreen}
             options={{ tabBarIcon: ({ color }) => <Text style={{ fontSize: 20, color }}>🗺️</Text>, tabBarLabel: 'Mappa' }}
           />
           <Tab.Screen
             name="Archivio"
-            children={() => (
-              <ManageRoutesScreen
-                addedRoutes={addedRoutes}
-                setAddedRoutes={setAddedRoutes}
-                handleShare={handleShare}
-                saveVisible={saveVisible}
-                setSaveVisible={setSaveVisible}
-                fileName={fileName}
-                setFileName={setFileName}
-              />
-            )}
+            children={renderArchiveScreen}
             options={{ tabBarIcon: ({ color }) => <Text style={{ fontSize: 20, color }}>📂</Text>, tabBarLabel: 'Archivio' }}
           />
           <Tab.Screen
             name="Indice"
-            children={() => (
-              <IndiceScreen
-                activeLayer={activeLayer}
-                setActiveLayer={setActiveLayer}
-                tileDate={tileDate}
-                setTileDate={setTileDate}
-                tileVersion={tileVersion}
-                setTileVersion={setTileVersion}
-              />
-            )}
+            children={renderIndiceScreen}
             options={{ tabBarIcon: ({ color }) => <Text style={{ fontSize: 20, color }}>🍄</Text>, tabBarLabel: 'Indice' }}
           />
         </Tab.Navigator>
@@ -661,18 +717,327 @@ export default function App() {
 // ══════════════════════════════════════════════════════════════════════════════
 // MainUI
 // ══════════════════════════════════════════════════════════════════════════════
+const CENTER_ZOOM_LEVEL = 16;
+
+const MemoMapCanvas = React.memo(function MemoMapCanvas(props: any) {
+  const {
+    cameraCommand,
+    followLocationRef,
+    activeLayer,
+    tileDate,
+    tileVersion,
+    tileOpacity,
+    tilesLoading,
+    currentPosGeoJSON,
+    recording,
+    currentPathGeoJSON,
+    porciniCount,
+    porciniGeoJSON,
+    finferliCount,
+    finferliGeoJSON,
+    routesOnMap,
+    highlightedRoute,
+  } = props;
+
+  return (
+    <MapView
+      style={StyleSheet.absoluteFillObject}
+      mapStyle={SATELLITE_STYLE}
+      logoEnabled={false}
+      attributionEnabled={false}
+      compassEnabled={true}
+      compassViewPosition={2}
+      compassViewMargins={{ x: 16, y: recording ? 140 : 200 }}
+      onRegionWillChange={() => { followLocationRef.current = false; }}
+    >
+      {cameraCommand && (
+        <Camera
+          key={`camera-command-${cameraCommand.id}`}
+          followUserLocation={false}
+          centerCoordinate={cameraCommand.centerCoordinate}
+          zoomLevel={cameraCommand.zoomLevel}
+          bounds={cameraCommand.bounds}
+          padding={cameraCommand.padding}
+          heading={cameraCommand.heading}
+          pitch={cameraCommand.pitch}
+          animationDuration={cameraCommand.animationDuration}
+          animationMode={cameraCommand.animationMode}
+        />
+      )}
+
+      {!tilesLoading && tileDate && tileVersion && (
+        <IndiceLayerTiles activeLayer={activeLayer} date={tileDate} version={tileVersion} opacity={tileOpacity} />
+      )}
+
+      {currentPosGeoJSON && (
+        <ShapeSource id="current-pos-source" shape={currentPosGeoJSON as any}>
+          <CircleLayer
+            id="current-pos-layer"
+            style={{
+              circleRadius: 8,
+              circleColor: '#1988ff',
+              circleStrokeWidth: 2,
+              circleStrokeColor: '#0066d3',
+            }}
+          />
+        </ShapeSource>
+      )}
+
+      {recording && pathGeoJSONHasFeatures(currentPathGeoJSON) && (
+        <ShapeSource id="current-path-source" shape={currentPathGeoJSON}>
+          <LineLayer
+            id="current-path-layer"
+            style={{
+              lineColor: UI.greenBri,
+              lineWidth: 3,
+              lineCap: 'round',
+              lineJoin: 'round',
+            }}
+          />
+        </ShapeSource>
+      )}
+
+      {recording && porciniCount > 0 && (
+        <ShapeSource id="porcini-session-source" shape={porciniGeoJSON}>
+          <CircleLayer
+            id="porcini-session-layer"
+            style={{ circleRadius: 10, circleColor: UI.porcino, circleStrokeWidth: 1.5, circleStrokeColor: '#000' }}
+          />
+        </ShapeSource>
+      )}
+
+      {recording && finferliCount > 0 && (
+        <ShapeSource id="finferli-session-source" shape={finferliGeoJSON}>
+          <CircleLayer
+            id="finferli-session-layer"
+            style={{ circleRadius: 10, circleColor: UI.finferlo, circleStrokeWidth: 1.5, circleStrokeColor: '#000' }}
+          />
+        </ShapeSource>
+      )}
+
+      {routesOnMap.map((route: RouteData, idx: number) => {
+        const isHighlighted = highlightedRoute === route.route_id;
+        const lineGeoJSON = coordsToGeoJSONLine(route.path.filter((p) => p.latitude != null && p.longitude != null));
+        const rPorcini = markersToGeoJSON(route.markers, 'Porcino');
+        const rFinferli = markersToGeoJSON(route.markers, 'Finferlo');
+        return (
+          <React.Fragment key={route.route_id ?? idx}>
+            <ShapeSource id={`saved-path-source-${idx}`} shape={lineGeoJSON}>
+              <LineLayer
+                id={`saved-path-layer-${idx}`}
+                style={{
+                  lineColor: isHighlighted ? '#003cff' : '#1e8fff',
+                  lineWidth: isHighlighted ? 4 : 1.5,
+                  lineCap: 'round',
+                  lineJoin: 'round',
+                  lineOpacity: isHighlighted ? 1 : 0.57,
+                }}
+              />
+            </ShapeSource>
+            {rPorcini.features.length > 0 && (
+              <ShapeSource id={`saved-porcini-source-${idx}`} shape={rPorcini}>
+                <CircleLayer
+                  id={`saved-porcini-layer-${idx}`}
+                  style={{ circleRadius: isHighlighted ? 12 : 8, circleColor: '#965123', circleStrokeWidth: 1, circleStrokeColor: '#000', circleOpacity: 0.73 }}
+                />
+              </ShapeSource>
+            )}
+            {rFinferli.features.length > 0 && (
+              <ShapeSource id={`saved-finferli-source-${idx}`} shape={rFinferli}>
+                <CircleLayer
+                  id={`saved-finferli-layer-${idx}`}
+                  style={{ circleRadius: isHighlighted ? 12 : 8, circleColor: '#ffd900', circleStrokeWidth: 1, circleStrokeColor: '#000', circleOpacity: 0.73 }}
+                />
+              </ShapeSource>
+            )}
+          </React.Fragment>
+        );
+      })}
+    </MapView>
+  );
+});
+
+function pathGeoJSONHasFeatures(shape: GeoJSON.FeatureCollection | null | undefined): boolean {
+  return Boolean(shape?.features?.length);
+}
+
+const QuickIndexPanel = React.memo(function QuickIndexPanel(props: any) {
+  const {
+    activeLayer, setActiveLayer,
+    tileDate, setTileDate,
+    tileVersion, setTileVersion,
+    tileSets, tileOpacity, setTileOpacity,
+    tilesLoading,
+  } = props;
+  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
+  const [indexPanelCollapsed, setIndexPanelCollapsed] = React.useState(false);
+  const [panelSide, setPanelSide] = React.useState<'left' | 'right'>('right');
+  const panelWidth = indexPanelCollapsed ? 118 : 210;
+  const panelHeight = indexPanelCollapsed ? 56 : 230;
+  const [panelPos, setPanelPos] = React.useState(() => ({
+    x: Math.max(8, screenWidth - panelWidth - 8),
+    y: 96,
+  }));
+  const panelPosRef = React.useRef(panelPos);
+  const panelStartPosRef = React.useRef(panelPos);
+  const activeTileIndex = tileSets.findIndex((tile: TileSet) => tile.date === tileDate && tile.version === tileVersion);
+  const canSelectOlderTile = activeTileIndex >= 0 && activeTileIndex < tileSets.length - 1;
+  const canSelectNewerTile = activeTileIndex > 0;
+  const selectedTileLabel = tileDate && tileVersion ? `${tileDate.replace(/_/g, '/')}  v${tileVersion}` : 'Nessun dataset';
+  const opacitySteps = [0.25, 0.5, 0.75, 1];
+  const panelBounds = React.useMemo(() => {
+    const minX = 8;
+    const maxX = Math.max(minX, screenWidth - panelWidth - 8);
+    const minY = 56;
+    const maxY = Math.max(minY, screenHeight - panelHeight - 78);
+    return { minX, maxX, minY, maxY };
+  }, [screenWidth, screenHeight, panelWidth, panelHeight]);
+  const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+  React.useEffect(() => {
+    setPanelPos((prev) => {
+      const anchoredX = panelSide === 'right' ? panelBounds.maxX : panelBounds.minX;
+      const next = { x: anchoredX, y: clamp(prev.y, panelBounds.minY, panelBounds.maxY) };
+      panelPosRef.current = next;
+      return next;
+    });
+  }, [panelSide, panelBounds.minX, panelBounds.maxX, panelBounds.minY, panelBounds.maxY]);
+
+  const panelPanResponder = React.useMemo(
+    () => PanResponder.create({
+      onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dx) > 3 || Math.abs(gesture.dy) > 3,
+      onPanResponderGrant: () => {
+        panelStartPosRef.current = panelPosRef.current;
+      },
+      onPanResponderMove: (_, gesture) => {
+        const nextX = clamp(panelStartPosRef.current.x + gesture.dx, panelBounds.minX, panelBounds.maxX);
+        const nextY = clamp(panelStartPosRef.current.y + gesture.dy, panelBounds.minY, panelBounds.maxY);
+        const next = { x: nextX, y: nextY };
+        panelPosRef.current = next;
+        setPanelPos(next);
+      },
+      onPanResponderRelease: (_, gesture) => {
+        const releasedX = clamp(panelStartPosRef.current.x + gesture.dx, panelBounds.minX, panelBounds.maxX);
+        const releasedY = clamp(panelStartPosRef.current.y + gesture.dy, panelBounds.minY, panelBounds.maxY);
+        const nextSide = Math.abs(releasedX - panelBounds.minX) <= Math.abs(releasedX - panelBounds.maxX) ? 'left' : 'right';
+        const nextX = nextSide === 'right' ? panelBounds.maxX : panelBounds.minX;
+        const next = { x: nextX, y: releasedY };
+        setPanelSide(nextSide);
+        panelPosRef.current = next;
+        setPanelPos(next);
+      },
+      onPanResponderTerminationRequest: () => true,
+    }),
+    [panelBounds.minX, panelBounds.maxX, panelBounds.minY, panelBounds.maxY]
+  );
+
+  const selectTileAt = (index: number) => {
+    if (index < 0 || index >= tileSets.length) return;
+    setTileDate(tileSets[index].date);
+    setTileVersion(tileSets[index].version);
+  };
+
+  if (activeLayer === 'off' || tilesLoading || !tileDate || !tileVersion) return null;
+
+  return (
+    <View
+      style={[
+        mStyles.indexPanel,
+        indexPanelCollapsed && mStyles.indexPanelCollapsed,
+        { left: panelPos.x, top: panelPos.y, width: panelWidth },
+      ]}
+    >
+      <View style={mStyles.indexPanelHeader} {...panelPanResponder.panHandlers}>
+        <Text style={mStyles.indexPanelTitle}>INDICE</Text>
+        <View style={mStyles.indexPanelActions}>
+          <TouchableOpacity onPress={() => setIndexPanelCollapsed((value: boolean) => !value)} style={mStyles.indexCloseBtn}>
+            <Text style={mStyles.indexCloseText}>{indexPanelCollapsed ? '+' : '-'}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => setActiveLayer('off')} style={mStyles.indexCloseBtn}>
+            <Text style={mStyles.indexCloseText}>x</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      {!indexPanelCollapsed && (
+        <>
+          <View style={mStyles.indexSpeciesRow}>
+            {(['porcini', 'finferli'] as ActiveLayer[]).map((layer) => {
+              const active = activeLayer === layer;
+              const color = layer === 'porcini' ? UI.porcinoHi : UI.finferloHi;
+              return (
+                <TouchableOpacity
+                  key={layer}
+                  onPress={() => setActiveLayer(layer)}
+                  style={[mStyles.indexSpeciesBtn, active && { borderColor: color, backgroundColor: `${color}33` }]}
+                >
+                  <Text style={[mStyles.indexSpeciesText, active && { color }]}>
+                    {layer === 'porcini' ? 'P' : 'F'}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          <View style={mStyles.indexDatasetRow}>
+            <TouchableOpacity
+              onPress={() => selectTileAt(activeTileIndex + 1)}
+              style={[mStyles.indexArrowBtn, !canSelectOlderTile && mStyles.indexArrowBtnDisabled]}
+              disabled={!canSelectOlderTile}
+            >
+              <Text style={mStyles.indexArrowText}>{"<"}</Text>
+            </TouchableOpacity>
+            <View style={mStyles.indexDatasetInfo}>
+              <Text style={mStyles.indexDatasetLabel}>DATA / VERSIONE</Text>
+              <Text style={mStyles.indexDatasetValue}>{selectedTileLabel}</Text>
+              {tileSets.length === 0 && (
+                <Text style={mStyles.indexDatasetHint}>Lista automatica non disponibile</Text>
+              )}
+            </View>
+            <TouchableOpacity
+              onPress={() => selectTileAt(activeTileIndex - 1)}
+              style={[mStyles.indexArrowBtn, !canSelectNewerTile && mStyles.indexArrowBtnDisabled]}
+              disabled={!canSelectNewerTile}
+            >
+              <Text style={mStyles.indexArrowText}>{">"}</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={mStyles.indexOpacityRow}>
+            <Text style={mStyles.indexDatasetLabel}>OPACITA'</Text>
+            <View style={mStyles.indexOpacitySteps}>
+              {opacitySteps.map((value) => {
+                const active = Math.abs(tileOpacity - value) < 0.01;
+                return (
+                  <TouchableOpacity
+                    key={value}
+                    onPress={() => setTileOpacity(value)}
+                    style={[mStyles.indexOpacityBtn, active && mStyles.indexOpacityBtnActive]}
+                  >
+                    <Text style={[mStyles.indexOpacityText, active && mStyles.indexOpacityTextActive]}>
+                      {Math.round(value * 100)}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </View>
+        </>
+      )}
+    </View>
+  );
+});
+
 function MainUI(props: any) {
   const {
     recording, startRecording, stopRecording, addMarker,
-    path, markers, cameraRef, followLocationRef, initialCenter,
+    path, markers, cameraCommand, runCameraCommand, followLocationRef, initialCenter,
     showAll, visibleMarkers, handleDeleteMarker, setShowAll,
     addedRoutes, setAddedRoutes, setRoutesOnMap, routesOnMap,
     highlightRoute, highlightedRoute, activeLayer, setActiveLayer,
     tileDate, setTileDate, tileVersion, setTileVersion, tileSets,
-    tileOpacity, setTileOpacity,
-    tilesLoading, tilesError
+    tileOpacity, setTileOpacity, tilesLoading, tilesError
   } = props;
-  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
 
   // fetch percorsi salvati quando cambiano gli addedRoutes
   React.useEffect(() => {
@@ -722,176 +1087,39 @@ function MainUI(props: any) {
     () => currentPos ? coordsToGeoJSONPoint(currentPos.latitude, currentPos.longitude) : null,
     [currentPos?.latitude, currentPos?.longitude]
   );
-  const activeTileIndex = tileSets.findIndex((tile: TileSet) => tile.date === tileDate && tile.version === tileVersion);
-  const selectedTileLabel = tileDate && tileVersion ? `${tileDate.replace(/_/g, '/')}  v${tileVersion}` : 'Nessun dataset';
-  const selectTileAt = (index: number) => {
-    if (tileSets.length === 0) return;
-    const normalized = ((index % tileSets.length) + tileSets.length) % tileSets.length;
-    setTileDate(tileSets[normalized].date);
-    setTileVersion(tileSets[normalized].version);
-  };
-  const opacitySteps = [0.25, 0.5, 0.75, 1];
-  const [indexPanelCollapsed, setIndexPanelCollapsed] = React.useState(false);
-  const [panelSize, setPanelSize] = React.useState({ width: 210, height: 230 });
-  const [panelPos, setPanelPos] = React.useState({ x: 8, y: 96 });
-  const panelStartPosRef = React.useRef(panelPos);
-  const hasPlacedPanelRef = React.useRef(false);
-  const panelWidth = indexPanelCollapsed ? 118 : panelSize.width;
-  const panelBounds = React.useMemo(() => {
-    const minX = 8;
-    const maxX = Math.max(minX, screenWidth - panelWidth - 8);
-    const minY = 56;
-    const maxY = Math.max(minY, screenHeight - panelSize.height - 78);
-    return { minX, maxX, minY, maxY };
-  }, [screenWidth, screenHeight, panelWidth, panelSize.height]);
-  const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
-  React.useEffect(() => {
-    if (!hasPlacedPanelRef.current) {
-      setPanelPos((prev) => ({ ...prev, x: panelBounds.maxX }));
-      hasPlacedPanelRef.current = true;
-      return;
-    }
-    setPanelPos((prev) => ({
-      x: clamp(prev.x, panelBounds.minX, panelBounds.maxX),
-      y: clamp(prev.y, panelBounds.minY, panelBounds.maxY),
-    }));
-  }, [panelBounds.minX, panelBounds.maxX, panelBounds.minY, panelBounds.maxY]);
-  const panelPanResponder = React.useMemo(
-    () => PanResponder.create({
-      onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dx) > 3 || Math.abs(gesture.dy) > 3,
-      onPanResponderGrant: () => {
-        panelStartPosRef.current = panelPos;
-      },
-      onPanResponderMove: (_, gesture) => {
-        const nextX = clamp(panelStartPosRef.current.x + gesture.dx, panelBounds.minX, panelBounds.maxX);
-        const nextY = clamp(panelStartPosRef.current.y + gesture.dy, panelBounds.minY, panelBounds.maxY);
-        setPanelPos({ x: nextX, y: nextY });
-      },
-      onPanResponderRelease: (_, gesture) => {
-        const releasedX = clamp(panelStartPosRef.current.x + gesture.dx, panelBounds.minX, panelBounds.maxX);
-        const releasedY = clamp(panelStartPosRef.current.y + gesture.dy, panelBounds.minY, panelBounds.maxY);
-        const snapLeftDistance = Math.abs(releasedX - panelBounds.minX);
-        const snapRightDistance = Math.abs(releasedX - panelBounds.maxX);
-        const snappedX = snapLeftDistance <= snapRightDistance ? panelBounds.minX : panelBounds.maxX;
-        setPanelPos({ x: snappedX, y: releasedY });
-      },
-      onPanResponderTerminationRequest: () => true,
-    }),
-    [panelPos, panelBounds.minX, panelBounds.maxX, panelBounds.minY, panelBounds.maxY]
-  );
+
+  const centerCamera = React.useCallback((center: [number, number]) => {
+    runCameraCommand({
+      centerCoordinate: center,
+      zoomLevel: CENTER_ZOOM_LEVEL,
+      animationDuration: 500,
+      animationMode: 'easeTo',
+    });
+  }, [runCameraCommand]);
 
   return (
     <SafeAreaView style={mStyles.root}>
       <StatusBar barStyle="light-content" backgroundColor={UI.bg0} />
 
       {/* ── MAPPA ─────────────────────────────────────────────────────────── */}
-      <MapView
-        style={StyleSheet.absoluteFillObject}
-        mapStyle={SATELLITE_STYLE}
-        logoEnabled={false}
-        attributionEnabled={false}
-        // onRegionWillChange si triggera quando l'utente inizia a trascinare/zoomare
-        onRegionWillChange={() => { followLocationRef.current = false; }}
-      >
-        <Camera
-          ref={cameraRef}
-        />
-
-        {/* Layer indice funghi — RasterSource, nessun tile fantasma */}
-        {!tilesLoading && tileDate && tileVersion && (
-          <IndiceLayerTiles activeLayer={activeLayer} date={tileDate} version={tileVersion} opacity={tileOpacity} />
-        )}
-
-        {/* Dot posizione GPS corrente */}
-        {currentPosGeoJSON && (
-          <ShapeSource id="current-pos-source" shape={currentPosGeoJSON}>
-            <CircleLayer
-              id="current-pos-layer"
-              style={{
-                circleRadius: 8,
-                circleColor: '#1988ff',
-                circleStrokeWidth: 2,
-                circleStrokeColor: '#0066d3',
-              }}
-            />
-          </ShapeSource>
-        )}
-
-        {/* Tracciato sessione corrente */}
-        {recording && path.length > 1 && (
-          <ShapeSource id="current-path-source" shape={currentPathGeoJSON}>
-            <LineLayer
-              id="current-path-layer"
-              style={{
-                lineColor: UI.greenBri,
-                lineWidth: 3,
-                lineCap: 'round',
-                lineJoin: 'round',
-              }}
-            />
-          </ShapeSource>
-        )}
-
-        {/* Marker Porcini sessione corrente */}
-        {recording && porciniCount > 0 && (
-          <ShapeSource id="porcini-session-source" shape={porciniGeoJSON}>
-            <CircleLayer
-              id="porcini-session-layer"
-              style={{ circleRadius: 10, circleColor: UI.porcino, circleStrokeWidth: 1.5, circleStrokeColor: '#000' }}
-            />
-          </ShapeSource>
-        )}
-
-        {/* Marker Finferli sessione corrente */}
-        {recording && finferliCount > 0 && (
-          <ShapeSource id="finferli-session-source" shape={finferliGeoJSON}>
-            <CircleLayer
-              id="finferli-session-layer"
-              style={{ circleRadius: 10, circleColor: UI.finferlo, circleStrokeWidth: 1.5, circleStrokeColor: '#000' }}
-            />
-          </ShapeSource>
-        )}
-
-        {/* Percorsi salvati dall'archivio */}
-        {routesOnMap.map((route: RouteData, idx: number) => {
-          const isHighlighted = highlightedRoute === route.route_id;
-          const lineGeoJSON = coordsToGeoJSONLine(route.path.filter((p) => p.latitude != null && p.longitude != null));
-          const rPorcini = markersToGeoJSON(route.markers, 'Porcino');
-          const rFinferli = markersToGeoJSON(route.markers, 'Finferlo');
-          return (
-            <React.Fragment key={route.route_id ?? idx}>
-              <ShapeSource id={`saved-path-source-${idx}`} shape={lineGeoJSON}>
-                <LineLayer
-                  id={`saved-path-layer-${idx}`}
-                  style={{
-                    lineColor: isHighlighted ? '#003cff' : '#1e8fff',
-                    lineWidth: isHighlighted ? 4 : 1.5,
-                    lineCap: 'round',
-                    lineJoin: 'round',
-                    lineOpacity: isHighlighted ? 1 : 0.57,
-                  }}
-                />
-              </ShapeSource>
-              {rPorcini.features.length > 0 && (
-                <ShapeSource id={`saved-porcini-source-${idx}`} shape={rPorcini}>
-                  <CircleLayer
-                    id={`saved-porcini-layer-${idx}`}
-                    style={{ circleRadius: isHighlighted ? 12 : 8, circleColor: '#965123', circleStrokeWidth: 1, circleStrokeColor: '#000', circleOpacity: 0.73 }}
-                  />
-                </ShapeSource>
-              )}
-              {rFinferli.features.length > 0 && (
-                <ShapeSource id={`saved-finferli-source-${idx}`} shape={rFinferli}>
-                  <CircleLayer
-                    id={`saved-finferli-layer-${idx}`}
-                    style={{ circleRadius: isHighlighted ? 12 : 8, circleColor: '#ffd900', circleStrokeWidth: 1, circleStrokeColor: '#000', circleOpacity: 0.73 }}
-                  />
-                </ShapeSource>
-              )}
-            </React.Fragment>
-          );
-        })}
-      </MapView>
+      <MemoMapCanvas
+        cameraCommand={cameraCommand}
+        followLocationRef={followLocationRef}
+        activeLayer={activeLayer}
+        tileDate={tileDate}
+        tileVersion={tileVersion}
+        tileOpacity={tileOpacity}
+        tilesLoading={tilesLoading}
+        currentPosGeoJSON={currentPosGeoJSON}
+        recording={recording}
+        currentPathGeoJSON={currentPathGeoJSON}
+        porciniCount={porciniCount}
+        porciniGeoJSON={porciniGeoJSON}
+        finferliCount={finferliCount}
+        finferliGeoJSON={finferliGeoJSON}
+        routesOnMap={routesOnMap}
+        highlightedRoute={highlightedRoute}
+      />
 
       {/* ── HEADER PILL ──────────────────────────────────────────────────── */}
       <View style={mStyles.headerPill} pointerEvents="none">
@@ -911,100 +1139,18 @@ function MainUI(props: any) {
         </View>
       )}
 
-      {activeLayer !== 'off' && !tilesLoading && tileDate && tileVersion && (
-        <View
-          style={[
-            mStyles.indexPanel,
-            indexPanelCollapsed && mStyles.indexPanelCollapsed,
-            { left: panelPos.x, top: panelPos.y, width: panelWidth },
-          ]}
-          onLayout={(event) => {
-            const { width, height } = event.nativeEvent.layout;
-            setPanelSize((prev) => {
-              if (Math.abs(prev.width - width) < 1 && Math.abs(prev.height - height) < 1) return prev;
-              return { width, height };
-            });
-          }}
-        >
-          <View style={mStyles.indexPanelHeader} {...panelPanResponder.panHandlers}>
-            <Text style={mStyles.indexPanelTitle}>INDICE</Text>
-            <View style={mStyles.indexPanelActions}>
-              <TouchableOpacity onPress={() => setIndexPanelCollapsed((value: boolean) => !value)} style={mStyles.indexCloseBtn}>
-                <Text style={mStyles.indexCloseText}>{indexPanelCollapsed ? '+' : '−'}</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => setActiveLayer('off')} style={mStyles.indexCloseBtn}>
-                <Text style={mStyles.indexCloseText}>×</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {!indexPanelCollapsed && (
-            <>
-              <View style={mStyles.indexSpeciesRow}>
-                {(['porcini', 'finferli'] as ActiveLayer[]).map((layer) => {
-                  const active = activeLayer === layer;
-                  const color = layer === 'porcini' ? UI.porcinoHi : UI.finferloHi;
-                  return (
-                    <TouchableOpacity
-                      key={layer}
-                      onPress={() => setActiveLayer(layer)}
-                      style={[mStyles.indexSpeciesBtn, active && { borderColor: color, backgroundColor: `${color}33` }]}
-                    >
-                      <Text style={[mStyles.indexSpeciesText, active && { color }]}>
-                        {layer === 'porcini' ? 'P' : 'F'}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-
-              <View style={mStyles.indexDatasetRow}>
-                <TouchableOpacity
-                  onPress={() => selectTileAt(activeTileIndex + 1)}
-                  style={[mStyles.indexArrowBtn, tileSets.length === 0 && mStyles.indexArrowBtnDisabled]}
-                  disabled={tileSets.length === 0}
-                >
-                  <Text style={mStyles.indexArrowText}>‹</Text>
-                </TouchableOpacity>
-                <View style={mStyles.indexDatasetInfo}>
-                  <Text style={mStyles.indexDatasetLabel}>DATA / VERSIONE</Text>
-                  <Text style={mStyles.indexDatasetValue}>{selectedTileLabel}</Text>
-                  {tileSets.length === 0 && (
-                    <Text style={mStyles.indexDatasetHint}>Lista automatica non disponibile</Text>
-                  )}
-                </View>
-                <TouchableOpacity
-                  onPress={() => selectTileAt(activeTileIndex - 1)}
-                  style={[mStyles.indexArrowBtn, tileSets.length === 0 && mStyles.indexArrowBtnDisabled]}
-                  disabled={tileSets.length === 0}
-                >
-                  <Text style={mStyles.indexArrowText}>›</Text>
-                </TouchableOpacity>
-              </View>
-
-              <View style={mStyles.indexOpacityRow}>
-                <Text style={mStyles.indexDatasetLabel}>OPACITA'</Text>
-                <View style={mStyles.indexOpacitySteps}>
-                  {opacitySteps.map((value) => {
-                    const active = Math.abs(tileOpacity - value) < 0.01;
-                    return (
-                      <TouchableOpacity
-                        key={value}
-                        onPress={() => setTileOpacity(value)}
-                        style={[mStyles.indexOpacityBtn, active && mStyles.indexOpacityBtnActive]}
-                      >
-                        <Text style={[mStyles.indexOpacityText, active && mStyles.indexOpacityTextActive]}>
-                          {Math.round(value * 100)}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-              </View>
-            </>
-          )}
-        </View>
-      )}
+      <QuickIndexPanel
+        activeLayer={activeLayer}
+        setActiveLayer={setActiveLayer}
+        tileDate={tileDate}
+        setTileDate={setTileDate}
+        tileVersion={tileVersion}
+        setTileVersion={setTileVersion}
+        tileSets={tileSets}
+        tileOpacity={tileOpacity}
+        setTileOpacity={setTileOpacity}
+        tilesLoading={tilesLoading}
+      />
 
       {/* ── OVERLAY LISTA FUNGHI (destra) ────────────────────────────────── */}
       {recording && markers.length > 0 && (
@@ -1051,13 +1197,20 @@ function MainUI(props: any) {
                     if (coordinates.length === 0) return;
                     const lats = coordinates.map((c) => c.latitude);
                     const lons = coordinates.map((c) => c.longitude);
-                    // fitBounds(ne, sw, padding, duration)
-                    cameraRef.current?.fitBounds(
-                      [Math.max(...lons), Math.max(...lats)],
-                      [Math.min(...lons), Math.min(...lats)],
-                      50,
-                      1000
-                    );
+                    runCameraCommand({
+                      bounds: {
+                        ne: [Math.max(...lons), Math.max(...lats)],
+                        sw: [Math.min(...lons), Math.min(...lats)],
+                      },
+                      padding: {
+                        paddingTop: 50,
+                        paddingRight: 50,
+                        paddingBottom: 50,
+                        paddingLeft: 50,
+                      },
+                      animationDuration: 1000,
+                      animationMode: 'easeTo',
+                    });
                     highlightRoute(route.route_id!);
                   }}
                 >
@@ -1106,9 +1259,11 @@ function MainUI(props: any) {
         style={recording ? mStyles.centerBtnRecording : mStyles.centerBtn}
         onPress={() => {
           followLocationRef.current = true;
-          if (path.length > 0) {
+          if (recording && path.length > 0) {
             const latest = path[path.length - 1];
-            cameraRef.current?.moveTo([latest.longitude, latest.latitude], 500);
+            centerCamera([latest.longitude, latest.latitude]);
+          } else {
+            centerCamera(initialCenter);
           }
         }}
       >

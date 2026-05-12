@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import argparse
 import os
+import random
 import shutil
+import socket
 import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Iterable
+from urllib.parse import urlparse
 
 import requests
 from dotenv import load_dotenv
@@ -22,6 +25,7 @@ SUPABASE_BUCKET = "tiles"
 DEFAULT_SPECIES = ["porcini", "finferli"]
 DEFAULT_ZOOMS = list(range(8, 15))
 LOD_STEPS = {2: 0.003, 3: 0.008, 4: 0.02, 5: 0.05, 6: 0.12}
+UPLOAD_RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 
 SUPABASE_URL = None
 SUPABASE_KEY = None
@@ -35,20 +39,20 @@ def load_env(env_file: str | None = None) -> None:
         [
             ROOT_DIR / ".env",
             ROOT_DIR / "backend" / ".env",
+            ROOT_DIR / "backend" / "scripts" / "tiles" / ".env",
             ROOT_DIR / "legacy-funghi-index" / ".env",
         ]
     )
     for path in candidates:
         if path.is_file():
             load_dotenv(path)
-            return
 
 
 def refresh_env(env_file: str | None = None) -> None:
     global SUPABASE_URL, SUPABASE_KEY
     load_env(env_file)
-    SUPABASE_URL = os.getenv("SUPABASE_URL")
-    SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+    SUPABASE_URL = os.getenv("SUPABASE_URL") or os.getenv("EXPO_PUBLIC_SUPABASE_URL")
+    SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
 
 def run_cmd(cmd: list[str], cwd: Path | None = None) -> None:
@@ -120,14 +124,14 @@ def zooms_to_gdal_arg(zooms: list[int]) -> str:
 def write_colormap_file(path: Path) -> None:
     content = """nv 255 255 255 0
 0   255 255 255 0
-5   255 255 255 40
-15  180 230 255 90
-30  100 200 255 120
-45  80 180 90 145
-60  255 230 70 175
-75  255 120 60 205
-90  210 60 40 225
-100 120 78 42 235
+5   255 255 255 0
+15  180 230 255 40
+30  100 200 255 90
+45  80 180 90 140
+60  255 230 70 185
+75  255 120 60 225
+90  210 60 40 245
+100 120 78 42 255
 """
     path.write_text(content, encoding="utf-8")
 
@@ -135,8 +139,13 @@ def write_colormap_file(path: Path) -> None:
 def check_environment(dry_run: bool) -> None:
     run_cmd(["gdalinfo", "--version"])
     run_cmd([*find_gdal2tiles_cmd(), "--help"])
+    print(f"[ENV] Supabase URL        : {'ok' if SUPABASE_URL else 'missing'}")
+    print(f"[ENV] Supabase upload key : {'ok' if SUPABASE_KEY else 'missing'}")
     if not dry_run and (not SUPABASE_URL or not SUPABASE_KEY):
-        raise RuntimeError("SUPABASE_URL or SUPABASE_SERVICE_KEY missing. Add .env or pass --env-file.")
+        raise RuntimeError(
+            "Supabase upload config missing. Add SUPABASE_URL or EXPO_PUBLIC_SUPABASE_URL, "
+            "and SUPABASE_SERVICE_KEY or SUPABASE_SERVICE_ROLE_KEY to .env, or pass --env-file."
+        )
 
 
 def translate_index_netcdf(index_nc: Path, species: str, tif_path: Path) -> None:
@@ -217,7 +226,42 @@ def iter_png_files(root: Path) -> Iterable[Path]:
             yield path
 
 
-def upload_one_file(local_path: Path, remote_path: str, max_retries: int = 8) -> tuple[bool, str]:
+def env_int(name: str, default: int, minimum: int = 1) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return max(minimum, int(raw))
+    except ValueError:
+        return default
+
+
+def upload_retry_delay(attempt: int) -> float:
+    base = min(60.0, 2.0 ** min(attempt, 6))
+    return base + random.uniform(0.0, 1.5)
+
+
+def wait_for_supabase_dns(max_retries: int = 6) -> None:
+    if not SUPABASE_URL:
+        return
+    parsed = urlparse(SUPABASE_URL)
+    host = parsed.hostname
+    if not host:
+        raise RuntimeError(f"Invalid SUPABASE_URL: {SUPABASE_URL}")
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            socket.getaddrinfo(host, 443)
+            return
+        except socket.gaierror as exc:
+            if attempt == max_retries:
+                raise RuntimeError(f"Cannot resolve Supabase host after {max_retries} attempts: {host}") from exc
+            delay = min(45.0, 3.0 * attempt) + random.uniform(0.0, 1.5)
+            print(f"[DNS] Cannot resolve {host}, retry {attempt}/{max_retries} in {delay:.1f}s", flush=True)
+            time.sleep(delay)
+
+
+def upload_one_file(local_path: Path, remote_path: str, max_retries: int) -> tuple[bool, str]:
     url = f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/{remote_path}"
     headers = {
         "Authorization": f"Bearer {SUPABASE_KEY}",
@@ -231,13 +275,13 @@ def upload_one_file(local_path: Path, remote_path: str, max_retries: int = 8) ->
                 resp = requests.post(url, headers=headers, data=f, timeout=120)
             if resp.status_code in (200, 201):
                 return True, remote_path
-            if resp.status_code in (408, 409, 425, 429, 500, 502, 503, 504) and attempt < max_retries:
-                time.sleep(1.5 * attempt)
+            if resp.status_code in UPLOAD_RETRYABLE_STATUS_CODES and attempt < max_retries:
+                time.sleep(upload_retry_delay(attempt))
                 continue
             return False, f"{remote_path} HTTP {resp.status_code}: {resp.text[:500]}"
         except requests.RequestException as exc:
             if attempt < max_retries:
-                time.sleep(1.5 * attempt)
+                time.sleep(upload_retry_delay(attempt))
                 continue
             return False, f"{remote_path}: {type(exc).__name__}: {exc}"
 
@@ -245,32 +289,66 @@ def upload_one_file(local_path: Path, remote_path: str, max_retries: int = 8) ->
 
 
 def upload_tiles_to_supabase(date: str, version: str, species: str, species_tile_dir: Path, workers: int) -> None:
-    png_files = list(iter_png_files(species_tile_dir))
+    png_files = sorted(iter_png_files(species_tile_dir))
     total = len(png_files)
     if total == 0:
         raise RuntimeError(f"No PNG tiles found in {species_tile_dir}")
 
-    print(f"\n[UPLOAD] {species}: {total} PNG tiles")
+    max_file_retries = env_int("SUPABASE_UPLOAD_FILE_RETRIES", 10)
+    max_rounds = env_int("SUPABASE_UPLOAD_ROUNDS", 3)
+    round_delay = env_int("SUPABASE_UPLOAD_ROUND_DELAY_SECONDS", 30, minimum=0)
+    pending = [
+        (local_path, f"{date}_v{version}/{species}/{local_path.relative_to(species_tile_dir).as_posix()}")
+        for local_path in png_files
+    ]
     ok_count = 0
-    failures = []
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {}
-        for local_path in png_files:
-            rel = local_path.relative_to(species_tile_dir).as_posix()
-            remote_path = f"{date}_v{version}/{species}/{rel}"
-            futures[executor.submit(upload_one_file, local_path, remote_path)] = remote_path
+    failures: list[str] = []
 
-        for done, future in enumerate(as_completed(futures), start=1):
-            ok, msg = future.result()
-            if ok:
-                ok_count += 1
-            else:
-                failures.append(msg)
-                print(f"[FAIL] {msg}")
-            if done % 250 == 0 or done == total:
-                print(f"  {done}/{total} ok={ok_count} fail={len(failures)}", flush=True)
+    print(
+        f"\n[UPLOAD] {species}: {total} PNG tiles "
+        f"(workers={workers}, file_retries={max_file_retries}, rounds={max_rounds})"
+    )
 
-    if failures:
+    for round_no in range(1, max_rounds + 1):
+        wait_for_supabase_dns()
+        round_total = len(pending)
+        round_failures: list[tuple[Path, str, str]] = []
+        print(f"[UPLOAD] {species}: round {round_no}/{max_rounds}, pending={round_total}", flush=True)
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(upload_one_file, local_path, remote_path, max_file_retries): (local_path, remote_path)
+                for local_path, remote_path in pending
+            }
+
+            for done, future in enumerate(as_completed(futures), start=1):
+                local_path, remote_path = futures[future]
+                ok, msg = future.result()
+                if ok:
+                    ok_count += 1
+                else:
+                    round_failures.append((local_path, remote_path, msg))
+                    print(f"[FAIL] {msg}")
+                if done % 250 == 0 or done == round_total:
+                    print(
+                        f"  round={round_no} {done}/{round_total} total_ok={ok_count} "
+                        f"round_fail={len(round_failures)}",
+                        flush=True,
+                    )
+
+        if not round_failures:
+            failures = []
+            pending = []
+            break
+
+        failures = [msg for _, _, msg in round_failures]
+        pending = [(local_path, remote_path) for local_path, remote_path, _ in round_failures]
+        if round_no < max_rounds:
+            delay = round_delay * round_no
+            print(f"[UPLOAD] {species}: retrying {len(pending)} failed tiles in {delay}s", flush=True)
+            time.sleep(delay)
+
+    if pending:
         failure_path = species_tile_dir.parent / f"{species}_upload_failures.txt"
         failure_path.write_text("\n".join(failures), encoding="utf-8")
         raise RuntimeError(f"Upload incomplete for {species}. Failure log: {failure_path}")

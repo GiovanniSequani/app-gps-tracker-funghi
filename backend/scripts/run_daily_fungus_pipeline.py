@@ -61,6 +61,7 @@ def main() -> None:
     parser.add_argument("--skip-tiles", action="store_true", help="Stop after recomputing the index NetCDF.")
     parser.add_argument("--tiles-workers", type=int, default=12)
     parser.add_argument("--tile-zooms", nargs="+", type=int, default=[8, 9, 10, 11, 12, 13, 14])
+    parser.add_argument("--env-file", default=str(ROOT_DIR / ".env"), help="Env file passed to tile upload script.")
     args = parser.parse_args()
 
     if not args.skip_meteo:
@@ -127,6 +128,8 @@ def main() -> None:
     ]
     if args.upload_only_tiles:
         tiles_cmd.append("--upload-only")
+    if args.env_file:
+        tiles_cmd.extend(["--env-file", args.env_file])
 
     run_cmd(tiles_cmd)
     print("\nDone")

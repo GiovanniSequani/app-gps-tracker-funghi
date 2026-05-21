@@ -93,10 +93,27 @@ const SUPABASE_URL =
   isValidSupabaseUrl(ENV_SUPABASE_URL) ? ENV_SUPABASE_URL : DEFAULT_SUPABASE_URL;
 const SUPABASE_BUCKET = 'tiles';
 const DEFAULT_TILE_SET: TileSet = { date: '2026-05-05', version: '1' };
+const TILE_SET_MANIFEST = 'tile_sets.json';
 const SUPABASE_ANON_KEY =
   process.env?.EXPO_PUBLIC_SUPABASE_ANON_KEY ??
   ((Constants.expoConfig?.extra?.supabaseAnonKey as string | undefined) ?? '');
 const TILE_SET_REGEX = /^(\d{4})([-_])(\d{2})\2(\d{2})_v(\d+)$/;
+
+type ParsedTileSet = TileSet & {
+  year: number;
+  month: number;
+  day: number;
+  versionNum: number;
+};
+
+type TileSetManifest = {
+  tileSets?: unknown;
+};
+
+type ManifestTileSet = {
+  date?: unknown;
+  version?: unknown;
+};
 
 async function getLatestTileSet(): Promise<TileSet> {
   const candidates = await getAvailableTileSets();
@@ -106,7 +123,60 @@ async function getLatestTileSet(): Promise<TileSet> {
   return candidates[0];
 }
 
-async function getAvailableTileSets(): Promise<TileSet[]> {
+function parseTileSetName(name: string): ParsedTileSet | null {
+  const match = name.match(TILE_SET_REGEX);
+  if (!match) return null;
+  return {
+    date: `${match[1]}${match[2]}${match[3]}${match[2]}${match[4]}`,
+    version: match[5],
+    year: Number(match[1]),
+    month: Number(match[3]),
+    day: Number(match[4]),
+    versionNum: Number(match[5]),
+  };
+}
+
+function parseManifestTileSet(item: ManifestTileSet): ParsedTileSet | null {
+  if (typeof item.date !== 'string' || typeof item.version !== 'string') return null;
+  return parseTileSetName(`${item.date}_v${item.version}`);
+}
+
+function sortTileSets(tileSets: ParsedTileSet[]): TileSet[] {
+  return tileSets
+    .sort((a, b) => {
+      if (a.year !== b.year) return b.year - a.year;
+      if (a.month !== b.month) return b.month - a.month;
+      if (a.day !== b.day) return b.day - a.day;
+      return b.versionNum - a.versionNum;
+    })
+    .map((item) => ({ date: item.date, version: String(item.versionNum) }));
+}
+
+async function getAvailableTileSetsFromManifest(): Promise<TileSet[]> {
+  const url = `${SUPABASE_URL}/storage/v1/object/public/${SUPABASE_BUCKET}/${TILE_SET_MANIFEST}?t=${Date.now()}`;
+  console.log('[tiles] Fetching tile set manifest', { url });
+  const response = await fetch(url, { method: 'GET' });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(`Tile manifest failed: ${response.status}${body ? ` - ${body}` : ''}`);
+  }
+
+  const manifest = (await response.json()) as TileSetManifest;
+  if (!Array.isArray(manifest.tileSets)) {
+    throw new Error('Tile manifest format is invalid');
+  }
+
+  const tileSets = sortTileSets(
+    manifest.tileSets
+      .map((item) => parseManifestTileSet(item as ManifestTileSet))
+      .filter((item): item is ParsedTileSet => item !== null),
+  );
+  console.log('[tiles] Tile set manifest result', { count: tileSets.length, tileSets: tileSets.slice(0, 20) });
+  return tileSets;
+}
+
+async function getAvailableTileSetsFromStorageList(): Promise<TileSet[]> {
   const url = `${SUPABASE_URL}/storage/v1/object/list/${SUPABASE_BUCKET}`;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (SUPABASE_ANON_KEY) {
@@ -133,29 +203,26 @@ async function getAvailableTileSets(): Promise<TileSet[]> {
   const items = (await response.json()) as Array<{ name?: string }>;
   const names = items.map((item) => item.name ?? '');
   console.log('[tiles] Supabase list result', { count: names.length, names: names.slice(0, 20) });
-  const tileSets = names
-    .map((name) => {
-      const match = name.match(TILE_SET_REGEX);
-      if (!match) return null;
-      return {
-        name,
-        date: `${match[1]}${match[2]}${match[3]}${match[2]}${match[4]}`,
-        year: Number(match[1]),
-        month: Number(match[3]),
-        day: Number(match[4]),
-        versionNum: Number(match[5]),
-      };
-    })
-    .filter((item): item is NonNullable<typeof item> => item !== null)
-    .sort((a, b) => {
-      if (a.year !== b.year) return b.year - a.year;
-      if (a.month !== b.month) return b.month - a.month;
-      if (a.day !== b.day) return b.day - a.day;
-      return b.versionNum - a.versionNum;
-    })
-    .map((item) => ({ date: item.date, version: String(item.versionNum) }));
+  const tileSets = sortTileSets(
+    names
+      .map((name) => parseTileSetName(name))
+      .filter((item): item is ParsedTileSet => item !== null),
+  );
   console.log('[tiles] Parsed tile sets', tileSets);
   return tileSets;
+}
+
+async function getAvailableTileSets(): Promise<TileSet[]> {
+  try {
+    const tileSets = await getAvailableTileSetsFromManifest();
+    if (tileSets.length > 0) return tileSets;
+  } catch (err) {
+    console.log('[tiles] Manifest unavailable, falling back to Supabase list', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  return getAvailableTileSetsFromStorageList();
 }
 
 // ─── Stile mappa: satellite Esri (gratuito, no API key) ───────────────────────

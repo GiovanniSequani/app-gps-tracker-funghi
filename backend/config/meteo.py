@@ -10,8 +10,9 @@ TIMEZONE_DAILY = "Europe/Rome"
 
 ROLLING_HOURLY_WINDOW_HOURS = 48
 ROLLING_DAILY_WINDOW_DAYS = 20
+RAW_RUN_RETENTION_DAYS = 30
 
-MIN_LEAD_HOURS = 1
+MIN_LEAD_HOURS = 2
 DUPLICATE_VALID_TIME_POLICY = "latest_run_wins"
 
 METEO_TARGET_CRS = TARGET_CRS
@@ -30,7 +31,7 @@ PUBLICATION_DELAY_H = 0    # ritardo medio pubblicazione run
 
 DWD_ICON_D2_BASE_URL = "https://opendata.dwd.de/weather/nwp/icon-d2/grib"
 ICON_D2_RUN_HOURS = (0, 3, 6, 9, 12, 15, 18, 21)
-ICON_D2_DEFAULT_STEPS = tuple(range(1, 7))  # +0 ... +6
+ICON_D2_DEFAULT_STEPS = tuple(range(1, 8))  # raw +1 ... +7; output starts at MIN_LEAD_HOURS
 
 ICON_D2_RAW_VARIABLES = {
     "t2m": {

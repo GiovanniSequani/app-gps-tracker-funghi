@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import bz2
+import shutil
 import subprocess
 import sys
 import requests
@@ -15,10 +17,13 @@ import xarray as xr
 # ------------------------------------------------------------------------------
 
 from backend.config.meteo import (
+    ICON_D2_DEFAULT_STEPS,
     ICON_D2_RUN_HOURS,
     ICON_D2_RAW_DIR,
+    ICON_D2_RAW_VARIABLES,
     INTERMEDIATE_METEO_DIR,
-    PUBLICATION_DELAY_H
+    PUBLICATION_DELAY_H,
+    RAW_RUN_RETENTION_DAYS,
 )
 UTC = timezone.utc
 
@@ -105,9 +110,67 @@ def is_run_available_remote(run: str) -> bool:
 # LOCAL STATE CHECK
 # ------------------------------------------------------------------------------
 
-def raw_exists(run: str) -> bool:
+def is_valid_bz2_file(path: Path) -> bool:
+    if not path.is_file() or path.stat().st_size <= 0:
+        return False
+
+    try:
+        with bz2.open(path, "rb") as f:
+            while f.read(1024 * 1024):
+                pass
+        return True
+    except (EOFError, OSError):
+        return False
+
+
+def expected_raw_files(run: str) -> list[Path]:
+    run_dir = ICON_D2_RAW_DIR / run
+    files: list[Path] = []
+    for spec in ICON_D2_RAW_VARIABLES.values():
+        if spec["level_kind"] != "single-level":
+            continue
+        dwd_var_dir = spec["dwd_var_dir"]
+        for step in ICON_D2_DEFAULT_STEPS:
+            filename = (
+                f"icon-d2_germany_regular-lat-lon_single-level_"
+                f"{run}_{step:03d}_2d_{dwd_var_dir}.grib2.bz2"
+            )
+            files.append(run_dir / dwd_var_dir / filename)
+    return files
+
+
+def raw_any_exists(run: str) -> bool:
     run_dir = ICON_D2_RAW_DIR / run
     return run_dir.is_dir() and any(run_dir.rglob("*.grib2.bz2"))
+
+
+def raw_complete(run: str) -> bool:
+    files = expected_raw_files(run)
+    return bool(files) and all(is_valid_bz2_file(path) for path in files)
+
+
+def cleanup_old_raw_runs(now: datetime, retention_days: int, dry_run: bool) -> list[str]:
+    if retention_days <= 0 or not ICON_D2_RAW_DIR.is_dir():
+        return []
+
+    cutoff = now - timedelta(days=retention_days)
+    removed: list[str] = []
+
+    for run_dir in sorted(ICON_D2_RAW_DIR.iterdir()):
+        if not run_dir.is_dir():
+            continue
+        try:
+            run_dt = parse_run(run_dir.name)
+        except ValueError:
+            continue
+        if run_dt >= cutoff:
+            continue
+
+        removed.append(run_dir.name)
+        if not dry_run:
+            shutil.rmtree(run_dir)
+
+    return removed
 
 
 def hourly_nc_exists(run: str) -> bool:
@@ -171,8 +234,11 @@ def classify_run(run: str, buffer_runs: set[str]) -> str:
     if hourly_nc_exists(run):
         return "HOURLY"
 
-    if raw_exists(run):
+    if raw_complete(run):
         return "RAW"
+
+    if raw_any_exists(run):
+        return "PARTIAL_RAW"
 
     return "MISSING"
 
@@ -200,6 +266,11 @@ def main():
         action="store_true",
         help="Processa anche le run già presenti nell'hourly buffer",
     )
+    parser.add_argument(
+        "--skip-raw-cleanup",
+        action="store_true",
+        help="Non elimina le cartelle raw ICON-D2 piu' vecchie della retention configurata.",
+    )
     args = parser.parse_args()
 
     py = args.python
@@ -218,6 +289,16 @@ def main():
     print(f"Force all            : {args.force_all}")
     print("=" * 80)
 
+    if not args.skip_raw_cleanup:
+        removed_raw = cleanup_old_raw_runs(
+            now=now,
+            retention_days=RAW_RUN_RETENTION_DAYS,
+            dry_run=args.dry_run,
+        )
+        print(f"\n[RAW CLEANUP] retention={RAW_RUN_RETENTION_DAYS} giorni | removed={len(removed_raw)}")
+        for run in removed_raw:
+            print(f"  {run}")
+
     # --- classificazione ---
     run_status = {}
     for run in runs:
@@ -232,7 +313,7 @@ def main():
     runs_to_process = [
         run for run in runs
         if (run_status[run] != "DONE" or args.force_all)
-        and (raw_exists(run) or is_run_available_remote(run))
+        and (raw_complete(run) or is_run_available_remote(run))
     ]
 
     print("\n[TO PROCESS]")

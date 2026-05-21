@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import random
+import re
 import shutil
 import socket
 import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 from urllib.parse import urlparse
@@ -26,6 +29,7 @@ DEFAULT_SPECIES = ["porcini", "finferli"]
 DEFAULT_ZOOMS = list(range(8, 15))
 LOD_STEPS = {2: 0.003, 3: 0.008, 4: 0.02, 5: 0.05, 6: 0.12}
 UPLOAD_RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
+TILE_SET_DIR_REGEX = re.compile(r"^(\d{4})([-_])(\d{2})\2(\d{2})_v(\d+)$")
 
 SUPABASE_URL = None
 SUPABASE_KEY = None
@@ -288,6 +292,77 @@ def upload_one_file(local_path: Path, remote_path: str, max_retries: int) -> tup
     return False, f"{remote_path}: unknown upload error"
 
 
+def upload_text_object(remote_path: str, body: str, content_type: str) -> None:
+    url = f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/{remote_path}"
+    headers = {
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": content_type,
+        "x-upsert": "true",
+    }
+    resp = requests.post(url, headers=headers, data=body.encode("utf-8"), timeout=120)
+    if resp.status_code not in (200, 201):
+        raise RuntimeError(f"{remote_path} HTTP {resp.status_code}: {resp.text[:500]}")
+
+
+def parse_tile_set_dir_name(name: str) -> dict[str, object] | None:
+    match = TILE_SET_DIR_REGEX.match(name)
+    if not match:
+        return None
+    year, separator, month, day, version = match.groups()
+    return {
+        "date": f"{year}{separator}{month}{separator}{day}",
+        "version": version,
+        "year": int(year),
+        "month": int(month),
+        "day": int(day),
+        "versionNum": int(version),
+    }
+
+
+def build_tile_sets_manifest(tile_dir: Path) -> str:
+    tile_sets = []
+    if tile_dir.is_dir():
+        for child in tile_dir.iterdir():
+            if not child.is_dir():
+                continue
+            parsed = parse_tile_set_dir_name(child.name)
+            if parsed is None:
+                continue
+            if not any((child / species).is_dir() for species in DEFAULT_SPECIES):
+                continue
+            tile_sets.append(parsed)
+
+    tile_sets.sort(
+        key=lambda item: (
+            item["year"],
+            item["month"],
+            item["day"],
+            item["versionNum"],
+        ),
+        reverse=True,
+    )
+    public_tile_sets = [
+        {"date": str(item["date"]), "version": str(item["version"])}
+        for item in tile_sets
+    ]
+    return json.dumps(
+        {
+            "updatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "tileSets": public_tile_sets,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+
+
+def upload_tile_sets_manifest(tile_dir: Path) -> None:
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        raise RuntimeError("Supabase upload config missing; cannot upload tile_sets.json")
+    manifest = build_tile_sets_manifest(tile_dir)
+    upload_text_object("tile_sets.json", manifest, "application/json; charset=utf-8")
+    print("[MANIFEST] Uploaded tile_sets.json")
+
+
 def upload_tiles_to_supabase(date: str, version: str, species: str, species_tile_dir: Path, workers: int) -> None:
     png_files = sorted(iter_png_files(species_tile_dir))
     total = len(png_files)
@@ -416,7 +491,7 @@ def build_species_tiles(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build and upload mushroom index XYZ tiles.")
-    parser.add_argument("--date", required=True, help="Dataset date YYYY-MM-DD")
+    parser.add_argument("--date", default=None, help="Dataset date YYYY-MM-DD")
     parser.add_argument("--version", default="1", help="Dataset version used in tile path")
     parser.add_argument("--species", nargs="+", choices=DEFAULT_SPECIES, default=DEFAULT_SPECIES)
     parser.add_argument("--source-mode", choices=["index-nc", "geojson"], default="index-nc")
@@ -431,14 +506,26 @@ def main() -> None:
     parser.add_argument("--env-file", default=None)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--upload-only", action="store_true", help="Upload existing local tiles without rebuilding them.")
+    parser.add_argument("--manifest-only", action="store_true", help="Only rebuild and upload tile_sets.json from local tile directories.")
     parser.add_argument("--keep-intermediate", action="store_true")
     args = parser.parse_args()
 
     refresh_env(args.env_file)
-    index_nc = Path(args.index_nc) if args.index_nc else Path(str(INDEX_OUTPUT_TEMPLATE).format(date=args.date))
     geojson_dir = Path(args.geojson_dir)
     work_dir = Path(args.work_dir)
     tile_dir = Path(args.tile_dir)
+
+    if args.manifest_only:
+        work_dir.mkdir(parents=True, exist_ok=True)
+        tile_dir.mkdir(parents=True, exist_ok=True)
+        upload_tile_sets_manifest(tile_dir)
+        print("\nDone")
+        return
+
+    if not args.date:
+        raise SystemExit("--date is required unless --manifest-only is used")
+
+    index_nc = Path(args.index_nc) if args.index_nc else Path(str(INDEX_OUTPUT_TEMPLATE).format(date=args.date))
 
     if args.upload_only:
         pass
@@ -470,6 +557,7 @@ def main() -> None:
             species_tile_dir = tile_dir / f"{args.date}_v{args.version}" / species
             ensure_exists(species_tile_dir, "dir")
             upload_tiles_to_supabase(args.date, args.version, species, species_tile_dir, args.upload_workers)
+        upload_tile_sets_manifest(tile_dir)
         print("\nDone")
         return
 
@@ -490,6 +578,9 @@ def main() -> None:
             dry_run=args.dry_run,
             keep_intermediate=args.keep_intermediate,
         )
+
+    if not args.dry_run:
+        upload_tile_sets_manifest(tile_dir)
 
     print("\nDone")
 

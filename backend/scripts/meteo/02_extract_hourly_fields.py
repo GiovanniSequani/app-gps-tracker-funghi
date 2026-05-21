@@ -427,9 +427,17 @@ def main() -> None:
     assert ref_lats is not None and ref_lons is not None
 
     precip_list: list[np.ndarray] = []
+    previous_precip_cumulative: np.ndarray | None = None
+    if steps[0] > 1:
+        previous_step = steps[0] - 1
+        previous_precip_file = find_single_level_file(run_dir, "tot_prec", previous_step)
+        previous_precip_cumulative, _, _, _ = extract_regular_variable(previous_precip_file, BBOX, "precip")
+
     for i, arr_cum in enumerate(precip_cumulative_list):
-        if i == 0:
+        if i == 0 and previous_precip_cumulative is None:
             arr_hourly = arr_cum.copy()
+        elif i == 0:
+            arr_hourly = arr_cum - previous_precip_cumulative
         else:
             arr_hourly = arr_cum - precip_cumulative_list[i - 1]
         arr_hourly = np.where(arr_hourly < 0, 0.0, arr_hourly).astype(np.float32)

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import bz2
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from backend.config.meteo import ICON_D2_RAW_DIR
+from backend.config.meteo import ICON_D2_DEFAULT_STEPS, ICON_D2_RAW_DIR, ICON_D2_RAW_VARIABLES
 
 UTC = timezone.utc
 
@@ -33,12 +34,44 @@ def raw_run_dir(run: str) -> Path:
     return ICON_D2_RAW_DIR / run
 
 
-def raw_run_exists(run: str) -> bool:
+def is_valid_bz2_file(path: Path) -> bool:
+    if not path.is_file() or path.stat().st_size <= 0:
+        return False
+
+    try:
+        with bz2.open(path, "rb") as f:
+            while f.read(1024 * 1024):
+                pass
+        return True
+    except (EOFError, OSError):
+        return False
+
+
+def expected_raw_files(run: str) -> list[Path]:
+    run_dir = raw_run_dir(run)
+    files: list[Path] = []
+    for spec in ICON_D2_RAW_VARIABLES.values():
+        if spec["level_kind"] != "single-level":
+            continue
+        dwd_var_dir = spec["dwd_var_dir"]
+        for step in ICON_D2_DEFAULT_STEPS:
+            filename = (
+                f"icon-d2_germany_regular-lat-lon_single-level_"
+                f"{run}_{step:03d}_2d_{dwd_var_dir}.grib2.bz2"
+            )
+            files.append(run_dir / dwd_var_dir / filename)
+    return files
+
+
+def raw_run_complete(run: str) -> bool:
+    files = expected_raw_files(run)
+    return bool(files) and all(is_valid_bz2_file(path) for path in files)
+
+
+def raw_run_has_any_file(run: str) -> bool:
     run_dir = raw_run_dir(run)
     if not run_dir.is_dir():
         return False
-
-    # controllo minimo robusto: deve esserci almeno qualcosa dentro
     return any(run_dir.rglob("*.grib2.bz2"))
 
 
@@ -150,7 +183,7 @@ def main() -> None:
     rc01 = step_01_download(py=py, run=run, overwrite_raw=args.overwrite_raw)
 
     if run is not None:
-        local_raw_available = raw_run_exists(run)
+        local_raw_available = raw_run_complete(run)
 
         if rc01 != 0:
             if local_raw_available:
@@ -159,8 +192,10 @@ def main() -> None:
                     f"{raw_run_dir(run)}. Continuo con 02->06."
                 )
             else:
+                detail = "raw locali parziali presenti" if raw_run_has_any_file(run) else "nessun raw locale"
                 raise RuntimeError(
-                    f"01 fallito per run {run} e nessun raw locale trovato in {raw_run_dir(run)}"
+                    f"01 fallito per run {run} e i raw non sono completi/validi "
+                    f"({detail}) in {raw_run_dir(run)}"
                 )
         else:
             print(f"[OK] 01 completato per run {run}")

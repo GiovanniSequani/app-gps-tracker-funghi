@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import bz2
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -194,6 +195,7 @@ def download_file(
     timeout: int = 120,
     overwrite: bool = False,
     dry_run: bool = False,
+    max_retries: int = 4,
 ) -> None:
     if out_path.exists() and not overwrite:
         if is_valid_bz2_file(out_path):
@@ -212,25 +214,42 @@ def download_file(
     if part_path.exists():
         part_path.unlink()
 
-    with requests.get(url, stream=True, timeout=timeout) as resp:
-        resp.raise_for_status()
-        expected_size = int(resp.headers.get("Content-Length", "0") or "0")
-        bytes_written = 0
-        with part_path.open("wb") as f:
-            for chunk in resp.iter_content(chunk_size=1024 * 1024):
-                if chunk:
-                    f.write(chunk)
-                    bytes_written += len(chunk)
+    for attempt in range(1, max_retries + 1):
+        try:
+            if part_path.exists():
+                part_path.unlink()
 
-    if expected_size and bytes_written != expected_size:
-        part_path.unlink(missing_ok=True)
-        raise RuntimeError(
-            f"Download incompleto per {url}: {bytes_written} byte su {expected_size}"
-        )
+            with requests.get(url, stream=True, timeout=timeout) as resp:
+                resp.raise_for_status()
+                expected_size = int(resp.headers.get("Content-Length", "0") or "0")
+                bytes_written = 0
+                with part_path.open("wb") as f:
+                    for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                        if chunk:
+                            f.write(chunk)
+                            bytes_written += len(chunk)
 
-    if not is_valid_bz2_file(part_path):
-        part_path.unlink(missing_ok=True)
-        raise RuntimeError(f"Download bz2 non valido per {url}")
+            if expected_size and bytes_written != expected_size:
+                raise RuntimeError(
+                    f"Download incompleto: {bytes_written} byte su {expected_size}"
+                )
+
+            if not is_valid_bz2_file(part_path):
+                raise RuntimeError("Download bz2 non valido")
+
+            break
+        except requests.HTTPError:
+            part_path.unlink(missing_ok=True)
+            raise
+        except (requests.RequestException, RuntimeError) as exc:
+            part_path.unlink(missing_ok=True)
+            if attempt >= max_retries:
+                raise RuntimeError(
+                    f"Download fallito dopo {max_retries} tentativi per {url}: {exc}"
+                ) from exc
+            delay = min(2 ** attempt, 30)
+            print(f"[RETRY] {attempt}/{max_retries} {type(exc).__name__}: {exc}. Riprovo tra {delay}s")
+            time.sleep(delay)
 
     part_path.replace(out_path)
 

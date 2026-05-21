@@ -58,3 +58,7 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Graphify
+.graphifyignore
+graphify-out/

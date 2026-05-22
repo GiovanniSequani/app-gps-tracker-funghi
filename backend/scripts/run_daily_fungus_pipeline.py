@@ -60,7 +60,9 @@ def main() -> None:
     parser.add_argument("--upload-only-tiles", action="store_true", help="Only upload existing local tiles after index build.")
     parser.add_argument("--skip-tiles", action="store_true", help="Stop after recomputing the index NetCDF.")
     parser.add_argument("--tiles-workers", type=int, default=12)
-    parser.add_argument("--tile-zooms", nargs="+", type=int, default=[8, 9, 10, 11, 12, 13, 14])
+    parser.add_argument("--tile-zooms", nargs="+", type=int, default=[8, 9, 10, 11, 12, 13])
+    parser.add_argument("--tile-retention-days", type=int, default=30)
+    parser.add_argument("--skip-tile-cleanup", action="store_true", help="Do not delete old remote tile sets from Supabase Storage.")
     parser.add_argument("--env-file", default=str(ROOT_DIR / ".env"), help="Env file passed to tile upload script.")
     args = parser.parse_args()
 
@@ -80,6 +82,7 @@ def main() -> None:
     index_path = ROOT_DIR / "backend" / "outputs" / "index_nc" / f"funghi_index_{pipeline_date}.nc"
     tiles_root = ROOT_DIR / "backend" / "outputs" / "tiles_local" / f"{pipeline_date}_v1"
     already_published = snapshot_exists and index_path.exists() and tiles_root.exists()
+    py = args.python
 
     should_publish = args.force or (
         (latest_run_hour == 21) or (current_local_date > rolling_local_date)
@@ -94,20 +97,35 @@ def main() -> None:
     print(f"Force             : {args.force}")
     print("=" * 80)
 
+    def run_tile_cleanup() -> None:
+        if args.skip_tiles or args.skip_tile_cleanup:
+            return
+        cleanup_cmd = [
+            py,
+            "-m",
+            "backend.scripts.tiles.01_build_tiles_gdal",
+            "--cleanup-only",
+            "--retention-days",
+            str(args.tile_retention_days),
+        ]
+        if args.env_file:
+            cleanup_cmd.extend(["--env-file", args.env_file])
+        run_cmd(cleanup_cmd)
+
     if already_published and not args.force:
         print("[SKIP] This rolling day was already published: snapshot, index NetCDF, and tile root are all present.")
+        run_tile_cleanup()
         return
 
     if not should_publish:
         print("[SKIP] Rolling meteo is still provisional (typically after the 18 UTC run). Index and tiles not updated.")
+        run_tile_cleanup()
         return
 
     if not snapshot_exists:
         FINAL_METEO_HISTORIC_DIR.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROLLING_METEO_NC, snapshot_path)
         print(f"[SNAPSHOT] created: {snapshot_path}")
-
-    py = args.python
 
     run_cmd([py, "-m", "backend.scripts.index.run_index_pipeline", "--date", pipeline_date])
 
@@ -132,6 +150,7 @@ def main() -> None:
         tiles_cmd.extend(["--env-file", args.env_file])
 
     run_cmd(tiles_cmd)
+    run_tile_cleanup()
     print("\nDone")
 
 

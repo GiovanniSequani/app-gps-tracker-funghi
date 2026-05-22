@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 from urllib.parse import urlparse
@@ -26,10 +26,12 @@ from backend.config.paths import OUT_TILES_DIR, TMP_GDAL_DIR
 ROOT_DIR = Path(__file__).resolve().parents[3]
 SUPABASE_BUCKET = "tiles"
 DEFAULT_SPECIES = ["porcini", "finferli"]
-DEFAULT_ZOOMS = list(range(8, 15))
+DEFAULT_ZOOMS = list(range(8, 14))
+DEFAULT_TILE_RETENTION_DAYS = 30
 LOD_STEPS = {2: 0.003, 3: 0.008, 4: 0.02, 5: 0.05, 6: 0.12}
 UPLOAD_RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 TILE_SET_DIR_REGEX = re.compile(r"^(\d{4})([-_])(\d{2})\2(\d{2})_v(\d+)$")
+MANIFEST_OBJECT = "tile_sets.json"
 
 SUPABASE_URL = None
 SUPABASE_KEY = None
@@ -304,6 +306,21 @@ def upload_text_object(remote_path: str, body: str, content_type: str) -> None:
         raise RuntimeError(f"{remote_path} HTTP {resp.status_code}: {resp.text[:500]}")
 
 
+def fetch_public_text_object(remote_path: str) -> str | None:
+    if not SUPABASE_URL:
+        return None
+    url = f"{SUPABASE_URL}/storage/v1/object/public/{SUPABASE_BUCKET}/{remote_path}?t={int(time.time())}"
+    try:
+        resp = requests.get(url, timeout=60)
+    except requests.RequestException as exc:
+        print(f"[MANIFEST] Cannot fetch remote {remote_path}: {type(exc).__name__}: {exc}")
+        return None
+    if resp.status_code != 200:
+        print(f"[MANIFEST] Remote {remote_path} unavailable: HTTP {resp.status_code}")
+        return None
+    return resp.text
+
+
 def parse_tile_set_dir_name(name: str) -> dict[str, object] | None:
     match = TILE_SET_DIR_REGEX.match(name)
     if not match:
@@ -312,6 +329,7 @@ def parse_tile_set_dir_name(name: str) -> dict[str, object] | None:
     return {
         "date": f"{year}{separator}{month}{separator}{day}",
         "version": version,
+        "name": f"{year}-{month}-{day}_v{version}",
         "year": int(year),
         "month": int(month),
         "day": int(day),
@@ -319,8 +337,60 @@ def parse_tile_set_dir_name(name: str) -> dict[str, object] | None:
     }
 
 
-def build_tile_sets_manifest(tile_dir: Path) -> str:
+def tile_set_datetime(item: dict[str, object]) -> datetime:
+    return datetime(
+        int(item["year"]),
+        int(item["month"]),
+        int(item["day"]),
+        tzinfo=timezone.utc,
+    )
+
+
+def tile_set_sort_key(item: dict[str, object]) -> tuple[int, int, int, int]:
+    return (
+        int(item["year"]),
+        int(item["month"]),
+        int(item["day"]),
+        int(item["versionNum"]),
+    )
+
+
+def public_tile_set_item(item: dict[str, object]) -> dict[str, str]:
+    return {"date": str(item["date"]), "version": str(item["version"])}
+
+
+def parse_manifest_tile_sets(raw: str | None) -> list[dict[str, object]]:
+    if not raw:
+        return []
+    try:
+        manifest = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print(f"[MANIFEST] Invalid remote manifest JSON: {exc}")
+        return []
+    tile_sets = manifest.get("tileSets")
+    if not isinstance(tile_sets, list):
+        return []
+
+    parsed: list[dict[str, object]] = []
+    for entry in tile_sets:
+        if not isinstance(entry, dict):
+            continue
+        date = entry.get("date")
+        version = entry.get("version")
+        if not isinstance(date, str) or version is None:
+            continue
+        item = parse_tile_set_dir_name(f"{date}_v{version}")
+        if item is not None:
+            parsed.append(item)
+    parsed.sort(key=tile_set_sort_key, reverse=True)
+    return parsed
+
+
+def build_tile_sets_manifest(tile_dir: Path, retention_days: int | None = None) -> str:
     tile_sets = []
+    cutoff = None
+    if retention_days is not None and retention_days > 0:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
     if tile_dir.is_dir():
         for child in tile_dir.iterdir():
             if not child.is_dir():
@@ -328,23 +398,18 @@ def build_tile_sets_manifest(tile_dir: Path) -> str:
             parsed = parse_tile_set_dir_name(child.name)
             if parsed is None:
                 continue
+            if cutoff is not None and tile_set_datetime(parsed) < cutoff:
+                continue
             if not any((child / species).is_dir() for species in DEFAULT_SPECIES):
                 continue
             tile_sets.append(parsed)
 
-    tile_sets.sort(
-        key=lambda item: (
-            item["year"],
-            item["month"],
-            item["day"],
-            item["versionNum"],
-        ),
-        reverse=True,
-    )
-    public_tile_sets = [
-        {"date": str(item["date"]), "version": str(item["version"])}
-        for item in tile_sets
-    ]
+    return build_manifest_json(tile_sets)
+
+
+def build_manifest_json(tile_sets: list[dict[str, object]]) -> str:
+    tile_sets.sort(key=tile_set_sort_key, reverse=True)
+    public_tile_sets = [public_tile_set_item(item) for item in tile_sets]
     return json.dumps(
         {
             "updatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -355,12 +420,203 @@ def build_tile_sets_manifest(tile_dir: Path) -> str:
     )
 
 
-def upload_tile_sets_manifest(tile_dir: Path) -> None:
+def upload_tile_sets_manifest(tile_dir: Path, retention_days: int | None = None) -> None:
     if not SUPABASE_URL or not SUPABASE_KEY:
         raise RuntimeError("Supabase upload config missing; cannot upload tile_sets.json")
-    manifest = build_tile_sets_manifest(tile_dir)
-    upload_text_object("tile_sets.json", manifest, "application/json; charset=utf-8")
-    print("[MANIFEST] Uploaded tile_sets.json")
+    manifest = build_tile_sets_manifest(tile_dir, retention_days=retention_days)
+    upload_text_object(MANIFEST_OBJECT, manifest, "application/json; charset=utf-8")
+    print(f"[MANIFEST] Uploaded {MANIFEST_OBJECT}")
+
+
+def upload_manifest_from_tile_sets(tile_sets: list[dict[str, object]]) -> None:
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        raise RuntimeError(f"Supabase upload config missing; cannot upload {MANIFEST_OBJECT}")
+    manifest = build_manifest_json(tile_sets)
+    upload_text_object(MANIFEST_OBJECT, manifest, "application/json; charset=utf-8")
+    print(f"[MANIFEST] Uploaded {MANIFEST_OBJECT} ({len(tile_sets)} tile sets)")
+
+
+def supabase_headers(content_type: str = "application/json") -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "apikey": str(SUPABASE_KEY),
+        "Content-Type": content_type,
+    }
+
+
+def list_storage_prefix(prefix: str, limit: int = 1000) -> list[dict[str, object]]:
+    url = f"{SUPABASE_URL}/storage/v1/object/list/{SUPABASE_BUCKET}"
+    offset = 0
+    out: list[dict[str, object]] = []
+    clean_prefix = prefix.strip("/")
+    while True:
+        payload = {"prefix": clean_prefix, "limit": limit, "offset": offset}
+        page = None
+        last_error = None
+        for attempt in range(1, 7):
+            try:
+                resp = requests.post(url, headers=supabase_headers(), json=payload, timeout=120)
+                if resp.status_code != 200:
+                    last_error = f"HTTP {resp.status_code}: {resp.text[:500]}"
+                else:
+                    page = resp.json()
+                    break
+            except (requests.RequestException, ValueError) as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+            delay = min(30.0, 2.0 * attempt) + random.uniform(0.0, 1.0)
+            print(
+                f"[TILE CLEANUP] list retry {attempt}/6 prefix='{clean_prefix}' "
+                f"offset={offset}: {last_error} | retry in {delay:.1f}s",
+                flush=True,
+            )
+            time.sleep(delay)
+        if page is None:
+            raise RuntimeError(f"List prefix '{clean_prefix}' failed after retries: {last_error}")
+        if not isinstance(page, list):
+            raise RuntimeError(f"List prefix '{clean_prefix}' returned unexpected payload: {type(page).__name__}")
+        out.extend(item for item in page if isinstance(item, dict))
+        if len(page) < limit:
+            break
+        offset += limit
+    return out
+
+
+def join_storage_path(prefix: str, name: str) -> str:
+    if "/" in name:
+        return name.strip("/")
+    clean_prefix = prefix.strip("/")
+    return f"{clean_prefix}/{name}".strip("/")
+
+
+def is_storage_file(item: dict[str, object]) -> bool:
+    metadata = item.get("metadata")
+    return isinstance(metadata, dict) and "size" in metadata
+
+
+def list_storage_files_recursive(prefix: str) -> list[str]:
+    files: list[str] = []
+    stack = [prefix.strip("/")]
+    while stack:
+        current = stack.pop()
+        for item in list_storage_prefix(current):
+            name = item.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            path = join_storage_path(current, name)
+            if is_storage_file(item):
+                files.append(path)
+            else:
+                stack.append(path)
+    return sorted(set(files))
+
+
+def delete_storage_objects(paths: list[str], batch_size: int = 1000) -> int:
+    if not paths:
+        return 0
+    url = f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}"
+    deleted = 0
+    for start in range(0, len(paths), batch_size):
+        batch = paths[start:start + batch_size]
+        resp = requests.delete(url, headers=supabase_headers(), json={"prefixes": batch}, timeout=120)
+        if resp.status_code != 200:
+            raise RuntimeError(f"Delete objects HTTP {resp.status_code}: {resp.text[:500]}")
+        deleted += len(batch)
+        print(f"[TILE CLEANUP] deleted {deleted}/{len(paths)} objects", flush=True)
+    return deleted
+
+
+def cleanup_remote_tile_sets(retention_days: int, dry_run: bool) -> list[str]:
+    if retention_days <= 0:
+        print("[TILE CLEANUP] skipped: retention_days <= 0")
+        return []
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        raise RuntimeError("Supabase config missing; cannot clean remote tiles")
+
+    remote_manifest = fetch_public_text_object(MANIFEST_OBJECT)
+    tile_sets = parse_manifest_tile_sets(remote_manifest)
+    if not tile_sets:
+        print("[TILE CLEANUP] No valid remote manifest entries; nothing to delete")
+        if not dry_run:
+            upload_manifest_from_tile_sets([])
+        return []
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+    expired = [item for item in tile_sets if tile_set_datetime(item) < cutoff]
+    kept = [item for item in tile_sets if item not in expired]
+
+    print(
+        f"[TILE CLEANUP] retention={retention_days} days | "
+        f"manifest={len(tile_sets)} kept={len(kept)} expired={len(expired)}"
+    )
+
+    removed: list[str] = []
+    for item in expired:
+        prefix = str(item["name"])
+        print(f"[TILE CLEANUP] expired tile set: {prefix}")
+        files = list_storage_files_recursive(prefix)
+        print(f"[TILE CLEANUP] {prefix}: remote files={len(files)}")
+        if files and not dry_run:
+            delete_storage_objects(files)
+        removed.append(prefix)
+
+    if not dry_run:
+        upload_manifest_from_tile_sets(kept)
+    else:
+        print("[TILE CLEANUP] dry run: storage delete and manifest upload skipped")
+    return removed
+
+
+def parse_iso_date(value: str, label: str) -> datetime:
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError as exc:
+        raise ValueError(f"{label} must be YYYY-MM-DD, got: {value}") from exc
+
+
+def cleanup_remote_tile_sets_by_date_range(date_from: str, date_to: str, dry_run: bool) -> list[str]:
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        raise RuntimeError("Supabase config missing; cannot clean remote tiles")
+
+    start = parse_iso_date(date_from, "--delete-date-from")
+    end = parse_iso_date(date_to, "--delete-date-to")
+    if end < start:
+        raise ValueError("--delete-date-to must be greater than or equal to --delete-date-from")
+
+    remote_manifest = fetch_public_text_object(MANIFEST_OBJECT)
+    tile_sets = parse_manifest_tile_sets(remote_manifest)
+    if not tile_sets:
+        print("[TILE CLEANUP] No valid remote manifest entries; nothing to delete")
+        if not dry_run:
+            upload_manifest_from_tile_sets([])
+        return []
+
+    expired = [
+        item
+        for item in tile_sets
+        if start <= tile_set_datetime(item) <= end
+    ]
+    kept = [item for item in tile_sets if item not in expired]
+
+    print(
+        f"[TILE CLEANUP] date range={date_from}..{date_to} | "
+        f"manifest={len(tile_sets)} kept={len(kept)} matched={len(expired)}"
+    )
+
+    removed: list[str] = []
+    for item in expired:
+        prefix = str(item["name"])
+        print(f"[TILE CLEANUP] matched tile set: {prefix}")
+        files = list_storage_files_recursive(prefix)
+        print(f"[TILE CLEANUP] {prefix}: remote files={len(files)}")
+        if files and not dry_run:
+            delete_storage_objects(files)
+        removed.append(prefix)
+
+    if not dry_run:
+        upload_manifest_from_tile_sets(kept)
+    else:
+        print("[TILE CLEANUP] dry run: storage delete and manifest upload skipped")
+    return removed
 
 
 def upload_tiles_to_supabase(date: str, version: str, species: str, species_tile_dir: Path, workers: int) -> None:
@@ -507,6 +763,10 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--upload-only", action="store_true", help="Upload existing local tiles without rebuilding them.")
     parser.add_argument("--manifest-only", action="store_true", help="Only rebuild and upload tile_sets.json from local tile directories.")
+    parser.add_argument("--cleanup-only", action="store_true", help="Only delete remote tile sets older than the retention window and update tile_sets.json.")
+    parser.add_argument("--retention-days", type=int, default=DEFAULT_TILE_RETENTION_DAYS)
+    parser.add_argument("--delete-date-from", default=None, help="With --cleanup-only, delete remote tile sets from this date included, YYYY-MM-DD.")
+    parser.add_argument("--delete-date-to", default=None, help="With --cleanup-only, delete remote tile sets up to this date included, YYYY-MM-DD.")
     parser.add_argument("--keep-intermediate", action="store_true")
     args = parser.parse_args()
 
@@ -515,10 +775,24 @@ def main() -> None:
     work_dir = Path(args.work_dir)
     tile_dir = Path(args.tile_dir)
 
+    if args.cleanup_only:
+        if args.delete_date_from or args.delete_date_to:
+            if not args.delete_date_from or not args.delete_date_to:
+                raise SystemExit("--delete-date-from and --delete-date-to must be used together")
+            removed = cleanup_remote_tile_sets_by_date_range(
+                args.delete_date_from,
+                args.delete_date_to,
+                dry_run=args.dry_run,
+            )
+        else:
+            removed = cleanup_remote_tile_sets(args.retention_days, dry_run=args.dry_run)
+        print(f"\nDone. Removed tile sets: {removed}")
+        return
+
     if args.manifest_only:
         work_dir.mkdir(parents=True, exist_ok=True)
         tile_dir.mkdir(parents=True, exist_ok=True)
-        upload_tile_sets_manifest(tile_dir)
+        upload_tile_sets_manifest(tile_dir, retention_days=args.retention_days)
         print("\nDone")
         return
 
@@ -557,7 +831,7 @@ def main() -> None:
             species_tile_dir = tile_dir / f"{args.date}_v{args.version}" / species
             ensure_exists(species_tile_dir, "dir")
             upload_tiles_to_supabase(args.date, args.version, species, species_tile_dir, args.upload_workers)
-        upload_tile_sets_manifest(tile_dir)
+        upload_tile_sets_manifest(tile_dir, retention_days=args.retention_days)
         print("\nDone")
         return
 
@@ -580,7 +854,7 @@ def main() -> None:
         )
 
     if not args.dry_run:
-        upload_tile_sets_manifest(tile_dir)
+        upload_tile_sets_manifest(tile_dir, retention_days=args.retention_days)
 
     print("\nDone")
 

@@ -44,7 +44,7 @@ export function IndiceLayerTiles({ activeLayer, date, version, opacity = 0.85 }:
       id={sourceId}
       tileUrlTemplates={[tileUrl(species, date, version)]}
       tileSize={256}
-      minZoomLevel={6}
+      minZoomLevel={3}
       maxZoomLevel={13}
     >
       <RasterLayer

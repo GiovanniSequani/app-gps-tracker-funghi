@@ -26,7 +26,7 @@ from backend.config.paths import OUT_TILES_DIR, TMP_GDAL_DIR
 ROOT_DIR = Path(__file__).resolve().parents[3]
 SUPABASE_BUCKET = "tiles"
 DEFAULT_SPECIES = ["porcini", "finferli"]
-DEFAULT_ZOOMS = list(range(6, 14))
+DEFAULT_ZOOMS = list(range(3, 14))
 DEFAULT_TILE_RETENTION_DAYS = 30
 LOD_STEPS = {2: 0.003, 3: 0.008, 4: 0.02, 5: 0.05, 6: 0.12}
 UPLOAD_RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}

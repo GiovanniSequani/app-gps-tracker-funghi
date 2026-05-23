@@ -30,7 +30,6 @@ import { IndiceLayerTiles } from './IndiceLayers';
 declare const process: {
   env?: {
     EXPO_PUBLIC_SUPABASE_URL?: string;
-    EXPO_PUBLIC_SUPABASE_ANON_KEY?: string;
   };
 };
 
@@ -81,6 +80,12 @@ const RECORDING_LOCATION_OPTIONS: Location.LocationOptions = {
   distanceInterval: 1,
   mayShowUserSettingsDialog: true,
 };
+const FOREGROUND_LOCATION_OPTIONS: Location.LocationOptions = {
+  accuracy: Location.Accuracy.High,
+  timeInterval: 3000,
+  distanceInterval: 3,
+  mayShowUserSettingsDialog: true,
+};
 const DEFAULT_SUPABASE_URL = 'https://ovdfsehovsrdzcoqdlfh.supabase.co';
 const ENV_SUPABASE_URL =
   process.env?.EXPO_PUBLIC_SUPABASE_URL ??
@@ -92,11 +97,7 @@ const isValidSupabaseUrl = (value: string) =>
 const SUPABASE_URL =
   isValidSupabaseUrl(ENV_SUPABASE_URL) ? ENV_SUPABASE_URL : DEFAULT_SUPABASE_URL;
 const SUPABASE_BUCKET = 'tiles';
-const DEFAULT_TILE_SET: TileSet = { date: '2026-05-05', version: '1' };
 const TILE_SET_MANIFEST = 'tile_sets.json';
-const SUPABASE_ANON_KEY =
-  process.env?.EXPO_PUBLIC_SUPABASE_ANON_KEY ??
-  ((Constants.expoConfig?.extra?.supabaseAnonKey as string | undefined) ?? '');
 const TILE_SET_REGEX = /^(\d{4})([-_])(\d{2})\2(\d{2})_v(\d+)$/;
 
 type ParsedTileSet = TileSet & {
@@ -115,12 +116,17 @@ type ManifestTileSet = {
   version?: unknown;
 };
 
-async function getLatestTileSet(): Promise<TileSet> {
-  const candidates = await getAvailableTileSets();
-  if (candidates.length === 0) {
-    throw new Error('No valid tile set found under tiles/');
-  }
-  return candidates[0];
+function formatLocalDate(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function getDefaultTileSet(): TileSet {
+  const date = new Date();
+  date.setDate(date.getDate() - 2);
+  return { date: formatLocalDate(date), version: '1' };
 }
 
 function parseTileSetName(name: string): ParsedTileSet | null {
@@ -176,53 +182,12 @@ async function getAvailableTileSetsFromManifest(): Promise<TileSet[]> {
   return tileSets;
 }
 
-async function getAvailableTileSetsFromStorageList(): Promise<TileSet[]> {
-  const url = `${SUPABASE_URL}/storage/v1/object/list/${SUPABASE_BUCKET}`;
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (SUPABASE_ANON_KEY) {
-    headers.apikey = SUPABASE_ANON_KEY;
-    headers.Authorization = `Bearer ${SUPABASE_ANON_KEY}`;
-  }
-  console.log('[tiles] Listing Supabase tile sets', {
-    url,
-    bucket: SUPABASE_BUCKET,
-    hasAnonKey: Boolean(SUPABASE_ANON_KEY),
-  });
-  const response = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ prefix: '', limit: 1000, offset: 0 }),
-  });
-
-  if (!response.ok) {
-    const body = await response.text().catch(() => '');
-    console.log('[tiles] Supabase list failed', { status: response.status, body });
-    throw new Error(`Supabase list failed: ${response.status}`);
-  }
-
-  const items = (await response.json()) as Array<{ name?: string }>;
-  const names = items.map((item) => item.name ?? '');
-  console.log('[tiles] Supabase list result', { count: names.length, names: names.slice(0, 20) });
-  const tileSets = sortTileSets(
-    names
-      .map((name) => parseTileSetName(name))
-      .filter((item): item is ParsedTileSet => item !== null),
-  );
-  console.log('[tiles] Parsed tile sets', tileSets);
-  return tileSets;
-}
-
 async function getAvailableTileSets(): Promise<TileSet[]> {
-  try {
-    const tileSets = await getAvailableTileSetsFromManifest();
-    if (tileSets.length > 0) return tileSets;
-  } catch (err) {
-    console.log('[tiles] Manifest unavailable, falling back to Supabase list', {
-      error: err instanceof Error ? err.message : String(err),
-    });
+  const tileSets = await getAvailableTileSetsFromManifest();
+  if (tileSets.length === 0) {
+    throw new Error('No valid tile set found in tile manifest');
   }
-
-  return getAvailableTileSetsFromStorageList();
+  return tileSets;
 }
 
 // ─── Stile mappa: satellite Esri (gratuito, no API key) ───────────────────────
@@ -299,6 +264,14 @@ function coordsToGeoJSONPoint(lat: number, lng: number): GeoJSON.Feature {
   };
 }
 
+function locationToCoordinate(location: Location.LocationObject): Coordinate {
+  return {
+    latitude: location.coords.latitude,
+    longitude: location.coords.longitude,
+    timestamp: typeof location.timestamp === 'number' ? location.timestamp : Date.now(),
+  };
+}
+
 function markersToGeoJSON(
   markers: MarkerData[],
   tipo: 'Porcino' | 'Finferlo'
@@ -364,6 +337,7 @@ const checkAndOpenSettingsIfNeeded = async () => {
 export default function App() {
   const [recording, setRecording] = React.useState(false);
   const [path, setPath] = React.useState<Coordinate[]>([]);
+  const [currentPosition, setCurrentPosition] = React.useState<Coordinate | null>(null);
   const [markers, setMarkers] = React.useState<MarkerData[]>([]);
   const [saveVisible, setSaveVisible] = React.useState(false);
   const [fileName, setFileName] = React.useState('percorso');
@@ -373,8 +347,8 @@ export default function App() {
   const [routesOnMap, setRoutesOnMap] = React.useState<RouteData[]>([]);
   const [highlightedRoute, setHighlightedRoute] = React.useState<string | null>(null);
   const [activeLayer, setActiveLayer] = React.useState<ActiveLayer>('off');
-  const [tileDate, setTileDate] = React.useState(DEFAULT_TILE_SET.date);
-  const [tileVersion, setTileVersion] = React.useState(DEFAULT_TILE_SET.version);
+  const [tileDate, setTileDate] = React.useState(() => getDefaultTileSet().date);
+  const [tileVersion, setTileVersion] = React.useState(() => getDefaultTileSet().version);
   const [tileSets, setTileSets] = React.useState<TileSet[]>([]);
   const [tileOpacity, setTileOpacity] = React.useState(0.85);
   const [tilesLoading, setTilesLoading] = React.useState(true);
@@ -382,6 +356,7 @@ export default function App() {
   const [cameraCommand, setCameraCommand] = React.useState<CameraCommand | null>(null);
   const followLocationRef = React.useRef(true);
   const cameraCommandIdRef = React.useRef(0);
+  const initialCameraCenteredRef = React.useRef(false);
   // Camera ref: tipo è il componente Camera stesso
   const recordingRef = React.useRef(recording);
 
@@ -390,11 +365,11 @@ export default function App() {
   React.useEffect(() => { recordingRef.current = recording; }, [recording]);
 
   React.useEffect(() => {
-    if (tileDate && tileVersion && tilesError) {
+    if (tileSets.length > 0 && tileDate && tileVersion && tilesError) {
       console.log('[tiles] Clearing discovery error after valid tile selection', { tileDate, tileVersion });
       setTilesError(null);
     }
-  }, [tileDate, tileVersion, tilesError]);
+  }, [tileSets.length, tileDate, tileVersion, tilesError]);
 
   React.useEffect(() => {
     console.log('[tiles] Selection changed', {
@@ -460,12 +435,12 @@ export default function App() {
     let mounted = true;
     (async () => {
       try {
-        console.log('[tiles] Bootstrap start', { fallback: DEFAULT_TILE_SET });
+        console.log('[tiles] Bootstrap start', { preferred: getDefaultTileSet() });
         setTilesLoading(true);
         setTilesError(null);
         const available = await getAvailableTileSets();
         if (available.length === 0) {
-          throw new Error('No valid tile set found under tiles/');
+          throw new Error('No valid tile set found in tile manifest');
         }
         const latest = available[0];
         if (!mounted) return;
@@ -476,10 +451,7 @@ export default function App() {
       } catch (err) {
         if (!mounted) return;
         const message = err instanceof Error ? err.message : 'Errore caricamento tiles';
-        console.log('[tiles] Bootstrap failed, keeping fallback/manual tile set', {
-          message,
-          fallback: DEFAULT_TILE_SET,
-        });
+        console.log('[tiles] Bootstrap failed, keeping preferred local tile set', { message, preferred: getDefaultTileSet() });
         setTilesError(message);
       } finally {
         if (mounted) setTilesLoading(false);
@@ -491,19 +463,74 @@ export default function App() {
   // posizione iniziale: struttura ripresa dal bundle recuperato
   React.useEffect(() => {
     (async () => {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') { Alert.alert('Permesso GPS negato!'); return; }
-      const location = await Location.getCurrentPositionAsync({});
-      const center: [number, number] = [location.coords.longitude, location.coords.latitude];
-      setInitialCenter(center);
-      runCameraCommand({
-        centerCoordinate: center,
-        zoomLevel: CENTER_ZOOM_LEVEL,
-        animationDuration: 1000,
-        animationMode: 'flyTo',
-      });
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') { Alert.alert('Permesso GPS negato!'); return; }
+        const location = await Location.getCurrentPositionAsync(FOREGROUND_LOCATION_OPTIONS);
+        const coordinate = locationToCoordinate(location);
+        const center: [number, number] = [coordinate.longitude, coordinate.latitude];
+        setCurrentPosition(coordinate);
+        setInitialCenter(center);
+        if (!initialCameraCenteredRef.current) {
+          initialCameraCenteredRef.current = true;
+          runCameraCommand({
+            centerCoordinate: center,
+            zoomLevel: CENTER_ZOOM_LEVEL,
+            animationDuration: 1000,
+            animationMode: 'flyTo',
+          });
+        }
+      } catch (err) {
+        console.log('[gps] Initial foreground position failed', err);
+      }
     })();
   }, [runCameraCommand]);
+
+  React.useEffect(() => {
+    let subscription: Location.LocationSubscription | null = null;
+    let mounted = true;
+
+    (async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') return;
+
+        const options = recording ? RECORDING_LOCATION_OPTIONS : FOREGROUND_LOCATION_OPTIONS;
+        subscription = await Location.watchPositionAsync(options, (location) => {
+          if (!mounted) return;
+          const coordinate = locationToCoordinate(location);
+          setCurrentPosition(coordinate);
+
+          if (!initialCameraCenteredRef.current) {
+            const center: [number, number] = [coordinate.longitude, coordinate.latitude];
+            setInitialCenter(center);
+            initialCameraCenteredRef.current = true;
+            runCameraCommand({
+              centerCoordinate: center,
+              zoomLevel: CENTER_ZOOM_LEVEL,
+              animationDuration: 1000,
+              animationMode: 'flyTo',
+            });
+          }
+
+          if (recordingRef.current) {
+            setPath((prev) => {
+              const lastTimestamp = prev.length ? prev[prev.length - 1].timestamp ?? 0 : 0;
+              if ((coordinate.timestamp ?? 0) <= lastTimestamp) return prev;
+              return [...prev, coordinate];
+            });
+          }
+        });
+      } catch (err) {
+        console.log('[gps] Foreground watch failed', err);
+      }
+    })();
+
+    return () => {
+      mounted = false;
+      subscription?.remove();
+    };
+  }, [recording, runCameraCommand]);
 
   const handleDeleteMarker = (marker: MarkerData) => {
     Alert.alert('Conferma eliminazione', `Vuoi eliminare ${marker.name}?`, [
@@ -538,20 +565,12 @@ export default function App() {
     let mounted = true;
     const tick = async () => {
       if (!mounted) return;
-      const currpath = await syncPathFromFile(false);
-      if (recordingRef.current && currpath.length > 0 && followLocationRef.current) {
-        const latest = currpath[currpath.length - 1];
-        runCameraCommand({
-          centerCoordinate: [latest.longitude, latest.latitude],
-          animationDuration: 500,
-          animationMode: 'easeTo',
-        });
-      }
+      await syncPathFromFile(false);
     };
     void tick();
     const id = setInterval(() => { void tick(); }, 500);
     return () => { mounted = false; clearInterval(id); };
-  }, [syncPathFromFile, runCameraCommand]);
+  }, [syncPathFromFile]);
 
   const highlightRoute = (routeId: string) => {
     setHighlightedRoute(routeId);
@@ -559,28 +578,41 @@ export default function App() {
   };
 
   const startRecording = async () => {
-    const ok = await checkAndOpenSettingsIfNeeded();
-    if (!ok) return;
     const { status: fgStatus } = await Location.requestForegroundPermissionsAsync();
     if (fgStatus !== 'granted') { Alert.alert('Permesso GPS negato!'); return; }
-    const { status: bgStatus } = await Location.requestBackgroundPermissionsAsync();
+    let bgStatus: Location.PermissionStatus | null = null;
+    try {
+      const result = await Location.requestBackgroundPermissionsAsync();
+      bgStatus = result.status;
+    } catch (err) {
+      console.log('[gps] Background permission request failed', err);
+    }
     if (Platform.OS === 'android' && bgStatus !== 'granted') {
-      Alert.alert('Permesso background non concesso', 'Per tracciare in background devi concedere "Consenti sempre".');
+      Alert.alert(
+        'Permesso background non concesso',
+        'La registrazione funziona mentre tieni aperta l\'app. Per continuare a schermo spento devi concedere "Consenti sempre".'
+      );
     }
     setRecording(true);
     setPath([]);
     setMarkers([]);
     try { await FileSystemLegacy.deleteAsync(BG_POSITIONS_FILE, { idempotent: true }); } catch { }
-    const started = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
-    if (!started) {
-      await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
-        ...RECORDING_LOCATION_OPTIONS,
-        showsBackgroundLocationIndicator: true,
-        foregroundService: {
-          notificationTitle: 'GPS attivo',
-          notificationBody: "L'app sta registrando la tua posizione",
-        },
-      });
+    if (bgStatus === 'granted') {
+      try {
+        const started = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
+        if (!started) {
+          await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
+            ...RECORDING_LOCATION_OPTIONS,
+            showsBackgroundLocationIndicator: true,
+            foregroundService: {
+              notificationTitle: 'GPS attivo',
+              notificationBody: "L'app sta registrando la tua posizione",
+            },
+          });
+        }
+      } catch (err) {
+        console.log('[gps] Background location task failed to start', err);
+      }
     }
   };
 
@@ -610,7 +642,11 @@ export default function App() {
     async (tipo: 'Porcino' | 'Finferlo') => {
       try {
         const updated = await syncPathFromFile(false);
-        const last = updated?.length ? updated[updated.length - 1] : path.length ? path[path.length - 1] : undefined;
+        const last = updated?.length
+          ? updated[updated.length - 1]
+          : path.length
+            ? path[path.length - 1]
+            : currentPosition ?? undefined;
         if (!last) { Alert.alert('Nessuna posizione disponibile'); return; }
         setMarkers((prev) => [
           ...prev,
@@ -624,7 +660,7 @@ export default function App() {
         ]);
       } catch { Alert.alert('Errore', 'Impossibile aggiungere il segnaposto.'); }
     },
-    [syncPathFromFile, path]
+    [syncPathFromFile, path, currentPosition]
   );
 
   const generateGPX = (pathData: Coordinate[], markersData: MarkerData[]): string => {
@@ -691,6 +727,7 @@ export default function App() {
       stopRecording={stopRecording}
       addMarker={addMarker}
       path={path}
+      currentPosition={currentPosition}
       markers={markers}
       cameraCommand={cameraCommand}
       runCameraCommand={runCameraCommand}
@@ -719,7 +756,7 @@ export default function App() {
       tilesError={tilesError}
     />
   ), [
-    recording, path, markers, cameraCommand, initialCenter, showAll, visibleMarkers,
+    recording, path, currentPosition, markers, cameraCommand, initialCenter, showAll, visibleMarkers,
     addedRoutes, routesOnMap, highlightedRoute, tileSets, tilesLoading, tilesError,
     activeLayer, tileDate, tileVersion, tileOpacity,
     runCameraCommand, addMarker
@@ -1096,7 +1133,7 @@ const QuickIndexPanel = React.memo(function QuickIndexPanel(props: any) {
 function MainUI(props: any) {
   const {
     recording, startRecording, stopRecording, addMarker,
-    path, markers, cameraCommand, runCameraCommand, followLocationRef, initialCenter,
+    path, currentPosition, markers, cameraCommand, runCameraCommand, followLocationRef, initialCenter,
     showAll, visibleMarkers, handleDeleteMarker, setShowAll,
     addedRoutes, setAddedRoutes, setRoutesOnMap, routesOnMap,
     highlightRoute, highlightedRoute, activeLayer, setActiveLayer,
@@ -1147,7 +1184,8 @@ function MainUI(props: any) {
   const porciniGeoJSON = React.useMemo(() => markersToGeoJSON(markers, 'Porcino'), [markers]);
   const finferliGeoJSON = React.useMemo(() => markersToGeoJSON(markers, 'Finferlo'), [markers]);
 
-  const currentPos = path.length > 0 ? path[path.length - 1] : null;
+  const latestPathPosition = path.length > 0 ? path[path.length - 1] : null;
+  const currentPos = currentPosition ?? latestPathPosition;
   const currentPosGeoJSON = React.useMemo(
     () => currentPos ? coordsToGeoJSONPoint(currentPos.latitude, currentPos.longitude) : null,
     [currentPos?.latitude, currentPos?.longitude]
@@ -1198,7 +1236,7 @@ function MainUI(props: any) {
           <Text style={mStyles.tileStatusText}>Caricamento layer indice...</Text>
         </View>
       )}
-      {!!tilesError && !tileDate && !tileVersion && (
+      {!!tilesError && activeLayer !== 'off' && (
         <View style={mStyles.tileStatusPillError}>
           <Text style={mStyles.tileStatusText}>Layer indice non disponibile</Text>
         </View>
@@ -1324,9 +1362,8 @@ function MainUI(props: any) {
         style={recording ? mStyles.centerBtnRecording : mStyles.centerBtn}
         onPress={() => {
           followLocationRef.current = true;
-          if (recording && path.length > 0) {
-            const latest = path[path.length - 1];
-            centerCamera([latest.longitude, latest.latitude]);
+          if (currentPos) {
+            centerCamera([currentPos.longitude, currentPos.latitude]);
           } else {
             centerCamera(initialCenter);
           }

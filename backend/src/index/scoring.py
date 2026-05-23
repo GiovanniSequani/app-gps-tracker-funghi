@@ -40,8 +40,9 @@ def _min_window(ds: xr.Dataset, var: str, start: int, end: int) -> xr.DataArray:
 def compute_habitat_score(ds: xr.Dataset, species: str) -> xr.DataArray:
     cfg = SPECIES_CONFIG[species]
     elev = trapezoid(ds["elevation"], *cfg["elevation_m"])
-    forest = trapezoid(ds["forest_pct"], 5.0, 35.0, 100.0, 100.0)
-    non_forest_penalty = (ds["pct_non_forest"] / 100.0).clip(0.0, 1.0)
+    forest = trapezoid(ds["forest_pct"], 15.0, 45.0, 100.0, 100.0)
+    forest_gate = trapezoid(ds["forest_pct"], 8.0, 35.0, 100.0, 100.0)
+    non_forest_gate = (1.0 - upper_penalty(ds["pct_non_forest"], 45.0, 90.0)).clip(0.0, 1.0)
 
     mix = cfg["forest_mix"]
     broadleaf = (ds["pct_broadleaf"] / 100.0).clip(0.0, 1.0)
@@ -50,13 +51,14 @@ def compute_habitat_score(ds: xr.Dataset, species: str) -> xr.DataArray:
 
     slope_ok = 1.0 - upper_penalty(ds["slope"], 32.0, 48.0)
     retention = ds["retention_static"]
-    habitat = (
+    habitat_base = (
         0.34 * elev
         + 0.24 * forest
         + 0.18 * forest_mix
         + 0.14 * slope_ok
         + 0.10 * retention
-    ) * (1.0 - 0.55 * non_forest_penalty)
+    )
+    habitat = habitat_base * forest_gate * non_forest_gate
     return habitat.clip(0.0, 1.0).astype("float32")
 
 

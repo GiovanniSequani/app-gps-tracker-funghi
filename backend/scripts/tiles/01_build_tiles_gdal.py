@@ -26,7 +26,7 @@ from backend.config.paths import OUT_TILES_DIR, TMP_GDAL_DIR
 ROOT_DIR = Path(__file__).resolve().parents[3]
 SUPABASE_BUCKET = "tiles"
 DEFAULT_SPECIES = ["porcini", "finferli"]
-DEFAULT_ZOOMS = list(range(8, 14))
+DEFAULT_ZOOMS = list(range(6, 14))
 DEFAULT_TILE_RETENTION_DAYS = 30
 LOD_STEPS = {2: 0.003, 3: 0.008, 4: 0.02, 5: 0.05, 6: 0.12}
 UPLOAD_RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
@@ -226,10 +226,17 @@ def generate_xyz_tiles(color_tif: Path, tile_output_dir: Path, zooms: list[int],
     run_cmd(cmd)
 
 
-def iter_png_files(root: Path) -> Iterable[Path]:
-    for path in root.rglob("*.png"):
-        if path.is_file():
-            yield path
+def iter_png_files(root: Path, zooms: Iterable[int] | None = None) -> Iterable[Path]:
+    search_roots = [root]
+    if zooms is not None:
+        search_roots = [root / str(zoom) for zoom in sorted(set(zooms))]
+
+    for search_root in search_roots:
+        if not search_root.exists():
+            continue
+        for path in search_root.rglob("*.png"):
+            if path.is_file():
+                yield path
 
 
 def env_int(name: str, default: int, minimum: int = 1) -> int:
@@ -619,11 +626,19 @@ def cleanup_remote_tile_sets_by_date_range(date_from: str, date_to: str, dry_run
     return removed
 
 
-def upload_tiles_to_supabase(date: str, version: str, species: str, species_tile_dir: Path, workers: int) -> None:
-    png_files = sorted(iter_png_files(species_tile_dir))
+def upload_tiles_to_supabase(
+    date: str,
+    version: str,
+    species: str,
+    species_tile_dir: Path,
+    workers: int,
+    zooms: list[int] | None = None,
+) -> None:
+    png_files = sorted(iter_png_files(species_tile_dir, zooms=zooms))
     total = len(png_files)
     if total == 0:
-        raise RuntimeError(f"No PNG tiles found in {species_tile_dir}")
+        zoom_suffix = f" for zooms {zooms}" if zooms is not None else ""
+        raise RuntimeError(f"No PNG tiles found in {species_tile_dir}{zoom_suffix}")
 
     max_file_retries = env_int("SUPABASE_UPLOAD_FILE_RETRIES", 10)
     max_rounds = env_int("SUPABASE_UPLOAD_ROUNDS", 3)
@@ -637,7 +652,7 @@ def upload_tiles_to_supabase(date: str, version: str, species: str, species_tile
 
     print(
         f"\n[UPLOAD] {species}: {total} PNG tiles "
-        f"(workers={workers}, file_retries={max_file_retries}, rounds={max_rounds})"
+        f"(zooms={zooms or 'all'}, workers={workers}, file_retries={max_file_retries}, rounds={max_rounds})"
     )
 
     for round_no in range(1, max_rounds + 1):
@@ -700,11 +715,17 @@ def build_species_tiles(
     upload_workers: int,
     dry_run: bool,
     keep_intermediate: bool,
+    keep_existing_tiles: bool,
 ) -> None:
     species_work_dir = work_dir / f"{date}_v{version}" / species
     species_tile_dir = tile_dir / f"{date}_v{version}" / species
     species_work_dir.mkdir(parents=True, exist_ok=True)
-    clean_dir(species_tile_dir)
+    if keep_existing_tiles:
+        species_tile_dir.mkdir(parents=True, exist_ok=True)
+        for zoom in sorted(set(zooms)):
+            clean_dir(species_tile_dir / str(zoom))
+    else:
+        clean_dir(species_tile_dir)
 
     raw_tif = species_work_dir / f"{species}_score.tif"
     color_tif = species_work_dir / f"{species}_color.tif"
@@ -714,6 +735,7 @@ def build_species_tiles(
     print(f"[{species.upper()}] source={source_mode} zooms={zooms}")
     print(f"Work dir : {species_work_dir}")
     print(f"Tiles dir: {species_tile_dir}")
+    print(f"Keep existing tiles: {keep_existing_tiles}")
     print("=" * 72)
 
     write_colormap_file(colormap_txt)
@@ -737,7 +759,8 @@ def build_species_tiles(
         print(f"\n[4/4] Dry run: upload skipped. Tiles at {species_tile_dir.resolve()}")
     else:
         print("\n[4/4] Upload Supabase")
-        upload_tiles_to_supabase(date, version, species, species_tile_dir, upload_workers)
+        upload_zooms = zooms if keep_existing_tiles else None
+        upload_tiles_to_supabase(date, version, species, species_tile_dir, upload_workers, zooms=upload_zooms)
 
     if not keep_intermediate:
         for path in (raw_tif, color_tif, colormap_txt):
@@ -762,6 +785,11 @@ def main() -> None:
     parser.add_argument("--env-file", default=None)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--upload-only", action="store_true", help="Upload existing local tiles without rebuilding them.")
+    parser.add_argument(
+        "--keep-existing-tiles",
+        action="store_true",
+        help="Preserve existing local zoom folders and rebuild/upload only the zooms passed with --zoom.",
+    )
     parser.add_argument("--manifest-only", action="store_true", help="Only rebuild and upload tile_sets.json from local tile directories.")
     parser.add_argument("--cleanup-only", action="store_true", help="Only delete remote tile sets older than the retention window and update tile_sets.json.")
     parser.add_argument("--retention-days", type=int, default=DEFAULT_TILE_RETENTION_DAYS)
@@ -820,6 +848,7 @@ def main() -> None:
     print(f"Tile dir      : {tile_dir.resolve()}")
     print(f"Dry run       : {args.dry_run}")
     print(f"Upload only   : {args.upload_only}")
+    print(f"Keep existing : {args.keep_existing_tiles}")
     print("=" * 72)
 
     check_environment(dry_run=args.dry_run)
@@ -830,7 +859,15 @@ def main() -> None:
         for species in args.species:
             species_tile_dir = tile_dir / f"{args.date}_v{args.version}" / species
             ensure_exists(species_tile_dir, "dir")
-            upload_tiles_to_supabase(args.date, args.version, species, species_tile_dir, args.upload_workers)
+            upload_zooms = args.zoom if args.keep_existing_tiles else None
+            upload_tiles_to_supabase(
+                args.date,
+                args.version,
+                species,
+                species_tile_dir,
+                args.upload_workers,
+                zooms=upload_zooms,
+            )
         upload_tile_sets_manifest(tile_dir, retention_days=args.retention_days)
         print("\nDone")
         return
@@ -851,6 +888,7 @@ def main() -> None:
             upload_workers=args.upload_workers,
             dry_run=args.dry_run,
             keep_intermediate=args.keep_intermediate,
+            keep_existing_tiles=args.keep_existing_tiles,
         )
 
     if not args.dry_run:

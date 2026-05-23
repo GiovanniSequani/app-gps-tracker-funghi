@@ -74,7 +74,7 @@ type CameraCommand = CameraStop & { id: number };
 const Tab = createBottomTabNavigator();
 const LOCATION_TASK_NAME = 'background-location-task';
 const BG_POSITIONS_FILE = `${FileSystemLegacy.cacheDirectory}bg_positions.json`;
-const MAP_MIN_ZOOM_LEVEL = 8;
+const MAP_MIN_ZOOM_LEVEL = 6;
 const MAP_MAX_ZOOM_LEVEL = 18;
 const RECORDING_LOCATION_OPTIONS: Location.LocationOptions = {
   accuracy: Location.Accuracy.BestForNavigation,

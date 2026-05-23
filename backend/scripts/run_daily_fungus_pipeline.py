@@ -60,7 +60,7 @@ def main() -> None:
     parser.add_argument("--upload-only-tiles", action="store_true", help="Only upload existing local tiles after index build.")
     parser.add_argument("--skip-tiles", action="store_true", help="Stop after recomputing the index NetCDF.")
     parser.add_argument("--tiles-workers", type=int, default=12)
-    parser.add_argument("--tile-zooms", nargs="+", type=int, default=[8, 9, 10, 11, 12, 13])
+    parser.add_argument("--tile-zooms", nargs="+", type=int, default=[6, 7, 8, 9, 10, 11, 12, 13])
     parser.add_argument("--tile-retention-days", type=int, default=30)
     parser.add_argument("--skip-tile-cleanup", action="store_true", help="Do not delete old remote tile sets from Supabase Storage.")
     parser.add_argument("--env-file", default=str(ROOT_DIR / ".env"), help="Env file passed to tile upload script.")

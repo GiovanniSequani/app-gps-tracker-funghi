@@ -74,6 +74,8 @@ type CameraCommand = CameraStop & { id: number };
 const Tab = createBottomTabNavigator();
 const LOCATION_TASK_NAME = 'background-location-task';
 const BG_POSITIONS_FILE = `${FileSystemLegacy.cacheDirectory}bg_positions.json`;
+const MAP_MIN_ZOOM_LEVEL = 8;
+const MAP_MAX_ZOOM_LEVEL = 18;
 const RECORDING_LOCATION_OPTIONS: Location.LocationOptions = {
   accuracy: Location.Accuracy.BestForNavigation,
   timeInterval: 2000,
@@ -200,6 +202,8 @@ const SATELLITE_STYLE = {
         'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
       ],
       tileSize: 256,
+      minzoom: MAP_MIN_ZOOM_LEVEL,
+      maxzoom: MAP_MAX_ZOOM_LEVEL,
       attribution: 'Esri, DigitalGlobe, GeoEye',
     },
   },
@@ -852,10 +856,18 @@ const MemoMapCanvas = React.memo(function MemoMapCanvas(props: any) {
       compassEnabled={false}
       onRegionWillChange={() => { followLocationRef.current = false; }}
     >
+      <Camera
+        followUserLocation={false}
+        minZoomLevel={MAP_MIN_ZOOM_LEVEL}
+        maxZoomLevel={MAP_MAX_ZOOM_LEVEL}
+      />
+
       {cameraCommand && (
         <Camera
           key={`camera-command-${cameraCommand.id}`}
           followUserLocation={false}
+          minZoomLevel={MAP_MIN_ZOOM_LEVEL}
+          maxZoomLevel={MAP_MAX_ZOOM_LEVEL}
           centerCoordinate={cameraCommand.centerCoordinate}
           zoomLevel={cameraCommand.zoomLevel}
           bounds={cameraCommand.bounds}

@@ -51,15 +51,26 @@ def expected_raw_files(run: str) -> list[Path]:
     run_dir = raw_run_dir(run)
     files: list[Path] = []
     for spec in ICON_D2_RAW_VARIABLES.values():
-        if spec["level_kind"] != "single-level":
-            continue
         dwd_var_dir = spec["dwd_var_dir"]
-        for step in ICON_D2_DEFAULT_STEPS:
-            filename = (
-                f"icon-d2_germany_regular-lat-lon_single-level_"
-                f"{run}_{step:03d}_2d_{dwd_var_dir}.grib2.bz2"
-            )
-            files.append(run_dir / dwd_var_dir / filename)
+        level_kind = spec["level_kind"]
+        if level_kind == "single-level":
+            for step in ICON_D2_DEFAULT_STEPS:
+                filename = (
+                    f"icon-d2_germany_regular-lat-lon_single-level_"
+                    f"{run}_{step:03d}_2d_{dwd_var_dir}.grib2.bz2"
+                )
+                files.append(run_dir / dwd_var_dir / filename)
+        elif level_kind == "soil-level":
+            grid_type = spec.get("grid_type", "icosahedral")
+            for step in ICON_D2_DEFAULT_STEPS:
+                for level in spec["levels"]:
+                    filename = (
+                        f"icon-d2_germany_{grid_type}_soil-level_"
+                        f"{run}_{step:03d}_{level}_{dwd_var_dir}.grib2.bz2"
+                    )
+                    files.append(run_dir / dwd_var_dir / f"level_{level}" / filename)
+        else:
+            raise ValueError(f"level_kind non supportato: {level_kind}")
     return files
 
 
@@ -225,7 +236,7 @@ def main() -> None:
 
     if rc04 != 0:
         print("[WARN] 04 non ha prodotto daily candidates nuovi o ha trovato nessun giorno completo. Fine pipeline senza errore.")
-        print("\nDone ✓")
+        print("\nDone OK")
         return
 
     # 05) Regrid daily to target
@@ -234,7 +245,7 @@ def main() -> None:
 
     if rc05 != 0:
         print("[WARN] 05 non eseguito con successo. Fine pipeline senza aggiornare il file finale.")
-        print("\nDone ✓")
+        print("\nDone OK")
         return
 
     # 06) Update recent final dataset
@@ -246,7 +257,7 @@ def main() -> None:
     else:
         print("[OK] 06 completato")
 
-    print("\nDone ✓")
+    print("\nDone OK")
 
 
 if __name__ == "__main__":

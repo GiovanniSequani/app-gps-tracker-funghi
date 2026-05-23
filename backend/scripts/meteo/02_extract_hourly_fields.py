@@ -11,6 +11,7 @@ import xarray as xr
 
 from backend.config.domain import BBOX
 from backend.config.meteo import (
+    ICON_D2_RAW_VARIABLES,
     ICON_D2_RAW_DIR,
     INTERMEDIATE_METEO_DIR,
     MIN_LEAD_HOURS,
@@ -18,7 +19,7 @@ from backend.config.meteo import (
 )
 
 UTC = timezone.utc
-EXPECTED_VARS = ("t2m", "rh2m", "gust10m", "precip")
+EXPECTED_VARS = ("t2m", "rh2m", "gust10m", "precip", "tground", "smi9")
 
 
 # ------------------------------------------------------------------------------
@@ -59,6 +60,20 @@ def find_single_level_file(run_dir: Path, dwd_var_dir: str, step: int) -> Path:
     if len(files) > 1:
         raise RuntimeError(
             f"Trovati più file del previsto per {dwd_var_dir}, step={step}: {files}"
+        )
+    return files[0]
+
+
+def find_soil_level_file(run_dir: Path, dwd_var_dir: str, level: int, step: int) -> Path:
+    search_dir = run_dir / dwd_var_dir / f"level_{level}"
+    files = sorted(search_dir.glob(f"*_{step:03d}_{level}_*.grib2.bz2"))
+    if not files:
+        raise FileNotFoundError(
+            f"Nessun file trovato per variabile {dwd_var_dir}, livello={level}, step={step}, in {search_dir}"
+        )
+    if len(files) > 1:
+        raise RuntimeError(
+            f"Trovati piu' file del previsto per {dwd_var_dir}, livello={level}, step={step}: {files}"
         )
     return files[0]
 
@@ -374,6 +389,8 @@ def main() -> None:
     rh2m_list: list[np.ndarray] = []
     gust_list: list[np.ndarray] = []
     precip_cumulative_list: list[np.ndarray] = []
+    tground_list: list[np.ndarray] = []
+    smi9_list: list[np.ndarray] = []
 
     ref_lats: np.ndarray | None = None
     ref_lons: np.ndarray | None = None
@@ -385,11 +402,16 @@ def main() -> None:
         rh2m_file = find_single_level_file(run_dir, "relhum_2m", step)
         gust_file = find_single_level_file(run_dir, "vmax_10m", step)
         precip_file = find_single_level_file(run_dir, "tot_prec", step)
+        tground_file = find_single_level_file(run_dir, "t_g", step)
+        smi9_level = int(ICON_D2_RAW_VARIABLES["smi9"]["levels"][0])
+        smi9_file = find_soil_level_file(run_dir, "smi", smi9_level, step)
 
         t2m_arr, lats, lons, vt = extract_regular_variable(t2m_file, BBOX, "t2m")
         rh2m_arr, lats2, lons2, vt2 = extract_regular_variable(rh2m_file, BBOX, "rh2m")
         gust_arr, lats3, lons3, vt3 = extract_regular_variable(gust_file, BBOX, "gust10m")
         precip_arr, lats4, lons4, vt4 = extract_regular_variable(precip_file, BBOX, "precip")
+        tground_arr, lats5, lons5, vt5 = extract_regular_variable(tground_file, BBOX, "tground")
+        smi9_arr, lats6, lons6, vt6 = extract_regular_variable(smi9_file, BBOX, "smi9")
 
         if ref_lats is None:
             ref_lats = lats
@@ -404,10 +426,15 @@ def main() -> None:
             raise RuntimeError("Griglia t2m e gust10m non coerente")
         if not (np.array_equal(lats, lats4) and np.array_equal(lons, lons4)):
             raise RuntimeError("Griglia t2m e precip non coerente")
+        if not (np.array_equal(lats, lats5) and np.array_equal(lons, lons5)):
+            raise RuntimeError("Griglia t2m e tground non coerente")
+        if not (np.array_equal(lats, lats6) and np.array_equal(lons, lons6)):
+            raise RuntimeError("Griglia t2m e smi9 non coerente")
 
-        if not (vt == vt2 == vt3):
+        if not (vt == vt2 == vt3 == vt5 == vt6):
             raise RuntimeError(
-                f"Valid time incoerente tra t2m/rh2m/gust allo step {step}: {vt}, {vt2}, {vt3}"
+                f"Valid time incoerente tra t2m/rh2m/gust/tground/smi9 allo step {step}: "
+                f"{vt}, {vt2}, {vt3}, {vt5}, {vt6}"
             )
 
         if vt4 != vt:
@@ -420,6 +447,8 @@ def main() -> None:
         rh2m_list.append(rh2m_arr)
         gust_list.append(gust_arr)
         precip_cumulative_list.append(precip_arr)
+        tground_list.append(tground_arr)
+        smi9_list.append(smi9_arr)
 
         print(f"  valid_time       : {vt.isoformat()}")
         print(f"  grid shape       : {t2m_arr.shape}")
@@ -447,6 +476,8 @@ def main() -> None:
     rh2m_data = np.stack(rh2m_list).astype(np.float32)
     gust_data = np.stack(gust_list).astype(np.float32) * np.float32(3.6)
     precip_data = np.stack(precip_list).astype(np.float32)  # 1 kg m-2 = 1 mm
+    tground_data = np.stack(tground_list).astype(np.float32) - np.float32(273.15)
+    smi9_data = np.stack(smi9_list).astype(np.float32)
 
     ds_out = xr.Dataset(
         data_vars={
@@ -454,6 +485,8 @@ def main() -> None:
             "rh2m": (("valid_time", "lat", "lon"), rh2m_data),
             "gust10m": (("valid_time", "lat", "lon"), gust_data),
             "precip": (("valid_time", "lat", "lon"), precip_data),
+            "tground": (("valid_time", "lat", "lon"), tground_data),
+            "smi9": (("valid_time", "lat", "lon"), smi9_data),
         },
         coords={
             "valid_time": np.array(time_list, dtype="datetime64[s]"),
@@ -472,7 +505,7 @@ def main() -> None:
             "min_lead_hours": MIN_LEAD_HOURS,
             "precip_mode": PRECIP_HOURLY_MODE,
             "created_utc": datetime.now(UTC).isoformat(),
-            "note": "Soil variables temporarily excluded in v1 because current cfgrib/ecCodes stack does not expose lat/lon for ICON-D2 unstructured soil files.",
+            "note": "Includes regular-lat-lon ground temperature t_g and soil moisture index smi level 9. ICON-D2 t_so/w_so unstructured soil files still need a dedicated remap path.",
         },
     )
 
@@ -487,6 +520,8 @@ def main() -> None:
     ds_out["rh2m"].attrs.update(long_name="2 m relative humidity", units="%")
     ds_out["gust10m"].attrs.update(long_name="10 m maximum wind gust", units="km h-1")
     ds_out["precip"].attrs.update(long_name="hourly precipitation for the last hour", units="mm")
+    ds_out["tground"].attrs.update(long_name="ground surface temperature", units="degC")
+    ds_out["smi9"].attrs.update(long_name="soil moisture index, soil level 9", units="1")
 
     out_dir = ensure_output_dir()
     out_path = Path(args.out) if args.out else (out_dir / f"icon_d2_hourly_{run_str}.nc")
@@ -494,7 +529,7 @@ def main() -> None:
 
     print("\nOutput:")
     print(out_path.resolve())
-    print("\nDone ✓")
+    print("\nDone OK")
 
 
 if __name__ == "__main__":

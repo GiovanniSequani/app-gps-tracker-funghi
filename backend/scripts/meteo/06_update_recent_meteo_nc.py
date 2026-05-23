@@ -17,6 +17,16 @@ from backend.config.meteo import (
 from backend.config.paths import FINAL_METEO_HISTORIC_DIR
 
 UTC = timezone.utc
+BASE_EXPECTED_DAILY_VARS = (
+    "t2m_mean",
+    "t2m_min",
+    "t2m_max",
+    "precip_sum",
+    "rh_mean",
+    "rh_min",
+    "gust_mean",
+    "gust_max",
+)
 EXPECTED_DAILY_VARS = tuple(DAILY_FINAL_VARIABLES)
 
 
@@ -125,8 +135,9 @@ def copy_historic_snapshot_if_complete(
 # Validation
 # ------------------------------------------------------------------------------
 
-def validate_daily_dataset(ds: xr.Dataset, source_path: Path) -> None:
-    missing_vars = [name for name in EXPECTED_DAILY_VARS if name not in ds.data_vars]
+def validate_daily_dataset(ds: xr.Dataset, source_path: Path, allow_legacy_missing: bool = False) -> None:
+    required_vars = BASE_EXPECTED_DAILY_VARS if allow_legacy_missing else EXPECTED_DAILY_VARS
+    missing_vars = [name for name in required_vars if name not in ds.data_vars]
     if missing_vars:
         raise RuntimeError(
             f"Dataset daily incompleto in {source_path}. Variabili mancanti: {missing_vars}"
@@ -140,7 +151,7 @@ def validate_daily_dataset(ds: xr.Dataset, source_path: Path) -> None:
             )
 
     expected_dims = ("time", "lat", "lon")
-    for var_name in EXPECTED_DAILY_VARS:
+    for var_name in required_vars:
         if ds[var_name].dims != expected_dims:
             raise RuntimeError(
                 f"Variabile {var_name} con dims non attese in {source_path}: "
@@ -210,6 +221,18 @@ def merge_recent_daily(
         merged = ds_new
     else:
         validate_compatible_grids(ds_old, ds_new)
+        for var_name in EXPECTED_DAILY_VARS:
+            if var_name not in ds_old.data_vars:
+                fill = np.full(
+                    (
+                        ds_old.sizes["time"],
+                        ds_old.sizes["lat"],
+                        ds_old.sizes["lon"],
+                    ),
+                    np.nan,
+                    dtype=np.float32,
+                )
+                ds_old[var_name] = (("time", "lat", "lon"), fill)
         merged = xr.concat([ds_old, ds_new], dim="time", coords="minimal", compat="override")
 
     merged = deduplicate_time_new_wins(merged)
@@ -287,7 +310,7 @@ def main() -> None:
 
     if out_path.exists():
         ds_old = open_dataset(out_path)
-        validate_daily_dataset(ds_old, out_path)
+        validate_daily_dataset(ds_old, out_path, allow_legacy_missing=True)
         print(
             f"[OLD] n_days={ds_old.sizes['time']} | "
             f"range={ds_old['time'].values[0]} -> {ds_old['time'].values[-1]}"
@@ -320,7 +343,7 @@ def main() -> None:
         print(f"historic snapshot   : {snapshot_path.resolve()}")
     else:
         print("historic snapshot   : skipped (not a 21 UTC completion)")
-    print("\nDone ✓")
+    print("\nDone OK")
 
 
 if __name__ == "__main__":

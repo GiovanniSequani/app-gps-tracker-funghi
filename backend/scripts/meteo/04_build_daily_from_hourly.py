@@ -17,7 +17,7 @@ from backend.config.meteo import (
 )
 
 UTC = timezone.utc
-EXPECTED_HOURLY_VARS = ("t2m", "rh2m", "gust10m", "precip")
+EXPECTED_HOURLY_VARS = ("t2m", "rh2m", "gust10m", "precip", "tground", "smi9")
 EXPECTED_DAILY_VARS = tuple(DAILY_FINAL_VARIABLES)
 
 
@@ -227,6 +227,20 @@ def aggregate_one_day(
     if "max" in DAILY_AGGREGATIONS["gust10m"]:
         out["gust_max"] = ds_day["gust10m"].max(dim="valid_time").values.astype(np.float32)
 
+    # tground
+    if "mean" in DAILY_AGGREGATIONS["tground"]:
+        out["tground_mean"] = ds_day["tground"].mean(dim="valid_time", skipna=False).values.astype(np.float32)
+    if "min" in DAILY_AGGREGATIONS["tground"]:
+        out["tground_min"] = ds_day["tground"].min(dim="valid_time", skipna=False).values.astype(np.float32)
+    if "max" in DAILY_AGGREGATIONS["tground"]:
+        out["tground_max"] = ds_day["tground"].max(dim="valid_time", skipna=False).values.astype(np.float32)
+
+    # smi9
+    if "mean" in DAILY_AGGREGATIONS["smi9"]:
+        out["smi9_mean"] = ds_day["smi9"].mean(dim="valid_time", skipna=False).values.astype(np.float32)
+    if "min" in DAILY_AGGREGATIONS["smi9"]:
+        out["smi9_min"] = ds_day["smi9"].min(dim="valid_time", skipna=False).values.astype(np.float32)
+
     return out
 
 
@@ -295,6 +309,8 @@ def build_daily_candidates(ds_hourly: xr.Dataset, tz_name: str) -> xr.Dataset:
                     "precip": ["sum"],
                     "rh2m": ["mean", "min"],
                     "gust10m": ["mean", "max"],
+                    "tground": ["mean", "min", "max"],
+                    "smi9": ["mean", "min"],
                 },
                 ensure_ascii=False,
             ),
@@ -321,6 +337,11 @@ def build_daily_candidates(ds_hourly: xr.Dataset, tz_name: str) -> xr.Dataset:
     ds_daily["rh_min"].attrs.update(long_name="daily minimum 2 m relative humidity", units="%")
     ds_daily["gust_mean"].attrs.update(long_name="daily mean 10 m maximum wind gust", units="km h-1")
     ds_daily["gust_max"].attrs.update(long_name="daily maximum 10 m maximum wind gust", units="km h-1")
+    ds_daily["tground_mean"].attrs.update(long_name="daily mean ground surface temperature", units="degC")
+    ds_daily["tground_min"].attrs.update(long_name="daily minimum ground surface temperature", units="degC")
+    ds_daily["tground_max"].attrs.update(long_name="daily maximum ground surface temperature", units="degC")
+    ds_daily["smi9_mean"].attrs.update(long_name="daily mean soil moisture index, soil level 9", units="1")
+    ds_daily["smi9_min"].attrs.update(long_name="daily minimum soil moisture index, soil level 9", units="1")
 
     ds_daily = ds_daily.assign_coords(
         n_hours=("time", np.array(n_hours_per_day, dtype=np.int16))
@@ -387,7 +408,7 @@ def main() -> None:
     print(f"time start         : {str(ds_daily['time'].values[0])}")
     print(f"time end           : {str(ds_daily['time'].values[-1])}")
     print(f"n_hours per day    : {ds_daily['n_hours'].values.tolist()}")
-    print("\nDone ✓")
+    print("\nDone OK")
 
 
 if __name__ == "__main__":

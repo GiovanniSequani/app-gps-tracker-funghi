@@ -54,6 +54,18 @@ ICON_D2_RAW_VARIABLES = {
         "level_kind": "single-level",
         "description": "total precipitation",
     },
+    "tground": {
+        "dwd_var_dir": "t_g",
+        "level_kind": "single-level",
+        "description": "ground surface temperature",
+    },
+    "smi9": {
+        "dwd_var_dir": "smi",
+        "level_kind": "soil-level",
+        "grid_type": "regular-lat-lon",
+        "description": "soil moisture index, upper soil layer level 9",
+        "levels": (9,),
+    },
     #"soil_temp": {
     #    "dwd_var_dir": "t_so",
     #    "level_kind": "soil-level",
@@ -80,6 +92,11 @@ DAILY_FINAL_VARIABLES = (
     "rh_min",
     "gust_mean",
     "gust_max",
+    "tground_mean",
+    "tground_min",
+    "tground_max",
+    "smi9_mean",
+    "smi9_min",
 )
 
 DAILY_AGGREGATIONS = {
@@ -87,6 +104,8 @@ DAILY_AGGREGATIONS = {
     "precip": ("sum",),
     "rh2m": ("mean", "min"),
     "gust10m": ("mean", "max"),
+    "tground": ("mean", "min", "max"),
+    "smi9": ("mean", "min"),
 }
 
 PRECIP_HOURLY_MODE = "decumulated_last_hour"

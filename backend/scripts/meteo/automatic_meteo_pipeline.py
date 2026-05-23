@@ -24,6 +24,7 @@ from backend.config.meteo import (
     INTERMEDIATE_METEO_DIR,
     PUBLICATION_DELAY_H,
     RAW_RUN_RETENTION_DAYS,
+    ROLLING_HOURLY_WINDOW_HOURS,
 )
 UTC = timezone.utc
 
@@ -68,13 +69,15 @@ def floor_to_previous_cycle(dt: datetime) -> datetime:
 def generate_candidate_runs(now: datetime, buffer_path: Path) -> list[str]:
     end = floor_to_previous_cycle(now)
 
-    last_run = get_latest_run_from_buffer(buffer_path)
-
-    if last_run is None:
-        # fallback iniziale
+    if not buffer_path.is_file() or get_latest_run_from_buffer(buffer_path) is None:
+        # fallback iniziale: non recuperare due giorni di storico se il buffer non esiste ancora.
         start = end - timedelta(hours=12)
     else:
-        start = parse_run(last_run) + timedelta(hours=3)
+        # Se una run piu' recente e' entrata nel buffer dopo un errore parziale,
+        # partire da latest_run+3 nasconde eventuali buchi precedenti. Riguardiamo
+        # tutta la finestra rolling: le run gia' nel buffer restano DONE, quelle
+        # mancate ma ancora utili tornano processabili.
+        start = end - timedelta(hours=ROLLING_HOURLY_WINDOW_HOURS)
 
     runs = []
     current = start
@@ -127,15 +130,26 @@ def expected_raw_files(run: str) -> list[Path]:
     run_dir = ICON_D2_RAW_DIR / run
     files: list[Path] = []
     for spec in ICON_D2_RAW_VARIABLES.values():
-        if spec["level_kind"] != "single-level":
-            continue
         dwd_var_dir = spec["dwd_var_dir"]
-        for step in ICON_D2_DEFAULT_STEPS:
-            filename = (
-                f"icon-d2_germany_regular-lat-lon_single-level_"
-                f"{run}_{step:03d}_2d_{dwd_var_dir}.grib2.bz2"
-            )
-            files.append(run_dir / dwd_var_dir / filename)
+        level_kind = spec["level_kind"]
+        if level_kind == "single-level":
+            for step in ICON_D2_DEFAULT_STEPS:
+                filename = (
+                    f"icon-d2_germany_regular-lat-lon_single-level_"
+                    f"{run}_{step:03d}_2d_{dwd_var_dir}.grib2.bz2"
+                )
+                files.append(run_dir / dwd_var_dir / filename)
+        elif level_kind == "soil-level":
+            grid_type = spec.get("grid_type", "icosahedral")
+            for step in ICON_D2_DEFAULT_STEPS:
+                for level in spec["levels"]:
+                    filename = (
+                        f"icon-d2_germany_{grid_type}_soil-level_"
+                        f"{run}_{step:03d}_{level}_{dwd_var_dir}.grib2.bz2"
+                    )
+                    files.append(run_dir / dwd_var_dir / f"level_{level}" / filename)
+        else:
+            raise ValueError(f"level_kind non supportato: {level_kind}")
     return files
 
 
@@ -313,7 +327,7 @@ def main():
     runs_to_process = [
         run for run in runs
         if (run_status[run] != "DONE" or args.force_all)
-        and (raw_complete(run) or is_run_available_remote(run))
+        and (hourly_nc_exists(run) or raw_complete(run) or is_run_available_remote(run))
     ]
 
     print("\n[TO PROCESS]")

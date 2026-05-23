@@ -258,7 +258,7 @@ def main() -> None:
     print(f"grid               : {ds_out.sizes['lat']} x {ds_out.sizes['lon']}")
     print(f"time start         : {str(ds_out['time'].values[0])}")
     print(f"time end           : {str(ds_out['time'].values[-1])}")
-    print("\nDone ✓")
+    print("\nDone OK")
 
 
 if __name__ == "__main__":

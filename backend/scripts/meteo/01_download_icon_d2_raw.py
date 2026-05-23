@@ -74,9 +74,11 @@ def build_soil_level_filename(
 ) -> str:
     spec = ICON_D2_RAW_VARIABLES[var_key]
     dwd_var_dir = spec["dwd_var_dir"]
-    # Per i soil fields DWD usa icosahedral + token livello nel filename
+    grid_type = spec.get("grid_type", "icosahedral")
+    if grid_type not in {"icosahedral", "regular-lat-lon"}:
+        raise ValueError(f"grid_type soil non supportato per {var_key}: {grid_type}")
     return (
-        f"icon-d2_germany_icosahedral_soil-level_"
+        f"icon-d2_germany_{grid_type}_soil-level_"
         f"{run_dt.strftime('%Y%m%d%H')}_{step_to_str(step)}_{level}_{dwd_var_dir}.grib2.bz2"
     )
 
@@ -385,7 +387,7 @@ def main() -> None:
             print(f" - {msg}")
         raise SystemExit(1)
 
-    print("\nDone ✓")
+    print("\nDone OK")
 
 
 if __name__ == "__main__":

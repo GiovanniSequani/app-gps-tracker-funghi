@@ -14,7 +14,8 @@ from backend.config.meteo import (
 )
 
 UTC = timezone.utc
-EXPECTED_VARS = ("t2m", "rh2m", "gust10m", "precip")
+BASE_EXPECTED_VARS = ("t2m", "rh2m", "gust10m", "precip")
+EXPECTED_VARS = (*BASE_EXPECTED_VARS, "tground", "smi9")
 
 
 # ------------------------------------------------------------------------------
@@ -69,8 +70,9 @@ def datetime_to_np64_seconds(dt: datetime) -> np.datetime64:
 # Validation / normalization
 # ------------------------------------------------------------------------------
 
-def validate_hourly_dataset(ds: xr.Dataset, source_path: Path) -> None:
-    missing_vars = [name for name in EXPECTED_VARS if name not in ds.data_vars]
+def validate_hourly_dataset(ds: xr.Dataset, source_path: Path, allow_legacy_missing: bool = False) -> None:
+    required_vars = BASE_EXPECTED_VARS if allow_legacy_missing else EXPECTED_VARS
+    missing_vars = [name for name in required_vars if name not in ds.data_vars]
     if missing_vars:
         raise RuntimeError(
             f"Dataset orario incompleto in {source_path}. Variabili mancanti: {missing_vars}"
@@ -83,7 +85,7 @@ def validate_hourly_dataset(ds: xr.Dataset, source_path: Path) -> None:
             )
 
     expected_dims = ("valid_time", "lat", "lon")
-    for var_name in EXPECTED_VARS:
+    for var_name in required_vars:
         if ds[var_name].dims != expected_dims:
             raise RuntimeError(
                 f"Variabile {var_name} con dims non attese in {source_path}: "
@@ -206,6 +208,18 @@ def merge_into_buffer(
     else:
         ds_buffer = ensure_buffer_run_time_coord(ds_buffer)
         validate_compatible_grids(ds_buffer, ds_new)
+        for var_name in EXPECTED_VARS:
+            if var_name not in ds_buffer.data_vars:
+                fill = np.full(
+                    (
+                        ds_buffer.sizes["valid_time"],
+                        ds_buffer.sizes["lat"],
+                        ds_buffer.sizes["lon"],
+                    ),
+                    np.nan,
+                    dtype=np.float32,
+                )
+                ds_buffer[var_name] = (("valid_time", "lat", "lon"), fill)
         merged = xr.concat([ds_buffer, ds_new], dim="valid_time", coords="minimal", compat="override")
 
     if DUPLICATE_VALID_TIME_POLICY != "latest_run_wins":
@@ -347,7 +361,7 @@ def main() -> None:
     ds_buffer: xr.Dataset | None = None
     if buffer_path.exists():
         ds_buffer = open_dataset(buffer_path)
-        validate_hourly_dataset(ds_buffer, buffer_path)
+        validate_hourly_dataset(ds_buffer, buffer_path, allow_legacy_missing=True)
         ds_buffer = ensure_buffer_run_time_coord(ds_buffer)
         print(
             f"[OLD] n_valid={ds_buffer.sizes['valid_time']} | "
@@ -370,7 +384,7 @@ def main() -> None:
     print(f"valid_time start   : {str(merged['valid_time'].values[0])}")
     print(f"valid_time end     : {str(merged['valid_time'].values[-1])}")
     print(f"latest_run_time    : {merged.attrs.get('latest_run_time_utc')}")
-    print("\nDone ✓")
+    print("\nDone OK")
 
 
 if __name__ == "__main__":

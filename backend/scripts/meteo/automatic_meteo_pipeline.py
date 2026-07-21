@@ -3,9 +3,9 @@ from __future__ import annotations
 import argparse
 import bz2
 import shutil
-import subprocess
 import sys
 import requests
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -17,6 +17,7 @@ import xarray as xr
 # ------------------------------------------------------------------------------
 
 from backend.config.meteo import (
+    FINAL_METEO_DIR,
     ICON_D2_DEFAULT_STEPS,
     ICON_D2_RUN_HOURS,
     ICON_D2_RAW_DIR,
@@ -26,7 +27,13 @@ from backend.config.meteo import (
     RAW_RUN_RETENTION_DAYS,
     ROLLING_HOURLY_WINDOW_HOURS,
 )
+from backend.scripts.pipeline_logging import (
+    print_meteo_recent_coverage,
+    run_logged_cmd,
+    run_logged_main,
+)
 UTC = timezone.utc
+RUN_CYCLE_HOURS = 3
 
 
 # ------------------------------------------------------------------------------
@@ -34,9 +41,7 @@ UTC = timezone.utc
 # ------------------------------------------------------------------------------
 
 def run_cmd(cmd: list[str]) -> int:
-    print("\n[CMD]", " ".join(cmd), flush=True)
-    result = subprocess.run(cmd)
-    return result.returncode
+    return run_logged_cmd(cmd)
 
 
 def format_run(dt: datetime) -> str:
@@ -75,16 +80,16 @@ def generate_candidate_runs(now: datetime, buffer_path: Path) -> list[str]:
     else:
         # Se una run piu' recente e' entrata nel buffer dopo un errore parziale,
         # partire da latest_run+3 nasconde eventuali buchi precedenti. Riguardiamo
-        # tutta la finestra rolling: le run gia' nel buffer restano DONE, quelle
-        # mancate ma ancora utili tornano processabili.
-        start = end - timedelta(hours=ROLLING_HOURLY_WINDOW_HOURS)
+        # quasi tutta la finestra rolling: escludiamo l'estremo piu' vecchio,
+        # che puo' essere gia' uscito dal buffer e comparire inutilmente come HOURLY.
+        start = end - timedelta(hours=ROLLING_HOURLY_WINDOW_HOURS - RUN_CYCLE_HOURS)
 
     runs = []
     current = start
 
     while current <= end:
         runs.append(format_run(current))
-        current += timedelta(hours=3)
+        current += timedelta(hours=RUN_CYCLE_HOURS)
 
     return runs
 
@@ -262,6 +267,10 @@ def classify_run(run: str, buffer_runs: set[str]) -> str:
 # ------------------------------------------------------------------------------
 
 def main():
+    run_logged_main("automatic_meteo_pipeline", _main)
+
+
+def _main():
     parser = argparse.ArgumentParser(
         description="Automatic catch-up ICON-D2 pipeline"
     )
@@ -296,12 +305,12 @@ def main():
     buffer_path = INTERMEDIATE_METEO_DIR / "hourly_buffer.nc"
     buffer_runs = get_runs_in_buffer(buffer_path)
 
-    print("=" * 80)
     print("AUTOMATIC METEO PIPELINE")
-    print(f"Now UTC              : {now.isoformat()}")
-    print(f"Runs candidate       : {len(runs)}")
-    print(f"Force all            : {args.force_all}")
-    print("=" * 80)
+    print(
+        f"now_utc={now.isoformat()} candidates={len(runs)} "
+        f"range={runs[0] if runs else '[none]'}..{runs[-1] if runs else '[none]'} "
+        f"force_all={args.force_all}"
+    )
 
     if not args.skip_raw_cleanup:
         removed_raw = cleanup_old_raw_runs(
@@ -309,9 +318,8 @@ def main():
             retention_days=RAW_RUN_RETENTION_DAYS,
             dry_run=args.dry_run,
         )
-        print(f"\n[RAW CLEANUP] retention={RAW_RUN_RETENTION_DAYS} giorni | removed={len(removed_raw)}")
-        for run in removed_raw:
-            print(f"  {run}")
+        removed_suffix = f" ({', '.join(removed_raw)})" if removed_raw else ""
+        print(f"[RAW CLEANUP] retention_days={RAW_RUN_RETENTION_DAYS} removed={len(removed_raw)}{removed_suffix}")
 
     # --- classificazione ---
     run_status = {}
@@ -319,9 +327,12 @@ def main():
         status = classify_run(run, buffer_runs)
         run_status[run] = status
 
-    print("\n[RUN STATUS]")
-    for run in runs:
-        print(f"{run}  -> {run_status[run]}")
+    counts = Counter(run_status.values())
+    status_summary = " ".join(f"{status}={counts[status]}" for status in sorted(counts))
+    print(f"[RUN STATUS] {status_summary}")
+    not_done = [run for run in runs if run_status[run] != "DONE"]
+    if not_done:
+        print("[NOT DONE] " + ", ".join(f"{run}:{run_status[run]}" for run in not_done))
 
     # --- selezione ---
     runs_to_process = [
@@ -330,21 +341,18 @@ def main():
         and (hourly_nc_exists(run) or raw_complete(run) or is_run_available_remote(run))
     ]
 
-    print("\n[TO PROCESS]")
-    for r in runs_to_process:
-        print(r)
+    print("[TO PROCESS] " + (", ".join(runs_to_process) if runs_to_process else "none"))
 
     if args.dry_run:
-        print("\n[DRY RUN] stop")
+        print("[DRY RUN] stop")
+        print_meteo_recent_coverage(FINAL_METEO_DIR / "meteo_recent_003deg.nc")
         return
 
     # --- esecuzione ---
     results = {}
 
     for run in runs_to_process:
-        print("\n" + "=" * 80)
-        print(f"[PROCESS RUN] {run}")
-        print("=" * 80)
+        print(f"\n[PROCESS RUN] {run}")
 
         cmd = [
             py,
@@ -365,14 +373,16 @@ def main():
             results[run] = "FAIL"
 
     # --- report finale ---
-    print("\n" + "=" * 80)
-    print("FINAL REPORT")
-    print("=" * 80)
+    result_counts = Counter(results.values())
+    result_summary = " ".join(f"{status}={result_counts[status]}" for status in sorted(result_counts))
+    print(f"\n[FINAL REPORT] {result_summary or 'no runs processed'}")
+    failed = [run for run, status in results.items() if status != "OK"]
+    if failed:
+        print("[FAILED] " + ", ".join(failed))
 
-    for run in runs_to_process:
-        print(f"{run} -> {results.get(run, 'SKIPPED')}")
+    print_meteo_recent_coverage(FINAL_METEO_DIR / "meteo_recent_003deg.nc")
 
-    print("\nDONE")
+    print("\nDone")
 
 
 if __name__ == "__main__":

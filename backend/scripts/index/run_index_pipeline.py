@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import argparse
-import subprocess
 import sys
+
+from backend.scripts.pipeline_logging import run_logged_cmd
 
 
 def run_cmd(cmd: list[str]) -> None:
-    print("\n[CMD]", " ".join(cmd), flush=True)
-    result = subprocess.run(cmd)
-    if result.returncode != 0:
-        raise RuntimeError(f"Command failed with exit code {result.returncode}")
+    returncode = run_logged_cmd(cmd)
+    if returncode != 0:
+        raise RuntimeError(f"Command failed with exit code {returncode}")
 
 
 def main() -> None:
@@ -43,4 +43,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

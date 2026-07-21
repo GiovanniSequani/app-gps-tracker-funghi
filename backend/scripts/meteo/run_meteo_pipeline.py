@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import argparse
 import bz2
-import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 from backend.config.meteo import ICON_D2_DEFAULT_STEPS, ICON_D2_RAW_DIR, ICON_D2_RAW_VARIABLES
+from backend.scripts.pipeline_logging import run_logged_cmd
 
 UTC = timezone.utc
 
@@ -17,11 +17,10 @@ UTC = timezone.utc
 # ------------------------------------------------------------------------------
 
 def run_cmd(cmd: list[str], allow_failure: bool = False) -> int:
-    print("\n[CMD]", " ".join(cmd), flush=True)
-    result = subprocess.run(cmd)
-    if result.returncode != 0 and not allow_failure:
-        raise RuntimeError(f"Comando fallito con exit code {result.returncode}")
-    return result.returncode
+    returncode = run_logged_cmd(cmd)
+    if returncode != 0 and not allow_failure:
+        raise RuntimeError(f"Comando fallito con exit code {returncode}")
+    return returncode
 
 
 def normalize_run(run: str) -> str:

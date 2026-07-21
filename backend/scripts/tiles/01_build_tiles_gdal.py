@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 
 from backend.config.index_config import INDEX_OUTPUT_TEMPLATE
 from backend.config.paths import OUT_TILES_DIR, TMP_GDAL_DIR
+from backend.scripts.pipeline_logging import compact_logs_enabled, format_cmd, is_superfluous_log_line
 
 
 ROOT_DIR = Path(__file__).resolve().parents[3]
@@ -62,15 +63,20 @@ def refresh_env(env_file: str | None = None) -> None:
 
 
 def run_cmd(cmd: list[str], cwd: Path | None = None) -> None:
-    print("\n[CMD]", " ".join(str(c) for c in cmd), flush=True)
+    compact = compact_logs_enabled()
+    print("\n[CMD]", format_cmd([str(c) for c in cmd]) if compact else " ".join(str(c) for c in cmd), flush=True)
     result = subprocess.run(
         cmd,
         cwd=str(cwd) if cwd else None,
         text=True,
         capture_output=True,
     )
-    if result.stdout.strip():
+    if result.stdout.strip() and not compact:
         print(result.stdout)
+    elif result.stdout.strip():
+        for line in result.stdout.splitlines():
+            if not is_superfluous_log_line(line):
+                print(line)
     if result.returncode != 0:
         if result.stderr.strip():
             print(result.stderr)
@@ -144,9 +150,7 @@ def write_colormap_file(path: Path) -> None:
 
 def check_environment(dry_run: bool) -> None:
     run_cmd(["gdalinfo", "--version"])
-    run_cmd([*find_gdal2tiles_cmd(), "--help"])
-    print(f"[ENV] Supabase URL        : {'ok' if SUPABASE_URL else 'missing'}")
-    print(f"[ENV] Supabase upload key : {'ok' if SUPABASE_KEY else 'missing'}")
+    print(f"[ENV] supabase_url={'ok' if SUPABASE_URL else 'missing'} upload_key={'ok' if SUPABASE_KEY else 'missing'}")
     if not dry_run and (not SUPABASE_URL or not SUPABASE_KEY):
         raise RuntimeError(
             "Supabase upload config missing. Add SUPABASE_URL or EXPO_PUBLIC_SUPABASE_URL, "
@@ -301,16 +305,37 @@ def upload_one_file(local_path: Path, remote_path: str, max_retries: int) -> tup
     return False, f"{remote_path}: unknown upload error"
 
 
-def upload_text_object(remote_path: str, body: str, content_type: str) -> None:
+def upload_text_object(remote_path: str, body: str, content_type: str, max_retries: int = 6) -> None:
     url = f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/{remote_path}"
     headers = {
         "Authorization": f"Bearer {SUPABASE_KEY}",
         "Content-Type": content_type,
         "x-upsert": "true",
     }
-    resp = requests.post(url, headers=headers, data=body.encode("utf-8"), timeout=120)
-    if resp.status_code not in (200, 201):
-        raise RuntimeError(f"{remote_path} HTTP {resp.status_code}: {resp.text[:500]}")
+    payload = body.encode("utf-8")
+    last_error = "unknown upload error"
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = requests.post(url, headers=headers, data=payload, timeout=120)
+            if resp.status_code in (200, 201):
+                return
+            last_error = f"HTTP {resp.status_code}: {resp.text[:500]}"
+            if resp.status_code not in UPLOAD_RETRYABLE_STATUS_CODES:
+                break
+        except requests.RequestException as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+
+        if attempt < max_retries:
+            delay = upload_retry_delay(attempt)
+            print(
+                f"[MANIFEST] Upload retry {attempt}/{max_retries} for {remote_path}: "
+                f"{last_error} | retry in {delay:.1f}s",
+                flush=True,
+            )
+            time.sleep(delay)
+
+    raise RuntimeError(f"{remote_path} upload failed after {max_retries} attempts: {last_error}")
 
 
 def fetch_public_text_object(remote_path: str) -> str | None:
@@ -517,6 +542,24 @@ def list_storage_files_recursive(prefix: str) -> list[str]:
     return sorted(set(files))
 
 
+def list_remote_tile_sets_from_root() -> list[dict[str, object]]:
+    tile_sets_by_name: dict[str, dict[str, object]] = {}
+    for item in list_storage_prefix(""):
+        name = item.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        if is_storage_file(item):
+            continue
+        parsed = parse_tile_set_dir_name(name)
+        if parsed is None:
+            continue
+        tile_sets_by_name[str(parsed["name"])] = parsed
+
+    tile_sets = list(tile_sets_by_name.values())
+    tile_sets.sort(key=tile_set_sort_key, reverse=True)
+    return tile_sets
+
+
 def delete_storage_objects(paths: list[str], batch_size: int = 1000) -> int:
     if not paths:
         return 0
@@ -539,10 +582,9 @@ def cleanup_remote_tile_sets(retention_days: int, dry_run: bool) -> list[str]:
     if not SUPABASE_URL or not SUPABASE_KEY:
         raise RuntimeError("Supabase config missing; cannot clean remote tiles")
 
-    remote_manifest = fetch_public_text_object(MANIFEST_OBJECT)
-    tile_sets = parse_manifest_tile_sets(remote_manifest)
+    tile_sets = list_remote_tile_sets_from_root()
     if not tile_sets:
-        print("[TILE CLEANUP] No valid remote manifest entries; nothing to delete")
+        print("[TILE CLEANUP] No valid remote tile set directories; nothing to delete")
         if not dry_run:
             upload_manifest_from_tile_sets([])
         return []
@@ -553,23 +595,26 @@ def cleanup_remote_tile_sets(retention_days: int, dry_run: bool) -> list[str]:
 
     print(
         f"[TILE CLEANUP] retention={retention_days} days | "
-        f"manifest={len(tile_sets)} kept={len(kept)} expired={len(expired)}"
+        f"remote_dirs={len(tile_sets)} kept={len(kept)} expired={len(expired)}"
     )
 
     removed: list[str] = []
     for item in expired:
         prefix = str(item["name"])
         print(f"[TILE CLEANUP] expired tile set: {prefix}")
+        if dry_run:
+            removed.append(prefix)
+            continue
         files = list_storage_files_recursive(prefix)
         print(f"[TILE CLEANUP] {prefix}: remote files={len(files)}")
-        if files and not dry_run:
+        if files:
             delete_storage_objects(files)
         removed.append(prefix)
 
     if not dry_run:
         upload_manifest_from_tile_sets(kept)
     else:
-        print("[TILE CLEANUP] dry run: storage delete and manifest upload skipped")
+        print("[TILE CLEANUP] dry run: file listing, storage delete and manifest upload skipped")
     return removed
 
 
@@ -589,10 +634,9 @@ def cleanup_remote_tile_sets_by_date_range(date_from: str, date_to: str, dry_run
     if end < start:
         raise ValueError("--delete-date-to must be greater than or equal to --delete-date-from")
 
-    remote_manifest = fetch_public_text_object(MANIFEST_OBJECT)
-    tile_sets = parse_manifest_tile_sets(remote_manifest)
+    tile_sets = list_remote_tile_sets_from_root()
     if not tile_sets:
-        print("[TILE CLEANUP] No valid remote manifest entries; nothing to delete")
+        print("[TILE CLEANUP] No valid remote tile set directories; nothing to delete")
         if not dry_run:
             upload_manifest_from_tile_sets([])
         return []
@@ -606,23 +650,26 @@ def cleanup_remote_tile_sets_by_date_range(date_from: str, date_to: str, dry_run
 
     print(
         f"[TILE CLEANUP] date range={date_from}..{date_to} | "
-        f"manifest={len(tile_sets)} kept={len(kept)} matched={len(expired)}"
+        f"remote_dirs={len(tile_sets)} kept={len(kept)} matched={len(expired)}"
     )
 
     removed: list[str] = []
     for item in expired:
         prefix = str(item["name"])
         print(f"[TILE CLEANUP] matched tile set: {prefix}")
+        if dry_run:
+            removed.append(prefix)
+            continue
         files = list_storage_files_recursive(prefix)
         print(f"[TILE CLEANUP] {prefix}: remote files={len(files)}")
-        if files and not dry_run:
+        if files:
             delete_storage_objects(files)
         removed.append(prefix)
 
     if not dry_run:
         upload_manifest_from_tile_sets(kept)
     else:
-        print("[TILE CLEANUP] dry run: storage delete and manifest upload skipped")
+        print("[TILE CLEANUP] dry run: file listing, storage delete and manifest upload skipped")
     return removed
 
 
@@ -655,11 +702,13 @@ def upload_tiles_to_supabase(
         f"(zooms={zooms or 'all'}, workers={workers}, file_retries={max_file_retries}, rounds={max_rounds})"
     )
 
+    compact = compact_logs_enabled()
     for round_no in range(1, max_rounds + 1):
         wait_for_supabase_dns()
         round_total = len(pending)
         round_failures: list[tuple[Path, str, str]] = []
-        print(f"[UPLOAD] {species}: round {round_no}/{max_rounds}, pending={round_total}", flush=True)
+        if round_no > 1 or not compact:
+            print(f"[UPLOAD] {species}: round {round_no}/{max_rounds}, pending={round_total}", flush=True)
 
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {
@@ -675,7 +724,7 @@ def upload_tiles_to_supabase(
                 else:
                     round_failures.append((local_path, remote_path, msg))
                     print(f"[FAIL] {msg}")
-                if done % 250 == 0 or done == round_total:
+                if not compact and (done % 250 == 0 or done == round_total):
                     print(
                         f"  round={round_no} {done}/{round_total} total_ok={ok_count} "
                         f"round_fail={len(round_failures)}",
@@ -685,6 +734,7 @@ def upload_tiles_to_supabase(
         if not round_failures:
             failures = []
             pending = []
+            print(f"[UPLOAD] {species}: ok={ok_count}/{total}")
             break
 
         failures = [msg for _, _, msg in round_failures]
@@ -731,16 +781,14 @@ def build_species_tiles(
     color_tif = species_work_dir / f"{species}_color.tif"
     colormap_txt = species_work_dir / "funghi_colormap.txt"
 
-    print("\n" + "=" * 72)
-    print(f"[{species.upper()}] source={source_mode} zooms={zooms}")
-    print(f"Work dir : {species_work_dir}")
-    print(f"Tiles dir: {species_tile_dir}")
-    print(f"Keep existing tiles: {keep_existing_tiles}")
-    print("=" * 72)
+    print(
+        f"\n[TILES] species={species} source={source_mode} zooms={zooms} "
+        f"keep_existing={keep_existing_tiles}"
+    )
 
     write_colormap_file(colormap_txt)
 
-    print("\n[1/4] Build score GeoTIFF")
+    print("[1/4] Build score GeoTIFF")
     if source_mode == "index-nc":
         translate_index_netcdf(index_nc, species, raw_tif)
     else:
@@ -749,16 +797,16 @@ def build_species_tiles(
         geojson_path = geojson_dir / f"{species}_lod{source_lod}.geojson"
         rasterize_geojson(geojson_path, raw_tif, LOD_STEPS[source_lod])
 
-    print("\n[2/4] Apply RGBA colormap")
+    print("[2/4] Apply RGBA colormap")
     colorize_tif(raw_tif, colormap_txt, color_tif)
 
-    print("\n[3/4] Generate XYZ tiles")
+    print("[3/4] Generate XYZ tiles")
     generate_xyz_tiles(color_tif, species_tile_dir, zooms, gdal_processes)
 
     if dry_run:
-        print(f"\n[4/4] Dry run: upload skipped. Tiles at {species_tile_dir.resolve()}")
+        print(f"[4/4] Dry run: upload skipped. Tiles at {species_tile_dir.resolve()}")
     else:
-        print("\n[4/4] Upload Supabase")
+        print("[4/4] Upload Supabase")
         upload_zooms = zooms if keep_existing_tiles else None
         upload_tiles_to_supabase(date, version, species, species_tile_dir, upload_workers, zooms=upload_zooms)
 
@@ -838,18 +886,11 @@ def main() -> None:
     work_dir.mkdir(parents=True, exist_ok=True)
     tile_dir.mkdir(parents=True, exist_ok=True)
 
-    print("=" * 72)
     print("BUILD FUNGI INDEX TILES")
-    print(f"Date/version  : {args.date}_v{args.version}")
-    print(f"Species       : {args.species}")
-    print(f"Source mode   : {args.source_mode}")
-    print(f"Index NetCDF  : {index_nc.resolve() if args.source_mode == 'index-nc' else '[unused]'}")
-    print(f"Zooms         : {args.zoom}")
-    print(f"Tile dir      : {tile_dir.resolve()}")
-    print(f"Dry run       : {args.dry_run}")
-    print(f"Upload only   : {args.upload_only}")
-    print(f"Keep existing : {args.keep_existing_tiles}")
-    print("=" * 72)
+    print(
+        f"tile_set={args.date}_v{args.version} species={args.species} zooms={args.zoom} "
+        f"source={args.source_mode} dry_run={args.dry_run} upload_only={args.upload_only}"
+    )
 
     check_environment(dry_run=args.dry_run)
 

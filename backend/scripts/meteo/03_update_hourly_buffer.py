@@ -179,7 +179,47 @@ def deduplicate_latest_run_wins(ds: xr.Dataset) -> xr.Dataset:
     keep_pos = (n - 1 - reverse_first_idx)
     keep_pos.sort()
 
-    out = ds_sorted.isel(valid_time=keep_pos)
+    out = ds_sorted.isel(valid_time=keep_pos).copy(deep=True)
+    unique_valid = valid_sorted[keep_pos]
+
+    # RUC does not publish every variable used by the index. For duplicate
+    # valid_time rows, keep the newest finite value per variable/cell instead
+    # of replacing an older ICON-D2 value with a newer RUC NaN.
+    for var_name, da in ds_sorted.data_vars.items():
+        if "valid_time" not in da.dims:
+            continue
+        axis = da.get_axis_num("valid_time")
+        if axis != 0:
+            da = da.transpose("valid_time", ...)
+
+        values = da.values
+        if values.dtype.kind not in {"f", "i", "u"}:
+            continue
+
+        resolved = []
+        for vt in unique_valid:
+            group_values = values[valid_sorted == vt]
+            latest = group_values[-1]
+            if group_values.shape[0] == 1:
+                resolved.append(latest)
+                continue
+            finite = np.isfinite(group_values)
+            if finite.all():
+                resolved.append(latest)
+                continue
+            reversed_values = group_values[::-1]
+            reversed_finite = finite[::-1]
+            first_valid_pos = np.argmax(reversed_finite, axis=0)
+            has_valid = np.any(reversed_finite, axis=0)
+            chosen = np.take_along_axis(
+                reversed_values,
+                np.expand_dims(first_valid_pos, axis=0),
+                axis=0,
+            )[0]
+            chosen = np.where(has_valid, chosen, latest)
+            resolved.append(chosen.astype(values.dtype, copy=False))
+
+        out[var_name].values = np.stack(resolved, axis=0)
     return out
 
 
@@ -238,10 +278,10 @@ def merge_into_buffer(
     merged.attrs.update(
         title="Rolling hourly weather buffer for mushroom index pipeline",
         summary=(
-            "Short rolling hourly buffer built by merging ICON-D2 single-run hourly NetCDF files "
+            "Short rolling hourly buffer built by merging single-run hourly NetCDF files "
             "and resolving duplicate valid_time with latest_run_wins."
         ),
-        source="DWD ICON-D2 open data",
+        source=ds_new.attrs.get("source", ds_buffer.attrs.get("source", "DWD ICON-D2 open data") if ds_buffer is not None else "DWD ICON-D2 open data"),
         duplicate_valid_time_policy=DUPLICATE_VALID_TIME_POLICY,
         rolling_hourly_window_hours=int(window_hours),
         created_utc=datetime.now(UTC).isoformat(),

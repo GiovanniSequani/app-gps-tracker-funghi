@@ -1,10 +1,31 @@
 from __future__ import annotations
 
-import numpy as np
 import xarray as xr
 
-from backend.config.index_config import TRIGGER_LAG_DAYS, TRIGGER_RAIN_WINDOW_DAYS
+from backend.config.index_config import (
+    RECOVERY_COMPONENT_GATE_BASE,
+    RECOVERY_DRY_HISTORY_SCORE_RANGE,
+    RECOVERY_LAG_WEIGHTS,
+    RECOVERY_MAX_PRESENCE_BOOST,
+    RECOVERY_PRESENCE_SCORE_THRESHOLD,
+    RECOVERY_RAIN_SEED_BASE_SCORE_RANGE,
+    RECOVERY_RAIN_SEED_HABITAT_RANGE,
+    RECOVERY_RAIN_SEED_MAX_BOOST,
+    RECOVERY_RAIN_SEED_MOISTURE_RANGE,
+    RECOVERY_RAIN_SEED_STRESS_RANGE,
+    RECOVERY_RAIN_SEED_TARGET_SCORE,
+    RECOVERY_RAIN_SEED_TRIGGER_RANGE,
+    TRIGGER_LAG_DAYS,
+    TRIGGER_RAIN_WINDOW_DAYS,
+)
 from backend.config.species_config import SPECIES_CONFIG
+
+RecoveryHistory = dict[str, list[tuple[int, xr.Dataset]]]
+
+
+def _drop_auxiliary_coords(value):
+    drop_names = [name for name in value.coords if name not in value.dims]
+    return value.drop_vars(drop_names) if drop_names else value
 
 
 def trapezoid(x: xr.DataArray, lo_bad: float, lo_ok: float, hi_ok: float, hi_bad: float) -> xr.DataArray:
@@ -19,6 +40,11 @@ def upper_penalty(x: xr.DataArray, ok: float, bad: float) -> xr.DataArray:
 
 def lower_penalty(x: xr.DataArray, ok: float, bad: float) -> xr.DataArray:
     return ((ok - x) / max(ok - bad, 1e-6)).clip(0.0, 1.0)
+
+
+def smoothstep(x: xr.DataArray, lo: float, hi: float) -> xr.DataArray:
+    t = ((x - lo) / max(hi - lo, 1e-6)).clip(0.0, 1.0)
+    return (t * t * (3.0 - 2.0 * t)).clip(0.0, 1.0)
 
 
 def _mean_window(ds: xr.Dataset, var: str, start: int, end: int) -> xr.DataArray:
@@ -161,12 +187,193 @@ def compute_dynamic_scores(ds: xr.Dataset, species: str) -> xr.Dataset:
 
     lagged = xr.concat(candidates, dim="lag")
     best_idx = lagged["potential"].argmax("lag")
-    out = lagged.max("lag")
-    out["best_lag_days"] = lagged["lag"].isel(lag=best_idx).astype("float32")
+    best_lag_days = _drop_auxiliary_coords(lagged["lag"].isel(lag=best_idx)).astype("float32")
+    out = _drop_auxiliary_coords(lagged.max("lag"))
+    out["best_lag_days"] = best_lag_days
     return out
 
 
-def compute_species_index(ds: xr.Dataset, species: str) -> xr.Dataset:
+def _history_var(history_ds: xr.Dataset, species: str, suffix: str) -> xr.DataArray | None:
+    name = f"{species}_{suffix}"
+    return _drop_auxiliary_coords(history_ds[name]) if name in history_ds else None
+
+
+def _history_base_score(history_ds: xr.Dataset, species: str) -> xr.DataArray | None:
+    base_score = _history_var(history_ds, species, "base_score")
+    return base_score if base_score is not None else _history_var(history_ds, species, "score")
+
+
+def _component_gate(history_ds: xr.Dataset, species: str, reference: xr.DataArray) -> xr.DataArray:
+    moisture = _history_var(history_ds, species, "moisture")
+    stress = _history_var(history_ds, species, "stress")
+    if moisture is None or stress is None:
+        return xr.ones_like(reference, dtype="float32")
+
+    quality = (0.55 * moisture + 0.45 * stress).clip(0.0, 1.0)
+    gate = (RECOVERY_COMPONENT_GATE_BASE + (1.0 - RECOVERY_COMPONENT_GATE_BASE) * quality).clip(
+        RECOVERY_COMPONENT_GATE_BASE,
+        1.0,
+    )
+    return gate.astype("float32")
+
+
+def _max_dataarray(values: list[xr.DataArray], reference: xr.DataArray) -> xr.DataArray:
+    if not values:
+        return xr.zeros_like(reference, dtype="float32")
+    out = values[0]
+    for value in values[1:]:
+        out = xr.where(value > out, value, out)
+    return out.clip(0.0, 100.0).astype("float32")
+
+
+def _presence_carryover(
+    base_score: xr.DataArray,
+    species: str,
+    history: list[tuple[int, xr.Dataset]],
+) -> xr.DataArray:
+    candidates: list[xr.DataArray] = []
+    for lag, history_ds in history:
+        if lag < 1 or lag > len(RECOVERY_LAG_WEIGHTS):
+            continue
+        source_score = _history_base_score(history_ds, species)
+        if source_score is None:
+            continue
+
+        source_score, current_base = xr.align(source_score, base_score, join="exact")
+        gate = _component_gate(history_ds, species, current_base)
+        gate, current_base = xr.align(gate, current_base, join="exact")
+        weight = RECOVERY_LAG_WEIGHTS[lag - 1]
+        candidate = xr.where(
+            source_score >= RECOVERY_PRESENCE_SCORE_THRESHOLD,
+            (source_score - current_base).clip(min=0.0) * weight * gate,
+            0.0,
+        ).clip(0.0, RECOVERY_MAX_PRESENCE_BOOST)
+        candidates.append(candidate)
+
+    return _max_dataarray(candidates, base_score)
+
+
+def _recent_history_peak(
+    species: str,
+    history: list[tuple[int, xr.Dataset]],
+    reference: xr.DataArray,
+) -> xr.DataArray | None:
+    scores: list[xr.DataArray] = []
+    for _, history_ds in history:
+        source_score = _history_base_score(history_ds, species)
+        if source_score is None:
+            continue
+        source_score, _ = xr.align(source_score, reference, join="exact")
+        scores.append(source_score)
+    if not scores:
+        return None
+    return _max_dataarray(scores, reference)
+
+
+def _rain_seed_current(
+    base_score: xr.DataArray,
+    habitat: xr.DataArray,
+    dynamic: xr.Dataset,
+    recent_peak: xr.DataArray | None,
+) -> xr.DataArray:
+    if recent_peak is None:
+        return xr.zeros_like(base_score, dtype="float32")
+
+    dry_factor = 1.0 - smoothstep(recent_peak, *RECOVERY_DRY_HISTORY_SCORE_RANGE)
+    base_factor = smoothstep(base_score, *RECOVERY_RAIN_SEED_BASE_SCORE_RANGE)
+    trigger_factor = smoothstep(dynamic["trigger"], *RECOVERY_RAIN_SEED_TRIGGER_RANGE)
+    moisture_factor = smoothstep(dynamic["moisture"], *RECOVERY_RAIN_SEED_MOISTURE_RANGE)
+    stress_factor = smoothstep(dynamic["stress"], *RECOVERY_RAIN_SEED_STRESS_RANGE)
+    habitat_factor = smoothstep(habitat, *RECOVERY_RAIN_SEED_HABITAT_RANGE)
+
+    restart_signal = (
+        dry_factor
+        * base_factor
+        * trigger_factor
+        * moisture_factor
+        * stress_factor
+        * habitat_factor
+    ).clip(0.0, 1.0)
+    seed_headroom = (RECOVERY_RAIN_SEED_TARGET_SCORE - base_score).clip(
+        0.0,
+        RECOVERY_RAIN_SEED_MAX_BOOST,
+    )
+    return _drop_auxiliary_coords(
+        (seed_headroom * restart_signal).clip(0.0, RECOVERY_RAIN_SEED_MAX_BOOST).astype("float32")
+    )
+
+
+def _rain_seed_carryover(
+    base_score: xr.DataArray,
+    species: str,
+    history: list[tuple[int, xr.Dataset]],
+) -> xr.DataArray:
+    candidates: list[xr.DataArray] = []
+    for lag, history_ds in history:
+        if lag < 1 or lag > len(RECOVERY_LAG_WEIGHTS):
+            continue
+        past_seed = _history_var(history_ds, species, "rain_recovery_seed")
+        past_base = _history_base_score(history_ds, species)
+        if past_seed is None or past_base is None:
+            continue
+
+        past_seed, past_base, current_base = xr.align(past_seed, past_base, base_score, join="exact")
+        past_seed_target = past_base + past_seed
+        candidate = (past_seed_target - current_base).clip(min=0.0) * RECOVERY_LAG_WEIGHTS[lag - 1]
+        candidates.append(candidate)
+
+    return _max_dataarray(candidates, base_score)
+
+
+def _compute_recovery(
+    base_score: xr.DataArray,
+    habitat: xr.DataArray,
+    dynamic: xr.Dataset,
+    species: str,
+    history: list[tuple[int, xr.Dataset]],
+    enable_recovery: bool,
+) -> xr.Dataset:
+    if not enable_recovery:
+        zero = xr.zeros_like(base_score, dtype="float32")
+        one = xr.ones_like(base_score, dtype="float32")
+        return xr.Dataset(
+            {
+                "presence_carryover": zero,
+                "rain_recovery_seed": zero,
+                "recovery": one,
+                "score": base_score.astype("float32"),
+            }
+        )
+
+    presence = _presence_carryover(base_score, species, history)
+    recent_peak = _recent_history_peak(species, history, base_score)
+    rain_seed_current = _rain_seed_current(base_score, habitat, dynamic, recent_peak)
+    rain_seed_history = _rain_seed_carryover(base_score, species, history)
+    rain_seed = xr.where(rain_seed_current > rain_seed_history, rain_seed_current, rain_seed_history).astype("float32")
+
+    boost = xr.where(presence > rain_seed, presence, rain_seed)
+    final_score = (base_score + boost).clip(0.0, 100.0).astype("float32")
+    recovery = xr.where(base_score > 0.01, final_score / base_score, 1.0).clip(1.0, 100.0).astype("float32")
+    presence = _drop_auxiliary_coords(presence)
+    rain_seed = _drop_auxiliary_coords(rain_seed)
+    recovery = _drop_auxiliary_coords(recovery)
+    final_score = _drop_auxiliary_coords(final_score)
+    return xr.Dataset(
+        {
+            "presence_carryover": presence.astype("float32"),
+            "rain_recovery_seed": rain_seed.astype("float32"),
+            "recovery": recovery,
+            "score": final_score,
+        }
+    )
+
+
+def compute_species_index(
+    ds: xr.Dataset,
+    species: str,
+    recovery_history: RecoveryHistory | None = None,
+    enable_recovery: bool = True,
+) -> xr.Dataset:
     if species not in SPECIES_CONFIG:
         raise ValueError(f"unknown species: {species}")
 
@@ -182,39 +389,67 @@ def compute_species_index(ds: xr.Dataset, species: str) -> xr.Dataset:
         + weights["stress"] * dynamic["stress"]
     ) / (weights["trigger"] + weights["incubation"] + weights["moisture"] + weights["stress"])
 
-    recovery = xr.ones_like(habitat, dtype="float32")
     raw_score = habitat * dynamic["potential"]
     blended_score = habitat * dynamic_mix * dynamic["potential"] ** 0.45
-    final_score = (100.0 * (0.72 * raw_score + 0.28 * blended_score) * recovery).clip(0.0, 100.0)
+    base_score = (100.0 * (0.72 * raw_score + 0.28 * blended_score)).clip(0.0, 100.0).astype("float32")
+    recovery = _compute_recovery(
+        base_score=base_score,
+        habitat=habitat,
+        dynamic=dynamic,
+        species=species,
+        history=(recovery_history or {}).get(species, []),
+        enable_recovery=enable_recovery,
+    )
 
     prefix = species
     out = xr.Dataset(
         {
-            f"{prefix}_score": final_score.astype("float32"),
+            f"{prefix}_score": recovery["score"].astype("float32"),
+            f"{prefix}_base_score": base_score.astype("float32"),
             f"{prefix}_habitat": habitat.astype("float32"),
             f"{prefix}_trigger": dynamic["trigger"].astype("float32"),
             f"{prefix}_incubation": dynamic["incubation"].astype("float32"),
             f"{prefix}_moisture": dynamic["moisture"].astype("float32"),
             f"{prefix}_stress": dynamic["stress"].astype("float32"),
-            f"{prefix}_recovery": recovery.astype("float32"),
+            f"{prefix}_presence_carryover": recovery["presence_carryover"].astype("float32"),
+            f"{prefix}_rain_recovery_seed": recovery["rain_recovery_seed"].astype("float32"),
+            f"{prefix}_recovery": recovery["recovery"].astype("float32"),
             f"{prefix}_best_lag_days": dynamic["best_lag_days"].astype("float32"),
         }
     )
     out.attrs.update(
         species=species,
-        scoring_version="0.1.0",
-        recovery_note="Neutral recovery factor. Previous-flush depletion is not active yet.",
+        scoring_version="0.2.0",
+        recovery_note=(
+            "Temporal recovery can only raise the base score. Presence carryover uses recent high scores; "
+            "rain recovery seed supports restart after dry low-score periods."
+        ),
     )
     return out
 
 
-def compute_all_indices(ds: xr.Dataset, species_list: list[str]) -> xr.Dataset:
-    outputs = [compute_species_index(ds, species) for species in species_list]
+def compute_all_indices(
+    ds: xr.Dataset,
+    species_list: list[str],
+    recovery_history: RecoveryHistory | None = None,
+    enable_recovery: bool = True,
+) -> xr.Dataset:
+    outputs = [
+        compute_species_index(
+            ds,
+            species,
+            recovery_history=recovery_history,
+            enable_recovery=enable_recovery,
+        )
+        for species in species_list
+    ]
     out = xr.merge(outputs, compat="override")
     out.attrs.pop("species", None)
     out.attrs.update(
         species_list=",".join(species_list),
         target_date=ds.attrs.get("target_date", str(ds["time"].values[-1])[:10]),
         description="Funghi Tracker mushroom suitability index, values 0-100",
+        scoring_version="0.2.0",
+        recovery_enabled=str(bool(enable_recovery)).lower(),
     )
     return out

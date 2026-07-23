@@ -21,20 +21,19 @@ function readDotEnv() {
 }
 
 const env = { ...readDotEnv(), ...process.env };
-const appJson = require('./app.json');
 const defaultSupabaseUrl = 'https://ovdfsehovsrdzcoqdlfh.supabase.co';
 const isValidSupabaseUrl = (value) =>
   /^https:\/\/[a-z0-9]+\.supabase\.co$/i.test(value || '') &&
   !value.includes('xxxxx') &&
   !value.includes('your-project');
 
-module.exports = {
-  ...appJson.expo,
+module.exports = ({ config }) => ({
+  ...config,
   extra: {
-    ...appJson.expo.extra,
+    ...config.extra,
     supabaseUrl: isValidSupabaseUrl(env.EXPO_PUBLIC_SUPABASE_URL)
       ? env.EXPO_PUBLIC_SUPABASE_URL
       : defaultSupabaseUrl,
     supabaseAnonKey: env.EXPO_PUBLIC_SUPABASE_ANON_KEY,
   },
-};
+});

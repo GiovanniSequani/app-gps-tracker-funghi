@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from backend.config.domain import BBOX, TARGET_CRS, TARGET_STEP_DEG
+from backend.config.paths import BACKEND_DIR
 
 
 METEO_SOURCE = "ICON_D2"
@@ -18,8 +17,6 @@ DUPLICATE_VALID_TIME_POLICY = "latest_run_wins"
 METEO_TARGET_CRS = TARGET_CRS
 METEO_TARGET_STEP_DEG = TARGET_STEP_DEG
 METEO_BBOX = BBOX
-
-BACKEND_DIR = Path("backend")
 
 RAW_METEO_DIR = BACKEND_DIR / "data" / "raw" / "meteo"
 INTERMEDIATE_METEO_DIR = BACKEND_DIR / "data" / "intermediate" / "meteo"

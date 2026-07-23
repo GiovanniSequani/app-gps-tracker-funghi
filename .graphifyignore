@@ -1,0 +1,53 @@
+# Output Graphify
+graphify-out/
+
+# Dipendenze / build / metadata generati
+node_modules/
+.git/
+.expo/
+dist/
+android/
+package-lock.json
+tiles_local/
+backend/data/
+backend/logs/
+backend/outputs/
+backend/tmp/
+legacy-funghi-index/
+
+# Raster / meteo / geospaziali / scientifici
+*.tif
+*.tiff
+*.nc
+*.nc4
+*.grib
+*.grb
+*.grb2
+*.h5
+*.hdf
+*.hdf5
+*.zarr
+*.parquet
+*.feather
+*.csv
+*.jsonl
+*.geojson
+*.gpkg
+*.shp
+*.dbf
+*.sqlite
+*.sqlite3
+*.duckdb
+
+# Modelli / binari / immagini pesanti
+*.pt
+*.pth
+*.onnx
+*.pkl
+*.joblib
+*.bin
+*.zip
+*.tar
+*.tar.gz
+*.7z
+*.rar

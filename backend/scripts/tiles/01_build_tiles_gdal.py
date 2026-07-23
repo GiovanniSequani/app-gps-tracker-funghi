@@ -39,17 +39,7 @@ SUPABASE_KEY = None
 
 
 def load_env(env_file: str | None = None) -> None:
-    candidates = []
-    if env_file:
-        candidates.append(Path(env_file))
-    candidates.extend(
-        [
-            ROOT_DIR / ".env",
-            ROOT_DIR / "backend" / ".env",
-            ROOT_DIR / "backend" / "scripts" / "tiles" / ".env",
-            ROOT_DIR / "legacy-funghi-index" / ".env",
-        ]
-    )
+    candidates = [Path(env_file)] if env_file else [ROOT_DIR / "backend" / ".env"]
     for path in candidates:
         if path.is_file():
             load_dotenv(path)

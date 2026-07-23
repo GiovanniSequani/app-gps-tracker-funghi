@@ -344,7 +344,11 @@ def _main() -> None:
     parser.add_argument("--tile-zooms", nargs="+", type=int, default=[3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
     parser.add_argument("--tile-retention-days", type=int, default=30)
     parser.add_argument("--skip-tile-cleanup", action="store_true", help="Do not delete old remote tile sets from Supabase Storage.")
-    parser.add_argument("--env-file", default=str(ROOT_DIR / ".env"), help="Env file passed to tile upload script.")
+    parser.add_argument(
+        "--env-file",
+        default=str(ROOT_DIR / "backend" / ".env"),
+        help="Env file passed to tile upload script.",
+    )
     args = parser.parse_args()
 
     if not args.skip_meteo:

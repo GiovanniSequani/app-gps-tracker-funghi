@@ -251,17 +251,66 @@ def complete_historic_dates_after(date_after: str | None, date_to: str) -> list[
     return sorted(set(out))
 
 
-def publishable_historic_dates_after(
+def complete_rolling_dates_until(path: Path, date_to: str) -> list[str]:
+    if not path.is_file():
+        return []
+
+    ds = xr.open_dataset(path)
+    try:
+        ds.load()
+        if "time" not in ds.coords:
+            return []
+        dates = {
+            str(value)[:10]
+            for value in ds["time"].values
+            if str(value) != "NaT" and str(value)[:10] <= date_to
+        }
+    finally:
+        ds.close()
+
+    valid_dates = []
+    for date in dates:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            continue
+        valid_dates.append(date)
+    return sorted(valid_dates)
+
+
+def complete_candidate_dates_after(date_after: str | None, date_to: str) -> list[str]:
+    dates = set(complete_historic_dates_after(date_after, date_to))
+    dates.update(complete_rolling_dates_until(ROLLING_METEO_NC, date_to))
+    return sorted(
+        date
+        for date in dates
+        if date_after is None or date > date_after
+    )
+
+
+def ensure_historic_snapshot_for_date(date: str) -> Path:
+    snapshot_name = f"meteo_recent_003deg_{date.replace('-', '')}.nc"
+    snapshot_path = FINAL_METEO_HISTORIC_DIR / snapshot_name
+    if snapshot_path.exists():
+        return snapshot_path
+
+    FINAL_METEO_HISTORIC_DIR.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ROLLING_METEO_NC, snapshot_path)
+    print(f"[SNAPSHOT] created={snapshot_path.name}")
+    return snapshot_path
+
+
+def publishable_unpublished_dates_until(
     date_after: str | None,
     date_to: str,
     processed_runs: set[str],
     publication_model: str,
     ruc_min_lead_hours: int,
 ) -> list[str]:
-    dates = complete_historic_dates_after(date_after, date_to)
     return [
         date
-        for date in dates
+        for date in complete_candidate_dates_after(date_after, date_to)
+        if not is_fully_published(date)
         if publication_gate(
             date,
             processed_runs,
@@ -383,7 +432,7 @@ def _main() -> None:
         publish_dates = [pipeline_date] if args.force or not is_fully_published(pipeline_date) else []
     else:
         last_published = latest_fully_published_date()
-        publish_dates = publishable_historic_dates_after(
+        publish_dates = publishable_unpublished_dates_until(
             last_published,
             rolling_date,
             processed_runs,
@@ -393,9 +442,7 @@ def _main() -> None:
 
         if should_publish:
             if not snapshot_exists:
-                FINAL_METEO_HISTORIC_DIR.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(ROLLING_METEO_NC, snapshot_path)
-                print(f"[SNAPSHOT] created={snapshot_path.name}")
+                ensure_historic_snapshot_for_date(rolling_date)
             if rolling_date not in publish_dates and (args.force or not is_fully_published(rolling_date)):
                 publish_dates.append(rolling_date)
 
@@ -419,6 +466,8 @@ def _main() -> None:
         print(f"[PUBLISH] Publishing day(s): {publish_dates}")
 
     for date in publish_dates:
+        if not args.date:
+            ensure_historic_snapshot_for_date(date)
         publish_date(date)
 
     if args.skip_tiles:

@@ -50,6 +50,7 @@ export function IndiceLayerTiles({ activeLayer, date, version, opacity = 0.85 }:
       <RasterLayer
         id={layerId}
         sourceID={sourceId}
+        belowLayerID={'esri-places-layer'}
         style={{ rasterOpacity: opacity }}
       />
     </RasterSource>

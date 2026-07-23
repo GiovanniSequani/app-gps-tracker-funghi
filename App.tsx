@@ -9,10 +9,12 @@ import MapLibreGL, {
   ShapeSource,
   LineLayer,
   CircleLayer,
+  MarkerView,
 } from '@maplibre/maplibre-react-native';
 import type { CameraStop } from '@maplibre/maplibre-react-native';
-import { Trash2 } from 'lucide-react-native';
+import { Check, CloudSun, Copy, Trash2, X } from 'lucide-react-native';
 import * as Location from 'expo-location';
+import * as Clipboard from 'expo-clipboard';
 import * as TaskManager from 'expo-task-manager';
 import { File, Paths } from 'expo-file-system';
 import * as FileSystemLegacy from 'expo-file-system/legacy';
@@ -69,6 +71,10 @@ type TileSet = {
   version: string;
 };
 type CameraCommand = CameraStop & { id: number };
+type SelectedMapPoint = {
+  longitude: number;
+  latitude: number;
+};
 
 // ─── Costanti ─────────────────────────────────────────────────────────────────
 const Tab = createBottomTabNavigator();
@@ -206,12 +212,27 @@ const SATELLITE_STYLE = {
       maxzoom: MAP_MAX_ZOOM_LEVEL,
       attribution: 'Esri, DigitalGlobe, GeoEye',
     },
+    'esri-places': {
+      type: 'raster' as const,
+      tiles: [
+        'https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+      ],
+      tileSize: 256,
+      minzoom: MAP_MIN_ZOOM_LEVEL,
+      maxzoom: MAP_MAX_ZOOM_LEVEL,
+      attribution: 'Esri',
+    },
   },
   layers: [
     {
       id: 'esri-satellite-layer',
       type: 'raster' as const,
       source: 'esri-satellite',
+    },
+    {
+      id: 'esri-places-layer',
+      type: 'raster' as const,
+      source: 'esri-places',
     },
   ],
 };
@@ -827,6 +848,44 @@ export default function App() {
 // ══════════════════════════════════════════════════════════════════════════════
 const CENTER_ZOOM_LEVEL = 16;
 
+function MapCoordinatePopup(props: {
+  point: SelectedMapPoint;
+  copied: boolean;
+  onCopy: () => void;
+  onClose: () => void;
+}) {
+  const { point, copied, onCopy, onClose } = props;
+  return (
+    <View style={mStyles.coordinatePopupAnchor}>
+      <View style={mStyles.coordinatePopupPoint} />
+      <View style={mStyles.coordinatePopupCard}>
+        <View style={mStyles.coordinatePopupHeader}>
+          <Text style={mStyles.coordinatePopupTitle}>Coordinate</Text>
+          <TouchableOpacity onPress={onClose} style={mStyles.coordinatePopupIconButton}>
+            <X size={16} color={UI.textSec} />
+          </TouchableOpacity>
+        </View>
+        <View style={mStyles.coordinatePopupRow}>
+          <Text style={mStyles.coordinatePopupCoordinates} numberOfLines={1}>
+            {point.latitude.toFixed(5)}, {point.longitude.toFixed(5)}
+          </Text>
+          <TouchableOpacity
+            onPress={onCopy}
+            style={mStyles.coordinatePopupIconButton}
+            accessibilityLabel={copied ? 'Coordinate copiate' : 'Copia coordinate'}
+          >
+            {copied ? <Check size={16} color={UI.greenBri} /> : <Copy size={16} color={UI.textPri} />}
+          </TouchableOpacity>
+        </View>
+        <TouchableOpacity onPress={() => {}} style={mStyles.coordinatePopupWeatherButton}>
+          <CloudSun size={17} color={UI.textPri} />
+          <Text style={mStyles.coordinatePopupWeatherText}>Mostra dati meteo</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+}
+
 const MemoMapCanvas = React.memo(function MemoMapCanvas(props: any) {
   const {
     cameraCommand,
@@ -847,6 +906,24 @@ const MemoMapCanvas = React.memo(function MemoMapCanvas(props: any) {
     highlightedRoute,
   } = props;
 
+  const [selectedMapPoint, setSelectedMapPoint] = React.useState<SelectedMapPoint | null>(null);
+  const [coordinatesCopied, setCoordinatesCopied] = React.useState(false);
+
+  const handleMapLongPress = React.useCallback((feature: GeoJSON.Feature) => {
+    if (feature.geometry.type !== 'Point') return;
+    const [longitude, latitude] = feature.geometry.coordinates;
+    if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) return;
+    setSelectedMapPoint({ longitude, latitude });
+    setCoordinatesCopied(false);
+  }, []);
+
+  const copySelectedCoordinates = React.useCallback(async () => {
+    if (!selectedMapPoint) return;
+    const value = selectedMapPoint.latitude.toFixed(5) + ', ' + selectedMapPoint.longitude.toFixed(5);
+    await Clipboard.setStringAsync(value);
+    setCoordinatesCopied(true);
+  }, [selectedMapPoint]);
+
   return (
     <MapView
       style={StyleSheet.absoluteFillObject}
@@ -854,6 +931,7 @@ const MemoMapCanvas = React.memo(function MemoMapCanvas(props: any) {
       logoEnabled={false}
       attributionEnabled={false}
       compassEnabled={false}
+      onLongPress={handleMapLongPress}
       onRegionWillChange={() => { followLocationRef.current = false; }}
     >
       <Camera
@@ -967,6 +1045,20 @@ const MemoMapCanvas = React.memo(function MemoMapCanvas(props: any) {
           </React.Fragment>
         );
       })}
+      {selectedMapPoint && (
+        <MarkerView
+          coordinate={[selectedMapPoint.longitude, selectedMapPoint.latitude]}
+          anchor={{ x: 0.02, y: 0.5 }}
+          allowOverlap
+        >
+          <MapCoordinatePopup
+            point={selectedMapPoint}
+            copied={coordinatesCopied}
+            onCopy={copySelectedCoordinates}
+            onClose={() => setSelectedMapPoint(null)}
+          />
+        </MarkerView>
+      )}
     </MapView>
   );
 });
@@ -1618,6 +1710,16 @@ const mStyles = StyleSheet.create({
   routeRowTouch: { flex: 1, flexDirection: 'row', alignItems: 'center', paddingVertical: 3, gap: 8 },
   routeTrackDot: { width: 14, height: 3, borderRadius: 2, backgroundColor: '#1e8fff' },
   routeRowName: { flex: 1, color: UI.textPri, fontSize: 11, fontWeight: '500' },
+  coordinatePopupAnchor: { width: 232, flexDirection: 'row', alignItems: 'center' },
+  coordinatePopupPoint: { width: 10, height: 10, borderRadius: 5, marginRight: 7, backgroundColor: UI.greenBri, borderWidth: 2, borderColor: '#fff' },
+  coordinatePopupCard: { width: 215, padding: 10, gap: 8, borderWidth: 1, borderColor: UI.borderHi, borderRadius: 8, backgroundColor: 'rgba(10,17,11,0.96)', shadowColor: '#000', shadowOpacity: 0.35, shadowRadius: 8, shadowOffset: { width: 0, height: 4 }, elevation: 8 },
+  coordinatePopupHeader: { height: 24, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  coordinatePopupTitle: { color: UI.textSec, fontSize: 10, fontWeight: '900', textTransform: 'uppercase' },
+  coordinatePopupRow: { minHeight: 32, flexDirection: 'row', alignItems: 'center', gap: 6 },
+  coordinatePopupCoordinates: { flex: 1, color: UI.textPri, fontSize: 13, fontWeight: '700', fontVariant: ['tabular-nums'] },
+  coordinatePopupIconButton: { width: 30, height: 30, borderRadius: 6, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: UI.border, backgroundColor: UI.bg3 },
+  coordinatePopupWeatherButton: { minHeight: 36, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, borderRadius: 7, borderWidth: 1, borderColor: UI.borderHi, backgroundColor: UI.greenDim },
+  coordinatePopupWeatherText: { color: UI.textPri, fontSize: 12, fontWeight: '800' },
   statsBar: { position: 'absolute', bottom: 138, left: 12, right: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(10,17,11,0.50)', borderWidth: 1, borderColor: UI.border, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 8 },
   statItem: { flex: 1, alignItems: 'center' },
   statValue: { color: UI.textPri, fontSize: 20, fontWeight: '800', lineHeight: 24 },

@@ -13,6 +13,7 @@
     "@react-navigation/bottom-tabs": "^7.4.8",
     "@react-navigation/native": "^7.1.18",
     "expo": "~54.0.10",
+    "expo-clipboard": "~8.0.8",
     "expo-constants": "~18.0.9",
     "expo-file-system": "~19.0.15",
     "expo-location": "~19.0.7",

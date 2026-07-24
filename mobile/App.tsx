@@ -9,10 +9,9 @@ import MapLibreGL, {
   ShapeSource,
   LineLayer,
   CircleLayer,
-  MarkerView,
 } from '@maplibre/maplibre-react-native';
-import type { CameraStop } from '@maplibre/maplibre-react-native';
-import { Check, CloudSun, Copy, Trash2, X } from 'lucide-react-native';
+import type { CameraStop, MapViewRef } from '@maplibre/maplibre-react-native';
+import { Trash2 } from 'lucide-react-native';
 import * as Location from 'expo-location';
 import * as Clipboard from 'expo-clipboard';
 import * as TaskManager from 'expo-task-manager';
@@ -74,6 +73,14 @@ type CameraCommand = CameraStop & { id: number };
 type SelectedMapPoint = {
   longitude: number;
   latitude: number;
+};
+type ScreenPoint = {
+  x: number;
+  y: number;
+};
+type CoordinatePopupSelection = {
+  point: SelectedMapPoint;
+  anchor: ScreenPoint;
 };
 
 // ─── Costanti ─────────────────────────────────────────────────────────────────
@@ -847,6 +854,11 @@ export default function App() {
 // MainUI
 // ══════════════════════════════════════════════════════════════════════════════
 const CENTER_ZOOM_LEVEL = 16;
+const COORDINATE_POPUP_WIDTH = 184;
+const COORDINATE_POPUP_HEIGHT = 110;
+const COORDINATE_POPUP_TAIL_HEIGHT = 9;
+const COORDINATE_POPUP_TAIL_INSET = 12;
+const COORDINATE_POPUP_SAFE_MARGIN = 12;
 
 function MapCoordinatePopup(props: {
   point: SelectedMapPoint;
@@ -856,39 +868,75 @@ function MapCoordinatePopup(props: {
 }) {
   const { point, copied, onCopy, onClose } = props;
   return (
-    <View style={mStyles.coordinatePopupAnchor}>
-      <View style={mStyles.coordinatePopupPoint} />
+    <View style={mStyles.coordinatePopupBubble}>
       <View style={mStyles.coordinatePopupCard}>
         <View style={mStyles.coordinatePopupHeader}>
           <Text style={mStyles.coordinatePopupTitle}>Coordinate</Text>
-          <TouchableOpacity onPress={onClose} style={mStyles.coordinatePopupIconButton}>
-            <X size={16} color={UI.textSec} />
+          <TouchableOpacity
+            onPress={onClose}
+            style={mStyles.coordinatePopupIconButton}
+            accessibilityRole="button"
+            accessibilityLabel="Chiudi pannello coordinate"
+          >
+            <Text style={mStyles.coordinatePopupCloseGlyph}>×</Text>
           </TouchableOpacity>
         </View>
         <View style={mStyles.coordinatePopupRow}>
           <Text style={mStyles.coordinatePopupCoordinates} numberOfLines={1}>
-            {point.latitude.toFixed(5)}, {point.longitude.toFixed(5)}
+            {point.latitude.toFixed(3)}, {point.longitude.toFixed(3)}
           </Text>
           <TouchableOpacity
             onPress={onCopy}
             style={mStyles.coordinatePopupIconButton}
             accessibilityLabel={copied ? 'Coordinate copiate' : 'Copia coordinate'}
           >
-            {copied ? <Check size={16} color={UI.greenBri} /> : <Copy size={16} color={UI.textPri} />}
+            {copied ? (
+              <Text style={mStyles.coordinatePopupCheckGlyph}>✓</Text>
+            ) : (
+              <View style={mStyles.coordinatePopupCopyGlyph}>
+                <View style={mStyles.coordinatePopupCopyBack} />
+                <View style={mStyles.coordinatePopupCopyFront} />
+              </View>
+            )}
           </TouchableOpacity>
         </View>
         <TouchableOpacity onPress={() => {}} style={mStyles.coordinatePopupWeatherButton}>
-          <CloudSun size={17} color={UI.textPri} />
           <Text style={mStyles.coordinatePopupWeatherText}>Mostra dati meteo</Text>
         </TouchableOpacity>
       </View>
+      <View style={mStyles.coordinatePopupTailBorder} />
+      <View style={mStyles.coordinatePopupTailFill} />
     </View>
   );
+}
+
+function getCoordinatePopupAdjustment(
+  point: ScreenPoint,
+  viewport: { width: number; height: number },
+): ScreenPoint {
+  const popupLeft = point.x - COORDINATE_POPUP_WIDTH + COORDINATE_POPUP_TAIL_INSET;
+  const popupRight = popupLeft + COORDINATE_POPUP_WIDTH;
+  const popupTop = point.y - COORDINATE_POPUP_HEIGHT - COORDINATE_POPUP_TAIL_HEIGHT;
+  const popupBottom = point.y;
+  const minX = COORDINATE_POPUP_SAFE_MARGIN;
+  const maxX = viewport.width - COORDINATE_POPUP_SAFE_MARGIN;
+  const minY = COORDINATE_POPUP_SAFE_MARGIN;
+  const maxY = viewport.height - COORDINATE_POPUP_SAFE_MARGIN;
+
+  let x = 0;
+  let y = 0;
+  if (popupLeft < minX) x = minX - popupLeft;
+  else if (popupRight > maxX) x = maxX - popupRight;
+  if (popupTop < minY) y = minY - popupTop;
+  else if (popupBottom > maxY) y = maxY - popupBottom;
+
+  return { x, y };
 }
 
 const MemoMapCanvas = React.memo(function MemoMapCanvas(props: any) {
   const {
     cameraCommand,
+    runCameraCommand,
     followLocationRef,
     activeLayer,
     tileDate,
@@ -904,36 +952,98 @@ const MemoMapCanvas = React.memo(function MemoMapCanvas(props: any) {
     finferliGeoJSON,
     routesOnMap,
     highlightedRoute,
+    selectedMapPoint,
+    onCoordinateSelect,
   } = props;
 
-  const [selectedMapPoint, setSelectedMapPoint] = React.useState<SelectedMapPoint | null>(null);
-  const [coordinatesCopied, setCoordinatesCopied] = React.useState(false);
+  const mapRef = React.useRef<MapViewRef>(null);
+  const mapViewportRef = React.useRef({ width: 0, height: 0 });
+  const coordinateRequestIdRef = React.useRef(0);
+  const selectedPointGeoJSON = React.useMemo(
+    () =>
+      selectedMapPoint
+        ? coordsToGeoJSONPoint(selectedMapPoint.latitude, selectedMapPoint.longitude)
+        : null,
+    [selectedMapPoint?.latitude, selectedMapPoint?.longitude],
+  );
 
-  const handleMapLongPress = React.useCallback((feature: GeoJSON.Feature) => {
+  const handleMapLongPress = React.useCallback(async (feature: GeoJSON.Feature) => {
     if (feature.geometry.type !== 'Point') return;
     const [longitude, latitude] = feature.geometry.coordinates;
     if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) return;
-    setSelectedMapPoint({ longitude, latitude });
-    setCoordinatesCopied(false);
-  }, []);
+    const requestId = ++coordinateRequestIdRef.current;
+    const point = { longitude, latitude };
+    const viewport = mapViewportRef.current;
 
-  const copySelectedCoordinates = React.useCallback(async () => {
-    if (!selectedMapPoint) return;
-    const value = selectedMapPoint.latitude.toFixed(5) + ', ' + selectedMapPoint.longitude.toFixed(5);
-    await Clipboard.setStringAsync(value);
-    setCoordinatesCopied(true);
-  }, [selectedMapPoint]);
+    try {
+      const screenPoint = await mapRef.current?.getPointInView([longitude, latitude]);
+      if (!screenPoint || requestId !== coordinateRequestIdRef.current) return;
+      const adjustment = getCoordinatePopupAdjustment(
+        { x: screenPoint[0], y: screenPoint[1] },
+        viewport,
+      );
+      const popupAnchor = {
+        x: screenPoint[0] + adjustment.x,
+        y: screenPoint[1] + adjustment.y,
+      };
+      let nextCenter: GeoJSON.Position | undefined;
+
+      if (
+        viewport.width > 0 &&
+        viewport.height > 0 &&
+        (Math.abs(adjustment.x) > 1 || Math.abs(adjustment.y) > 1)
+      ) {
+        nextCenter = await mapRef.current?.getCoordinateFromView([
+          viewport.width / 2 - adjustment.x,
+          viewport.height / 2 - adjustment.y,
+        ]);
+        if (!nextCenter || requestId !== coordinateRequestIdRef.current) return;
+      }
+
+      onCoordinateSelect(point, popupAnchor);
+      if (nextCenter) {
+        // Il long-press è un'azione utente esplicita: sposta la camera una sola
+        // volta e solo del minimo necessario per rendere visibile la vignetta.
+        runCameraCommand({
+          centerCoordinate: nextCenter,
+          animationDuration: 250,
+          animationMode: 'easeTo',
+        });
+      }
+    } catch (error) {
+      console.warn('[coordinates] Impossibile correggere la viewport del pannello', error);
+      if (requestId === coordinateRequestIdRef.current) {
+        onCoordinateSelect(point, {
+          x: Math.max(COORDINATE_POPUP_WIDTH, viewport.width / 2),
+          y: Math.max(
+            COORDINATE_POPUP_HEIGHT +
+              COORDINATE_POPUP_TAIL_HEIGHT +
+              COORDINATE_POPUP_SAFE_MARGIN,
+            viewport.height / 2,
+          ),
+        });
+      }
+    }
+  }, [onCoordinateSelect, runCameraCommand]);
 
   return (
-    <MapView
+    <View
       style={StyleSheet.absoluteFillObject}
-      mapStyle={SATELLITE_STYLE}
-      logoEnabled={false}
-      attributionEnabled={false}
-      compassEnabled={false}
-      onLongPress={handleMapLongPress}
-      onRegionWillChange={() => { followLocationRef.current = false; }}
+      onLayout={(event) => {
+        const { width, height } = event.nativeEvent.layout;
+        mapViewportRef.current = { width, height };
+      }}
     >
+      <MapView
+        ref={mapRef}
+        style={StyleSheet.absoluteFillObject}
+        mapStyle={SATELLITE_STYLE}
+        logoEnabled={false}
+        attributionEnabled={false}
+        compassEnabled={false}
+        onLongPress={handleMapLongPress}
+        onRegionWillChange={() => { followLocationRef.current = false; }}
+      >
       <Camera
         followUserLocation={false}
         minZoomLevel={MAP_MIN_ZOOM_LEVEL}
@@ -1045,21 +1155,30 @@ const MemoMapCanvas = React.memo(function MemoMapCanvas(props: any) {
           </React.Fragment>
         );
       })}
-      {selectedMapPoint && (
-        <MarkerView
-          coordinate={[selectedMapPoint.longitude, selectedMapPoint.latitude]}
-          anchor={{ x: 0.02, y: 0.5 }}
-          allowOverlap
-        >
-          <MapCoordinatePopup
-            point={selectedMapPoint}
-            copied={coordinatesCopied}
-            onCopy={copySelectedCoordinates}
-            onClose={() => setSelectedMapPoint(null)}
+      {selectedPointGeoJSON && (
+        <ShapeSource id="selected-coordinate-source" shape={selectedPointGeoJSON}>
+          <CircleLayer
+            id="selected-coordinate-ring"
+            style={{
+              circleRadius: 11,
+              circleColor: 'rgba(10,17,11,0.72)',
+              circleStrokeWidth: 2.5,
+              circleStrokeColor: UI.amberBri,
+            }}
           />
-        </MarkerView>
+          <CircleLayer
+            id="selected-coordinate-core"
+            style={{
+              circleRadius: 3.5,
+              circleColor: UI.amberBri,
+              circleStrokeWidth: 1.5,
+              circleStrokeColor: UI.bg0,
+            }}
+          />
+        </ShapeSource>
       )}
-    </MapView>
+      </MapView>
+    </View>
   );
 });
 
@@ -1282,6 +1401,8 @@ function MainUI(props: any) {
 
   const porciniCount = markers.filter((m: MarkerData) => m.tipo === 'Porcino').length;
   const finferliCount = markers.filter((m: MarkerData) => m.tipo === 'Finferlo').length;
+  const [coordinateSelection, setCoordinateSelection] = React.useState<CoordinatePopupSelection | null>(null);
+  const [coordinatesCopied, setCoordinatesCopied] = React.useState(false);
 
   // GeoJSON memoizzati
   const currentPathGeoJSON = React.useMemo(() => coordsToGeoJSONLine(path), [path]);
@@ -1304,6 +1425,23 @@ function MainUI(props: any) {
     });
   }, [runCameraCommand]);
 
+  const closeCoordinatePopup = React.useCallback(() => {
+    setCoordinateSelection(null);
+    setCoordinatesCopied(false);
+  }, []);
+
+  const selectMapCoordinate = React.useCallback((point: SelectedMapPoint, anchor: ScreenPoint) => {
+    setCoordinateSelection({ point, anchor });
+    setCoordinatesCopied(false);
+  }, []);
+
+  const copySelectedCoordinates = React.useCallback(async () => {
+    if (!coordinateSelection) return;
+    const { point } = coordinateSelection;
+    await Clipboard.setStringAsync(`${point.latitude.toFixed(3)}, ${point.longitude.toFixed(3)}`);
+    setCoordinatesCopied(true);
+  }, [coordinateSelection]);
+
   return (
     <SafeAreaView style={mStyles.root}>
       <StatusBar barStyle="light-content" backgroundColor={UI.bg0} />
@@ -1311,6 +1449,7 @@ function MainUI(props: any) {
       {/* ── MAPPA ─────────────────────────────────────────────────────────── */}
       <MemoMapCanvas
         cameraCommand={cameraCommand}
+        runCameraCommand={runCameraCommand}
         followLocationRef={followLocationRef}
         activeLayer={activeLayer}
         tileDate={tileDate}
@@ -1326,6 +1465,8 @@ function MainUI(props: any) {
         finferliGeoJSON={finferliGeoJSON}
         routesOnMap={routesOnMap}
         highlightedRoute={highlightedRoute}
+        selectedMapPoint={coordinateSelection?.point ?? null}
+        onCoordinateSelect={selectMapCoordinate}
       />
 
       {/* ── HEADER PILL ──────────────────────────────────────────────────── */}
@@ -1531,6 +1672,40 @@ function MainUI(props: any) {
           <Text style={mStyles.mainBtnText}>{recording ? 'FERMA REGISTRAZIONE' : 'AVVIA REGISTRAZIONE'}</Text>
         </TouchableOpacity>
       </View>
+
+      {coordinateSelection && (
+        <View style={mStyles.coordinatePopupOverlay}>
+          <TouchableOpacity
+            style={StyleSheet.absoluteFillObject}
+            activeOpacity={1}
+            onPress={closeCoordinatePopup}
+            accessibilityRole="button"
+            accessibilityLabel="Chiudi pannello coordinate"
+          />
+          <View
+            style={[
+              mStyles.coordinatePopupPosition,
+              {
+                left:
+                  coordinateSelection.anchor.x -
+                  COORDINATE_POPUP_WIDTH +
+                  COORDINATE_POPUP_TAIL_INSET,
+                top:
+                  coordinateSelection.anchor.y -
+                  COORDINATE_POPUP_HEIGHT -
+                  COORDINATE_POPUP_TAIL_HEIGHT,
+              },
+            ]}
+          >
+            <MapCoordinatePopup
+              point={coordinateSelection.point}
+              copied={coordinatesCopied}
+              onCopy={copySelectedCoordinates}
+              onClose={closeCoordinatePopup}
+            />
+          </View>
+        </View>
+      )}
     </SafeAreaView>
   );
 }
@@ -1710,16 +1885,24 @@ const mStyles = StyleSheet.create({
   routeRowTouch: { flex: 1, flexDirection: 'row', alignItems: 'center', paddingVertical: 3, gap: 8 },
   routeTrackDot: { width: 14, height: 3, borderRadius: 2, backgroundColor: '#1e8fff' },
   routeRowName: { flex: 1, color: UI.textPri, fontSize: 11, fontWeight: '500' },
-  coordinatePopupAnchor: { width: 232, flexDirection: 'row', alignItems: 'center' },
-  coordinatePopupPoint: { width: 10, height: 10, borderRadius: 5, marginRight: 7, backgroundColor: UI.greenBri, borderWidth: 2, borderColor: '#fff' },
-  coordinatePopupCard: { width: 215, padding: 10, gap: 8, borderWidth: 1, borderColor: UI.borderHi, borderRadius: 8, backgroundColor: 'rgba(10,17,11,0.96)', shadowColor: '#000', shadowOpacity: 0.35, shadowRadius: 8, shadowOffset: { width: 0, height: 4 }, elevation: 8 },
-  coordinatePopupHeader: { height: 24, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  coordinatePopupOverlay: { ...StyleSheet.absoluteFillObject, zIndex: 100, elevation: 100 },
+  coordinatePopupPosition: { position: 'absolute', width: COORDINATE_POPUP_WIDTH, height: COORDINATE_POPUP_HEIGHT + COORDINATE_POPUP_TAIL_HEIGHT },
+  coordinatePopupBubble: { width: COORDINATE_POPUP_WIDTH, height: COORDINATE_POPUP_HEIGHT + COORDINATE_POPUP_TAIL_HEIGHT },
+  coordinatePopupCard: { width: COORDINATE_POPUP_WIDTH, height: COORDINATE_POPUP_HEIGHT, padding: 8, gap: 6, borderWidth: 1, borderColor: UI.borderHi, borderRadius: 8, backgroundColor: 'rgba(10,17,11,0.97)', shadowColor: '#000', shadowOpacity: 0.35, shadowRadius: 7, shadowOffset: { width: 0, height: 3 }, elevation: 8 },
+  coordinatePopupTailBorder: { position: 'absolute', right: 4, bottom: 0, width: 0, height: 0, borderLeftWidth: 9, borderRightWidth: 9, borderTopWidth: 9, borderLeftColor: 'transparent', borderRightColor: 'transparent', borderTopColor: UI.borderHi },
+  coordinatePopupTailFill: { position: 'absolute', right: 5, bottom: 2, width: 0, height: 0, borderLeftWidth: 8, borderRightWidth: 8, borderTopWidth: 8, borderLeftColor: 'transparent', borderRightColor: 'transparent', borderTopColor: 'rgba(10,17,11,0.97)' },
+  coordinatePopupHeader: { height: 22, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   coordinatePopupTitle: { color: UI.textSec, fontSize: 10, fontWeight: '900', textTransform: 'uppercase' },
-  coordinatePopupRow: { minHeight: 32, flexDirection: 'row', alignItems: 'center', gap: 6 },
-  coordinatePopupCoordinates: { flex: 1, color: UI.textPri, fontSize: 13, fontWeight: '700', fontVariant: ['tabular-nums'] },
-  coordinatePopupIconButton: { width: 30, height: 30, borderRadius: 6, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: UI.border, backgroundColor: UI.bg3 },
-  coordinatePopupWeatherButton: { minHeight: 36, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, borderRadius: 7, borderWidth: 1, borderColor: UI.borderHi, backgroundColor: UI.greenDim },
-  coordinatePopupWeatherText: { color: UI.textPri, fontSize: 12, fontWeight: '800' },
+  coordinatePopupRow: { minHeight: 28, flexDirection: 'row', alignItems: 'center', gap: 5 },
+  coordinatePopupCoordinates: { flex: 1, color: UI.textPri, fontSize: 12, fontWeight: '700', fontVariant: ['tabular-nums'] },
+  coordinatePopupIconButton: { width: 26, height: 26, borderRadius: 6, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: UI.border, backgroundColor: UI.bg3 },
+  coordinatePopupCloseGlyph: { color: UI.textSec, fontSize: 18, lineHeight: 20, fontWeight: '500' },
+  coordinatePopupCheckGlyph: { color: UI.greenBri, fontSize: 16, lineHeight: 18, fontWeight: '900' },
+  coordinatePopupCopyGlyph: { width: 14, height: 14 },
+  coordinatePopupCopyBack: { position: 'absolute', left: 1, top: 1, width: 9, height: 10, borderWidth: 1.5, borderColor: UI.textSec, borderRadius: 2 },
+  coordinatePopupCopyFront: { position: 'absolute', right: 1, bottom: 1, width: 9, height: 10, borderWidth: 1.5, borderColor: UI.textPri, borderRadius: 2, backgroundColor: UI.bg3 },
+  coordinatePopupWeatherButton: { minHeight: 32, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, borderRadius: 7, borderWidth: 1, borderColor: UI.borderHi, backgroundColor: UI.greenDim },
+  coordinatePopupWeatherText: { color: UI.textPri, fontSize: 11, fontWeight: '800' },
   statsBar: { position: 'absolute', bottom: 138, left: 12, right: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(10,17,11,0.50)', borderWidth: 1, borderColor: UI.border, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 8 },
   statItem: { flex: 1, alignItems: 'center' },
   statValue: { color: UI.textPri, fontSize: 20, fontWeight: '800', lineHeight: 24 },

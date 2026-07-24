@@ -823,7 +823,7 @@ export default function App() {
         <Tab.Navigator
           screenOptions={{
             headerShown: false,
-            tabBarStyle: { height: 64, backgroundColor: UI.bg1, borderTopWidth: 1, borderTopColor: UI.border, paddingBottom: 6, paddingTop: 4 },
+            tabBarStyle: { backgroundColor: UI.bg1, borderTopWidth: 1, borderTopColor: UI.border, paddingTop: 4 },
             tabBarActiveTintColor: UI.greenBri,
             tabBarInactiveTintColor: UI.textMut,
             tabBarLabelStyle: { fontSize: 10, fontWeight: '700', letterSpacing: 1.5, textTransform: 'uppercase' },

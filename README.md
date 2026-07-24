@@ -6,7 +6,7 @@ This repository contains the mobile application and the data-processing backend:
 - `backend/`: meteo ingestion, index computation, tile generation, and publication.
 - `docs/`: project invariants and maintenance notes.
 
-The website remains in the separate `web-funghi-index` repository, which is also the source for GitHub Pages.
+The website remains in the separate [`web-funghi-index`](https://github.com/GiovanniSequani/web-funghi-index) repository, which is also the source for GitHub Pages.
 
 ## Mobile
 

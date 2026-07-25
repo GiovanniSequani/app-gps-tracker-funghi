@@ -16,7 +16,10 @@
       "bundleIdentifier": "com.giovannisequani.funghitracker",
       "buildNumber": "7",
       "supportsTablet": true,
-      "userInterfaceStyle": "automatic"
+      "userInterfaceStyle": "automatic",
+      "config": {
+        "usesNonExemptEncryption": false
+      }
     },
     "android": {
       "package": "com.giovannisequani.funghitracker",
@@ -51,7 +54,10 @@
         "expo-location",
         {
           "locationAlwaysAndWhenInUsePermission": "L'app usa la tua posizione anche in background per registrare il percorso.",
-          "locationWhenInUsePermission": "L'app usa la tua posizione per registrare il percorso."
+          "locationWhenInUsePermission": "L'app usa la tua posizione per mostrare la posizione sulla mappa e registrare il percorso.",
+          "isIosBackgroundLocationEnabled": true,
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
         }
       ],
       "expo-sqlite",

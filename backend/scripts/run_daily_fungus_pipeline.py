@@ -340,6 +340,11 @@ def _main() -> None:
     )
     parser.add_argument("--upload-only-tiles", action="store_true", help="Only upload existing local tiles after index build.")
     parser.add_argument("--skip-tiles", action="store_true", help="Stop after recomputing the index NetCDF.")
+    parser.add_argument(
+        "--skip-weather-publication",
+        action="store_true",
+        help="Do not publish the public 20-day weather dataset to Supabase Postgres.",
+    )
     parser.add_argument("--tiles-workers", type=int, default=12)
     parser.add_argument("--tile-zooms", nargs="+", type=int, default=[3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
     parser.add_argument("--tile-retention-days", type=int, default=30)
@@ -350,6 +355,7 @@ def _main() -> None:
         help="Env file passed to tile upload script.",
     )
     args = parser.parse_args()
+    weather_publication_errors: list[str] = []
 
     if not args.skip_meteo:
         meteo_bat = Path(args.meteo_bat)
@@ -412,25 +418,44 @@ def _main() -> None:
     def publish_date(date: str) -> None:
         run_cmd([py, "-m", "backend.scripts.index.run_index_pipeline", "--date", date])
 
-        if args.skip_tiles:
-            return
+        if not args.skip_tiles:
+            tiles_cmd = [
+                py,
+                "-m",
+                "backend.scripts.tiles.01_build_tiles_gdal",
+                "--date",
+                date,
+                "--upload-workers",
+                str(args.tiles_workers),
+                "--zoom",
+                *[str(z) for z in args.tile_zooms],
+            ]
+            if args.upload_only_tiles:
+                tiles_cmd.append("--upload-only")
+            if args.env_file:
+                tiles_cmd.extend(["--env-file", args.env_file])
+            run_cmd(tiles_cmd)
 
-        tiles_cmd = [
-            py,
-            "-m",
-            "backend.scripts.tiles.01_build_tiles_gdal",
-            "--date",
-            date,
-            "--upload-workers",
-            str(args.tiles_workers),
-            "--zoom",
-            *[str(z) for z in args.tile_zooms],
-        ]
-        if args.upload_only_tiles:
-            tiles_cmd.append("--upload-only")
-        if args.env_file:
-            tiles_cmd.extend(["--env-file", args.env_file])
-        run_cmd(tiles_cmd)
+        if not args.skip_weather_publication:
+            weather_cmd = [
+                py,
+                "-m",
+                "backend.scripts.publication.publish_weather",
+                "--index-date",
+                date,
+            ]
+            if args.env_file:
+                weather_cmd.extend(["--env-file", args.env_file])
+            try:
+                run_cmd(weather_cmd)
+            except Exception as exc:
+                message = f"{date}: {type(exc).__name__}: {exc}"
+                weather_publication_errors.append(message)
+                print(
+                    f"[PUBLIC WEATHER ERROR] {message}. "
+                    "The previous current weather version remains unchanged.",
+                    flush=True,
+                )
 
     if args.date:
         publish_dates = [pipeline_date] if args.force or not is_fully_published(pipeline_date) else []
@@ -476,10 +501,20 @@ def _main() -> None:
 
     if args.skip_tiles:
         print_meteo_recent_coverage(ROLLING_METEO_NC)
+        if weather_publication_errors:
+            raise RuntimeError(
+                "Public weather publication failed: "
+                + "; ".join(weather_publication_errors)
+            )
         print("\nDone")
         return
     run_tile_cleanup()
     print_meteo_recent_coverage(ROLLING_METEO_NC)
+    if weather_publication_errors:
+        raise RuntimeError(
+            "Public weather publication failed after index/tile publication and tile cleanup: "
+            + "; ".join(weather_publication_errors)
+        )
     print("\nDone")
 
 

@@ -141,7 +141,8 @@ Each row-major cell is six little-endian bytes:
 
 Forest percentage is `clip(pct_broadleaf + pct_conifer, 0, 100)`, rounded to
 the nearest integer. Aspect is rounded to integer degrees and `360` is
-normalized to `0`.
+normalized to `0`. It is the downslope direction with `0° = North`, `90° =
+East`, `180° = South`, `270° = West`, increasing clockwise.
 
 TPI category labels:
 
@@ -153,6 +154,129 @@ TPI category labels:
 On the real 350,000-cell source the classes were respectively 30.88%, 41.42%,
 and 27.70% of valid cells, so the proposed ±10 m thresholds were retained.
 Every chunk has a SHA-256 checksum and byte length in the manifest.
+
+## Exact point index and porcini diagnostics
+
+The dedicated public Storage bucket is `index-data`. It is separate from
+`tiles` and `terrain`; clients never discover it through Storage listing:
+
+```text
+/storage/v1/object/public/index-data/current.json
+/storage/v1/object/public/index-data/<version>/manifest.json
+/storage/v1/object/public/index-data/<version>/chunks/rRR_cCC.bin.zlib
+```
+
+`current.json` contains `version`, `index_date`, `manifest_path`, and
+`dataset_sha256`. A version is `<index-date>-<source-hash-prefix>`, so a
+recalculation of the same date gets immutable URLs. Publication uploads and
+verifies all chunks and the manifest before changing `current.json`. After the
+pointer switch, cleanup uses only paths explicitly present in the old manifest.
+At most one complete version remains after cleanup.
+
+The grid is EPSG:4326, `500 × 700`, step `0.003°`, with ascending latitude and
+longitude. Calculate `row`, `col`, chunk coordinates, and the cell offset with
+the same formulas used by terrain:
+
+```text
+row = clamp(floor((latitude  - origin_lat) / step_deg + 0.5), 0, rows - 1)
+col = clamp(floor((longitude - origin_lon) / step_deg + 0.5), 0, cols - 1)
+chunk_row = floor(row / chunk_size.rows)
+chunk_col = floor(col / chunk_size.cols)
+local_row = row - chunk.row_offset
+local_col = col - chunk.col_offset
+cell_offset = (local_row * chunk.cols + local_col) * 30
+```
+
+Download the manifest entry for the deterministic chunk, verify its SHA-256,
+decompress the complete payload with zlib, and then read this little-endian,
+row-major, 30-byte cell:
+
+| Offset | Field | Type | Decode |
+|---:|---|---|---|
+| 0 | `porcini_score` | float32 | exact final score 0–100 |
+| 4 | `finferli_score` | float32 | exact final score 0–100 |
+| 8 | `porcini_base_score` | uint16 | `value × 0.01`; nodata 65535 |
+| 10 | `habitat` | uint8 | `value / 254`; nodata 255 |
+| 11 | `potential` | uint8 | `value / 254`; nodata 255 |
+| 12 | `trigger` | uint8 | `value / 254`; nodata 255 |
+| 13 | `incubation` | uint8 | `value / 254`; nodata 255 |
+| 14 | `moisture` | uint8 | `value / 254`; nodata 255 |
+| 15 | `stress` | uint8 | `value / 254`; nodata 255 |
+| 16 | `temp_score` | uint8 | `value / 254`; nodata 255 |
+| 17 | `humidity_score` | uint8 | `value / 254`; nodata 255 |
+| 18 | `post_rain_score` | uint8 | `value / 254`; nodata 255 |
+| 19 | `drying_total` | uint8 | `value / 254`; nodata 255 |
+| 20 | `drying_exposure_static` | uint8 | `value / 254`; nodata 255 |
+| 21 | `retention_static` | uint8 | `value / 254`; nodata 255 |
+| 22 | `rain_need_factor` | uint8 | `0.70 + value × 0.005`; nodata 255 |
+| 23 | `temporal_phase` | uint8 | categorical temporal evidence; no nodata |
+| 24 | `low_humidity_days` | uint8 | days with `rh_min < 42%`; nodata 255 |
+| 25 | `temperature_band` | uint8 | categorical label below; nodata 0 |
+| 26 | `presence_carryover` | uint16 | score points `value × 0.01`; nodata 65535 |
+| 28 | `rain_recovery_seed` | uint16 | score points `value × 0.01`; nodata 65535 |
+
+`porcini_score` and `finferli_score` preserve the original NetCDF float32 bits;
+they are not inferred from tile colours and are not quantized. The explanatory
+fields are compact diagnostics:
+
+- `habitat`, `trigger`, `incubation`, `moisture`, and `stress` are the real
+  components used by scoring version 0.2.0. Higher values are favourable.
+- `potential` and the weather diagnostics use the lag that maximises
+  `trigger × incubation × moisture`.
+- `incubation` remains public because it is a real score component: it
+  contributes 22% of the porcini dynamic mix and combines temperature
+  suitability (42%), humidity suitability (30%), post-trigger rain (18%), and
+  absence of drying stress (10%). It describes environmental suitability
+  during incubation; it is not a clock and must not be converted into an
+  early/late label.
+- `drying_total` and `drying_exposure_static` are limiting when high;
+  `retention_static` is favourable when high.
+- `rain_need_factor > 1` means exposure/slope/topography require more rain;
+  values below 1 reduce the required rain.
+- `presence_carryover` and `rain_recovery_seed` are upward-only. The formula is
+  `final = clip(base + max(presence_carryover, rain_recovery_seed), 0, 100)`;
+  recovery never lowers a score.
+
+`temporal_phase` is derived in the backend from the complete porcini potential
+profile over the configured lags 7–16 days. It is not inferred by clients from
+one selected lag:
+
+- `0`: `non_determinabile`;
+- `1`: `troppo_precoce`;
+- `2`: `fase_favorevole`;
+- `3`: `troppo_tardi`.
+
+A peak is considered resolved only if it exceeds every competing lag by at
+least `1/254`, matching one public unit-diagnostic quantization step. A unique
+resolved peak at an interior lag, at least one resolution unit above both
+neighbours, is `fase_favorevole`. A resolved peak at the longest lag, preceded
+by a non-decreasing profile over the previous two lags, is `troppo_precoce`;
+the mirrored condition at the shortest lag is `troppo_tardi`. Flat profiles, ties,
+differences below resolution, incomplete data, or any shape that does not
+support one of those conclusions are explicitly `non_determinabile`.
+`best_lag_days` is intentionally not published because it is no longer needed
+by the frontend and could invite a second, inconsistent phase heuristic.
+
+The manifest stores the porcini thresholds and formula metadata once, rather
+than duplicating text per cell. It includes temperature, humidity, rain, gust,
+elevation and forest thresholds plus the exact weights for temperature,
+humidity, drying, moisture, incubation, stress, potential, base score and
+recovery. Frontends should combine this metadata with the compact cell values
+to choose favourable/limiting labels. They must not infer an explanation from
+the final score alone.
+
+Temperature band labels use the real porcini mean-temperature trapezoid:
+
+- `0`: `nodata`
+- `1`: `molto_fredda`, below 5 °C
+- `2`: `fredda`, 5–10 °C
+- `3`: `ottimale`, 10–18 °C
+- `4`: `calda`, above 18 through 24 °C
+- `5`: `molto_calda`, above 24 °C
+
+The manifest is the authoritative contract and repeats field offsets, scales,
+nodata values, labels, thresholds, scoring notes, source checksums, chunk byte
+lengths, raw byte lengths, and compressed-payload checksums.
 
 ## Backend commands
 
@@ -178,6 +302,18 @@ Publish terrain once:
 
 ```powershell
 python -m backend.scripts.publication.publish_terrain --version v1
+```
+
+Build/validate point index data locally:
+
+```powershell
+python -m backend.scripts.publication.publish_index_point --index-date YYYY-MM-DD --dry-run
+```
+
+Publish the exact point scores and porcini diagnostics:
+
+```powershell
+python -m backend.scripts.publication.publish_index_point --index-date YYYY-MM-DD
 ```
 
 The daily pipeline publishes weather only after successful index and tile work

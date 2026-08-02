@@ -214,6 +214,19 @@ def tiles_root_for(date: str) -> Path:
     return ROOT_DIR / "backend" / "outputs" / "tiles_local" / f"{date}_v1"
 
 
+def index_data_publication_command(py: str, date: str, env_file: str | None) -> list[str]:
+    command = [
+        py,
+        "-m",
+        "backend.scripts.publication.publish_index_point",
+        "--index-date",
+        date,
+    ]
+    if env_file:
+        command.extend(["--env-file", env_file])
+    return command
+
+
 def is_fully_published(date: str) -> bool:
     return index_path_for(date).exists() and tiles_root_for(date).exists()
 
@@ -345,6 +358,11 @@ def _main() -> None:
         action="store_true",
         help="Do not publish the public 20-day weather dataset to Supabase Postgres.",
     )
+    parser.add_argument(
+        "--skip-index-data-publication",
+        action="store_true",
+        help="Do not publish exact point scores and compact porcini diagnostics.",
+    )
     parser.add_argument("--tiles-workers", type=int, default=12)
     parser.add_argument("--tile-zooms", nargs="+", type=int, default=[3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
     parser.add_argument("--tile-retention-days", type=int, default=30)
@@ -355,7 +373,7 @@ def _main() -> None:
         help="Env file passed to tile upload script.",
     )
     args = parser.parse_args()
-    weather_publication_errors: list[str] = []
+    publication_errors: list[str] = []
 
     if not args.skip_meteo:
         meteo_bat = Path(args.meteo_bat)
@@ -436,6 +454,19 @@ def _main() -> None:
                 tiles_cmd.extend(["--env-file", args.env_file])
             run_cmd(tiles_cmd)
 
+        if not args.skip_index_data_publication:
+            index_data_cmd = index_data_publication_command(py, date, args.env_file)
+            try:
+                run_cmd(index_data_cmd)
+            except Exception as exc:
+                message = f"index-data {date}: {type(exc).__name__}: {exc}"
+                publication_errors.append(message)
+                print(
+                    f"[PUBLIC INDEX DATA ERROR] {message}. "
+                    "The previous current point dataset remains unchanged.",
+                    flush=True,
+                )
+
         if not args.skip_weather_publication:
             weather_cmd = [
                 py,
@@ -449,8 +480,8 @@ def _main() -> None:
             try:
                 run_cmd(weather_cmd)
             except Exception as exc:
-                message = f"{date}: {type(exc).__name__}: {exc}"
-                weather_publication_errors.append(message)
+                message = f"weather {date}: {type(exc).__name__}: {exc}"
+                publication_errors.append(message)
                 print(
                     f"[PUBLIC WEATHER ERROR] {message}. "
                     "The previous current weather version remains unchanged.",
@@ -501,19 +532,19 @@ def _main() -> None:
 
     if args.skip_tiles:
         print_meteo_recent_coverage(ROLLING_METEO_NC)
-        if weather_publication_errors:
+        if publication_errors:
             raise RuntimeError(
-                "Public weather publication failed: "
-                + "; ".join(weather_publication_errors)
+                "Public data publication failed: "
+                + "; ".join(publication_errors)
             )
         print("\nDone")
         return
     run_tile_cleanup()
     print_meteo_recent_coverage(ROLLING_METEO_NC)
-    if weather_publication_errors:
+    if publication_errors:
         raise RuntimeError(
-            "Public weather publication failed after index/tile publication and tile cleanup: "
-            + "; ".join(weather_publication_errors)
+            "Public data publication failed after index/tile publication and tile cleanup: "
+            + "; ".join(publication_errors)
         )
     print("\nDone")
 

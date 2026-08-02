@@ -51,3 +51,19 @@ def test_publishable_dates_include_rolling_day_without_snapshot(tmp_path, monkey
     )
 
     assert publishable == ["2026-07-21"]
+
+
+def test_index_point_publication_command_uses_date_and_env_file() -> None:
+    assert pipeline.index_data_publication_command(
+        "python",
+        "2026-07-26",
+        "backend/.env",
+    ) == [
+        "python",
+        "-m",
+        "backend.scripts.publication.publish_index_point",
+        "--index-date",
+        "2026-07-26",
+        "--env-file",
+        "backend/.env",
+    ]

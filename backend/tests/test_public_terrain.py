@@ -134,6 +134,23 @@ class FakeStorageClient:
             self.objects.pop((bucket, path), None)
 
 
+class DelayedPointerStorageClient(FakeStorageClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.stale_pointer: bytes | None = None
+        self.pointer_reads_after_upload = 0
+
+    def storage_get(self, bucket: str, remote_path: str) -> bytes | None:
+        if remote_path == "current.json" and self.stale_pointer is not None:
+            current = self.objects.get((bucket, remote_path))
+            if current != self.stale_pointer:
+                self.pointer_reads_after_upload += 1
+                if self.pointer_reads_after_upload == 1:
+                    self.calls.append((bucket, remote_path))
+                    return self.stale_pointer
+        return super().storage_get(bucket, remote_path)
+
+
 def test_terrain_publication_is_idempotent_and_never_uses_tiles_bucket(tmp_path: Path) -> None:
     source = tmp_path / "terrain.nc"
     write_terrain_source(source)
@@ -167,6 +184,26 @@ def test_terrain_pointer_does_not_change_after_incomplete_upload(tmp_path: Path)
     assert client.objects[("terrain", "current.json")] == old_pointer
 
 
+def test_terrain_pointer_verification_tolerates_one_stale_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "terrain.nc"
+    write_terrain_source(source)
+    v1 = build_terrain_dataset(source, tmp_path / "out", version="v1")
+    v2 = build_terrain_dataset(source, tmp_path / "out", version="v2")
+    client = DelayedPointerStorageClient()
+    publisher = TerrainPublisher(client)
+    publisher.publish(v1)
+    client.stale_pointer = client.objects[("terrain", "current.json")]
+    monkeypatch.setattr("backend.src.publication.supabase.time.sleep", lambda _: None)
+
+    result = publisher.publish(v2)
+
+    assert result.action == "published"
+    assert client.pointer_reads_after_upload == 2
+
+
 def test_terrain_cleanup_uses_only_paths_from_old_manifest(tmp_path: Path) -> None:
     source = tmp_path / "terrain.nc"
     write_terrain_source(source)
@@ -182,4 +219,3 @@ def test_terrain_cleanup_uses_only_paths_from_old_manifest(tmp_path: Path) -> No
     assert result.deleted_objects == len(v1.chunks) + 1
     assert client.objects[("tiles", "tile_sets.json")] == b"keep"
     assert all(bucket == "terrain" for bucket, _ in client.calls)
-

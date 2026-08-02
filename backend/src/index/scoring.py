@@ -127,6 +127,10 @@ def _lag_candidate(ds: xr.Dataset, species: str, target_idx: int, lag: int) -> x
     rh_mean = _mean_window(ds, "rh_mean", incubation_start, incubation_end)
     rh_min = _min_window(ds, "rh_min", incubation_start, incubation_end)
     gust_max = _max_window(ds, "gust_max", incubation_start, incubation_end)
+    low_humidity_days = (
+        ds["rh_min"].isel(time=slice(incubation_start, incubation_end + 1))
+        < cfg["rh_min_pct"][1]
+    ).sum("time")
 
     temp_score = (
         0.45 * trapezoid(temp_mean, *cfg["temp_mean_c"])
@@ -171,6 +175,14 @@ def _lag_candidate(ds: xr.Dataset, species: str, target_idx: int, lag: int) -> x
             "incubation": incubation_score.astype("float32"),
             "moisture": moisture_score.clip(0.0, 1.0).astype("float32"),
             "stress": stress_score.astype("float32"),
+            # Compact public diagnostics select these values from the same lag
+            # that maximises potential. They do not alter the index formula.
+            "temp_score": temp_score.clip(0.0, 1.0).astype("float32"),
+            "humidity_score": humidity_score.clip(0.0, 1.0).astype("float32"),
+            "post_rain_score": post_rain_score.clip(0.0, 1.0).astype("float32"),
+            "drying_total": drying_total.astype("float32"),
+            "temp_mean_c": temp_mean.astype("float32"),
+            "low_humidity_days": low_humidity_days.astype("float32"),
         }
     ).expand_dims(lag=[lag])
 

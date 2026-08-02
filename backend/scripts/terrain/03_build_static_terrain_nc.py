@@ -19,6 +19,10 @@ except ImportError:
     FINAL_STATIC_DIR = BACKEND_DIR / "data" / "final" / "static"
 
 from backend.config.domain import BBOX, TARGET_CRS, TARGET_STEP_DEG
+from backend.src.terrain.aspect import (
+    downhill_aspect_deg_north_up,
+    validate_north_up_geotransform,
+)
 
 
 gdal.UseExceptions()
@@ -138,13 +142,14 @@ def compute_slope_aspect_tpi(
     arr_filled = fill_nan_nearest_rows_cols(arr)
 
     # gradienti in metri
-    dzdy, dzdx = np.gradient(arr_filled, pixel_size_m, pixel_size_m)
+    # A GDAL north-up raster has rows increasing southward and columns
+    # increasing eastward. Keep those physical directions explicit.
+    dz_south, dz_east = np.gradient(arr_filled, pixel_size_m, pixel_size_m)
 
-    slope_rad = np.arctan(np.sqrt(dzdx**2 + dzdy**2))
+    slope_rad = np.arctan(np.sqrt(dz_east**2 + dz_south**2))
     slope_deg = np.degrees(slope_rad).astype(np.float32)
 
-    aspect_deg = np.degrees(np.arctan2(dzdx, -dzdy))
-    aspect_deg = np.where(aspect_deg < 0, aspect_deg + 360.0, aspect_deg).astype(np.float32)
+    aspect_deg = downhill_aspect_deg_north_up(dz_south, dz_east)
 
     # TPI = cella - media locale
     radius_px = max(1, int(round(tpi_radius_m / pixel_size_m)))
@@ -437,6 +442,7 @@ def main() -> None:
         yres=args.dem_projected_res_m,
     )
     dem_arr, dem_gt, dem_proj_wkt, dem_nodata = read_raster_array(dem_proj_ds)
+    validate_north_up_geotransform(dem_gt)
     pixel_size_m = float(abs(dem_gt[1]))
 
     print("[2/5] Calcolo slope, aspect, tpi...")

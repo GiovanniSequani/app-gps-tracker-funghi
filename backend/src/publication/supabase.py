@@ -12,6 +12,7 @@ import requests
 from dotenv import load_dotenv
 
 from backend.src.publication.common import canonical_json_bytes
+from backend.src.publication.index_point import IndexPointDataset
 from backend.src.publication.terrain import TerrainDataset
 from backend.src.publication.weather import WeatherDataset
 
@@ -149,11 +150,18 @@ class SupabaseClient:
 
     def storage_get(self, bucket: str, remote_path: str) -> bytes | None:
         encoded = quote(remote_path.strip("/"), safe="/")
+        headers = self._headers("application/octet-stream")
+        # Publication reads must observe an upserted pointer immediately. The
+        # Storage CDN may otherwise serve the previous current.json until its
+        # public max-age expires, producing a false verification failure after
+        # a successful atomic pointer switch.
+        headers["Cache-Control"] = "no-cache, no-store, max-age=0"
+        headers["Pragma"] = "no-cache"
         response = self.request(
             "GET",
-            f"/storage/v1/object/{quote(bucket, safe='')}/{encoded}",
+            f"/storage/v1/object/{quote(bucket, safe='')}/{encoded}?verify={time.time_ns()}",
             expected=(200, 400, 404),
-            headers=self._headers("application/octet-stream"),
+            headers=headers,
         )
         if response.status_code == 404:
             return None
@@ -428,6 +436,22 @@ class TerrainPublisher:
             raise RuntimeError(f"{remote_path} is not a JSON object")
         return result
 
+    def _wait_for_json(
+        self,
+        remote_path: str,
+        expected: dict[str, object],
+        *,
+        attempts: int = 6,
+    ) -> bool:
+        """Allow for short Storage/CDN propagation after an upsert."""
+
+        for attempt in range(attempts):
+            if self._get_json(remote_path) == expected:
+                return True
+            if attempt < attempts - 1:
+                time.sleep(min(2.0**attempt, 8.0))
+        return False
+
     def publish(self, dataset: TerrainDataset) -> TerrainPublishResult:
         current = self._get_json(self.CURRENT_OBJECT)
         if current and current.get("version") == dataset.version:
@@ -461,8 +485,7 @@ class TerrainPublisher:
             cache_control="public,max-age=31536000,immutable",
         )
         uploaded += 1
-        remote_manifest = self._get_json(manifest_path)
-        if not remote_manifest or remote_manifest.get("dataset_sha256") != dataset.dataset_sha256:
+        if not self._wait_for_json(manifest_path, dataset.manifest):
             raise RuntimeError("remote terrain manifest verification failed")
 
         pointer = {
@@ -477,11 +500,10 @@ class TerrainPublisher:
             self.CURRENT_OBJECT,
             pointer_bytes,
             content_type="application/json",
-            cache_control="public,max-age=60,must-revalidate",
+            cache_control="no-cache,max-age=0,must-revalidate",
         )
         uploaded += 1
-        remote_pointer = self._get_json(self.CURRENT_OBJECT)
-        if remote_pointer != pointer:
+        if not self._wait_for_json(self.CURRENT_OBJECT, pointer):
             raise RuntimeError("remote terrain current pointer verification failed")
 
         deleted = 0
@@ -508,3 +530,121 @@ class TerrainPublisher:
                 deleted = len(set(old_paths))
 
         return TerrainPublishResult("published", dataset.version, uploaded, deleted)
+
+
+@dataclass(frozen=True)
+class IndexPointPublishResult:
+    action: str
+    version: str
+    uploaded_objects: int
+    deleted_objects: int
+
+
+class IndexPointPublisher:
+    CURRENT_OBJECT = "current.json"
+
+    def __init__(self, client: SupabaseClient, *, bucket: str = "index-data") -> None:
+        if bucket in {"tiles", "terrain"}:
+            raise ValueError("index point publisher requires its own Storage bucket")
+        self.client = client
+        self.bucket = bucket
+
+    def _get_json(self, remote_path: str) -> dict[str, object] | None:
+        payload = self.client.storage_get(self.bucket, remote_path)
+        if payload is None:
+            return None
+        result = json.loads(payload.decode("utf-8"))
+        if not isinstance(result, dict):
+            raise RuntimeError(f"{remote_path} is not a JSON object")
+        return result
+
+    def _wait_for_json(
+        self,
+        remote_path: str,
+        expected: dict[str, object],
+        *,
+        attempts: int = 6,
+    ) -> bool:
+        for attempt in range(attempts):
+            if self._get_json(remote_path) == expected:
+                return True
+            if attempt < attempts - 1:
+                time.sleep(min(2.0**attempt, 8.0))
+        return False
+
+    def publish(self, dataset: IndexPointDataset) -> IndexPointPublishResult:
+        current = self._get_json(self.CURRENT_OBJECT)
+        old_paths: list[str] = []
+        if current:
+            current_date = str(current.get("index_date", ""))
+            if current_date > dataset.index_date:
+                return IndexPointPublishResult("skipped_older", dataset.version, 0, 0)
+            if current.get("version") == dataset.version:
+                if current.get("dataset_sha256") == dataset.dataset_sha256:
+                    return IndexPointPublishResult("unchanged", dataset.version, 0, 0)
+                raise RuntimeError(
+                    f"published index point version {dataset.version} exists with different content"
+                )
+            old_version = current.get("version")
+            old_manifest_path = current.get("manifest_path")
+            if isinstance(old_version, str) and isinstance(old_manifest_path, str):
+                old_manifest = self._get_json(old_manifest_path)
+                if not old_manifest or not isinstance(old_manifest.get("chunks"), list):
+                    raise RuntimeError("current index point manifest is unavailable for safe cleanup")
+                for item in old_manifest["chunks"]:
+                    if isinstance(item, dict) and isinstance(item.get("path"), str):
+                        path = str(item["path"])
+                        if path.startswith(f"{old_version}/"):
+                            old_paths.append(path)
+                old_paths.append(old_manifest_path)
+
+        uploaded = 0
+        for chunk in dataset.chunks:
+            payload = (dataset.output_dir / chunk.relative_path).read_bytes()
+            if len(payload) != chunk.byte_length:
+                raise RuntimeError(f"local index point chunk size changed: {chunk.relative_path}")
+            self.client.storage_upload(
+                self.bucket,
+                f"{dataset.version}/{chunk.relative_path}",
+                payload,
+                content_type="application/octet-stream",
+                cache_control="public,max-age=31536000,immutable",
+            )
+            uploaded += 1
+
+        manifest_path = f"{dataset.version}/manifest.json"
+        self.client.storage_upload(
+            self.bucket,
+            manifest_path,
+            dataset.manifest_bytes,
+            content_type="application/json",
+            cache_control="public,max-age=31536000,immutable",
+        )
+        uploaded += 1
+        if not self._wait_for_json(manifest_path, dataset.manifest):
+            raise RuntimeError("remote index point manifest verification failed")
+
+        pointer = {
+            "contract_version": 1,
+            "version": dataset.version,
+            "index_date": dataset.index_date,
+            "manifest_path": manifest_path,
+            "dataset_sha256": dataset.dataset_sha256,
+        }
+        self.client.storage_upload(
+            self.bucket,
+            self.CURRENT_OBJECT,
+            canonical_json_bytes(pointer) + b"\n",
+            content_type="application/json",
+            cache_control="no-cache,max-age=0,must-revalidate",
+        )
+        uploaded += 1
+        if not self._wait_for_json(self.CURRENT_OBJECT, pointer):
+            raise RuntimeError("remote index point current pointer verification failed")
+
+        deleted = 0
+        if old_paths:
+            paths = sorted(set(old_paths))
+            self.client.storage_delete(self.bucket, paths)
+            deleted = len(paths)
+        return IndexPointPublishResult("published", dataset.version, uploaded, deleted)

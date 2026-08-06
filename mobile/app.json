@@ -2,7 +2,7 @@
   "expo": {
     "name": "Funghi Tracker",
     "slug": "funghi-tracker",
-    "version": "1.3.0",
+    "version": "1.4.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -14,16 +14,13 @@
     },
     "ios": {
       "bundleIdentifier": "com.giovannisequani.funghitracker",
-      "buildNumber": "7",
+      "buildNumber": "8",
       "supportsTablet": true,
-      "userInterfaceStyle": "automatic",
-      "config": {
-        "usesNonExemptEncryption": false
-      }
+      "userInterfaceStyle": "automatic"
     },
     "android": {
       "package": "com.giovannisequani.funghitracker",
-      "versionCode": 7,
+      "versionCode": 8,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
@@ -54,10 +51,7 @@
         "expo-location",
         {
           "locationAlwaysAndWhenInUsePermission": "L'app usa la tua posizione anche in background per registrare il percorso.",
-          "locationWhenInUsePermission": "L'app usa la tua posizione per mostrare la posizione sulla mappa e registrare il percorso.",
-          "isIosBackgroundLocationEnabled": true,
-          "isAndroidBackgroundLocationEnabled": true,
-          "isAndroidForegroundServiceEnabled": true
+          "locationWhenInUsePermission": "L'app usa la tua posizione per registrare il percorso."
         }
       ],
       "expo-sqlite",

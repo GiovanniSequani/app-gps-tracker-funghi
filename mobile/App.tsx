@@ -11,7 +11,7 @@ import MapLibreGL, {
   CircleLayer,
 } from '@maplibre/maplibre-react-native';
 import type { CameraStop, MapViewRef } from '@maplibre/maplibre-react-native';
-import { Trash2 } from 'lucide-react-native';
+import { Activity, PanelRightOpen, Trash2 } from 'lucide-react-native';
 import * as Location from 'expo-location';
 import * as Clipboard from 'expo-clipboard';
 import * as TaskManager from 'expo-task-manager';
@@ -27,6 +27,9 @@ import * as Updates from 'expo-updates';
 import Constants from 'expo-constants';
 import IndiceScreen, { ActiveLayer } from './IndiceScreen';
 import { IndiceLayerTiles } from './IndiceLayers';
+import PointDetailsScreen from './src/point-details/PointDetailsScreen';
+import IndexAnalysisScreen from './src/index-data/IndexAnalysisScreen';
+import { IndexPopupSummary } from './src/index-data/IndexPopupSummary';
 
 declare const process: {
   env?: {
@@ -86,68 +89,20 @@ type CoordinatePopupSelection = {
 // ─── Costanti ─────────────────────────────────────────────────────────────────
 const Tab = createBottomTabNavigator();
 const LOCATION_TASK_NAME = 'background-location-task';
-const BG_POSITIONS_DIRECTORY =
-  Platform.select({
-    ios: FileSystemLegacy.documentDirectory,
-    default: FileSystemLegacy.cacheDirectory,
-  }) ??
-  FileSystemLegacy.documentDirectory ??
-  FileSystemLegacy.cacheDirectory;
-const BG_POSITIONS_FILE = BG_POSITIONS_DIRECTORY
-  ? `${BG_POSITIONS_DIRECTORY}bg_positions.json`
-  : null;
+const BG_POSITIONS_FILE = `${FileSystemLegacy.cacheDirectory}bg_positions.json`;
 const MAP_MIN_ZOOM_LEVEL = 3;
 const MAP_MAX_ZOOM_LEVEL = 18;
-const RECORDING_LOCATION_OPTIONS: Location.LocationOptions =
-  Platform.select<Location.LocationOptions>({
-    ios: {
-      accuracy: Location.Accuracy.BestForNavigation,
-      distanceInterval: 1,
-    },
-    android: {
-      accuracy: Location.Accuracy.BestForNavigation,
-      timeInterval: 2000,
-      distanceInterval: 1,
-      mayShowUserSettingsDialog: true,
-    },
-    default: {
-      accuracy: Location.Accuracy.BestForNavigation,
-      distanceInterval: 1,
-    },
-  })!;
-const FOREGROUND_LOCATION_OPTIONS: Location.LocationOptions =
-  Platform.select<Location.LocationOptions>({
-    ios: {
-      accuracy: Location.Accuracy.High,
-      distanceInterval: 3,
-    },
-    android: {
-      accuracy: Location.Accuracy.High,
-      timeInterval: 3000,
-      distanceInterval: 3,
-      mayShowUserSettingsDialog: true,
-    },
-    default: {
-      accuracy: Location.Accuracy.High,
-      distanceInterval: 3,
-    },
-  })!;
-const BACKGROUND_LOCATION_OPTIONS: Location.LocationTaskOptions = {
-  ...RECORDING_LOCATION_OPTIONS,
-  ...(Platform.select<Partial<Location.LocationTaskOptions>>({
-    ios: {
-      activityType: Location.ActivityType.Fitness,
-      pausesUpdatesAutomatically: false,
-      showsBackgroundLocationIndicator: true,
-    },
-    android: {
-      foregroundService: {
-        notificationTitle: 'GPS attivo',
-        notificationBody: "L'app sta registrando la tua posizione",
-      },
-    },
-    default: {},
-  }) ?? {}),
+const RECORDING_LOCATION_OPTIONS: Location.LocationOptions = {
+  accuracy: Location.Accuracy.BestForNavigation,
+  timeInterval: 2000,
+  distanceInterval: 1,
+  mayShowUserSettingsDialog: true,
+};
+const FOREGROUND_LOCATION_OPTIONS: Location.LocationOptions = {
+  accuracy: Location.Accuracy.High,
+  timeInterval: 3000,
+  distanceInterval: 3,
+  mayShowUserSettingsDialog: true,
 };
 const DEFAULT_SUPABASE_URL = 'https://ovdfsehovsrdzcoqdlfh.supabase.co';
 const ENV_SUPABASE_URL =
@@ -352,56 +307,6 @@ function locationToCoordinate(location: Location.LocationObject): Coordinate {
   };
 }
 
-function isCoordinate(value: unknown): value is Coordinate {
-  if (!value || typeof value !== 'object') return false;
-  const coordinate = value as Partial<Coordinate>;
-  return (
-    Number.isFinite(coordinate.latitude) &&
-    Number.isFinite(coordinate.longitude) &&
-    Number.isFinite(coordinate.timestamp)
-  );
-}
-
-async function readBackgroundPositions(): Promise<Coordinate[]> {
-  if (!BG_POSITIONS_FILE) return [];
-  const info = await FileSystemLegacy.getInfoAsync(BG_POSITIONS_FILE);
-  if (!info.exists) return [];
-  const raw = await FileSystemLegacy.readAsStringAsync(BG_POSITIONS_FILE);
-  try {
-    const parsed = JSON.parse(raw || '[]') as unknown;
-    return Array.isArray(parsed) ? parsed.filter(isCoordinate) : [];
-  } catch {
-    return [];
-  }
-}
-
-async function writeBackgroundPositions(positions: Coordinate[]): Promise<void> {
-  if (!BG_POSITIONS_FILE) {
-    throw new Error('Directory dati applicazione non disponibile');
-  }
-  await FileSystemLegacy.writeAsStringAsync(
-    BG_POSITIONS_FILE,
-    JSON.stringify(positions),
-    { encoding: 'utf8' },
-  );
-}
-
-async function clearBackgroundPositions(): Promise<void> {
-  if (!BG_POSITIONS_FILE) return;
-  await FileSystemLegacy.deleteAsync(BG_POSITIONS_FILE, { idempotent: true });
-}
-
-function sanitizeGpxFileName(value: string | undefined): string {
-  const withoutExtension = (value ?? '')
-    .trim()
-    .replace(/\.gpx$/i, '')
-    .replace(/[\u0000-\u001f<>:"/\\|?*]/g, '_')
-    .replace(/\s+/g, '_')
-    .replace(/^\.+|\.+$/g, '')
-    .slice(0, 80);
-  return withoutExtension || `percorso_${Date.now()}`;
-}
-
 function markersToGeoJSON(
   markers: MarkerData[],
   tipo: 'Porcino' | 'Finferlo'
@@ -424,26 +329,47 @@ TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
   if (data) {
     try {
       const { locations } = data as any;
-      const previous = await readBackgroundPositions().catch(() => []);
-      const incoming = Array.isArray(locations)
-        ? locations
-            .map((location) => locationToCoordinate(location as Location.LocationObject))
-            .filter(isCoordinate)
-        : [];
-      if (incoming.length > 0) {
-        await writeBackgroundPositions([...previous, ...incoming]);
-      }
+      let arr: Coordinate[] = [];
+      try {
+        const info = await FileSystemLegacy.getInfoAsync(BG_POSITIONS_FILE);
+        if (info.exists) {
+          const raw = await FileSystemLegacy.readAsStringAsync(BG_POSITIONS_FILE);
+          arr = JSON.parse(raw || '[]');
+        }
+      } catch { arr = []; }
+      (locations as any[]).forEach((loc) => {
+        arr.push({
+          latitude: loc.coords.latitude,
+          longitude: loc.coords.longitude,
+          timestamp: typeof loc.timestamp === 'number' ? loc.timestamp : Date.now(),
+        });
+      });
+      await FileSystemLegacy.writeAsStringAsync(BG_POSITIONS_FILE, JSON.stringify(arr));
     } catch (err) {
       console.error('Errore scrittura file bg positions:', err);
     }
   }
 });
 
+const checkAndOpenSettingsIfNeeded = async () => {
+  if (Platform.OS !== 'android') return true;
+  const fg = await Location.getForegroundPermissionsAsync();
+  const bg = await Location.getBackgroundPermissionsAsync();
+  if (fg.status !== 'granted' || bg.status !== 'granted') {
+    Alert.alert(
+      'Permessi mancanti',
+      'Per tracciare la posizione in background devi concedere tutti i permessi. Aprire impostazioni?',
+      [{ text: 'No', style: 'cancel' }, { text: 'Sì', onPress: () => Linking.openSettings() }]
+    );
+    return false;
+  }
+  return true;
+};
+
 // ══════════════════════════════════════════════════════════════════════════════
 // App
 // ══════════════════════════════════════════════════════════════════════════════
 export default function App() {
-  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const [recording, setRecording] = React.useState(false);
   const [path, setPath] = React.useState<Coordinate[]>([]);
   const [currentPosition, setCurrentPosition] = React.useState<Coordinate | null>(null);
@@ -468,12 +394,10 @@ export default function App() {
   const initialCameraCenteredRef = React.useRef(false);
   // Camera ref: tipo è il componente Camera stesso
   const recordingRef = React.useRef(recording);
-  const pathRef = React.useRef(path);
 
   const visibleMarkers = showAll ? markers : markers.slice(0, 5);
 
   React.useEffect(() => { recordingRef.current = recording; }, [recording]);
-  React.useEffect(() => { pathRef.current = path; }, [path]);
 
   React.useEffect(() => {
     if (tileSets.length > 0 && tileDate && tileVersion && tilesError) {
@@ -628,9 +552,7 @@ export default function App() {
             setPath((prev) => {
               const lastTimestamp = prev.length ? prev[prev.length - 1].timestamp ?? 0 : 0;
               if ((coordinate.timestamp ?? 0) <= lastTimestamp) return prev;
-              const next = [...prev, coordinate];
-              pathRef.current = next;
-              return next;
+              return [...prev, coordinate];
             });
           }
         });
@@ -654,53 +576,27 @@ export default function App() {
 
   const syncPathFromFile = React.useCallback(async (consume = false): Promise<Coordinate[]> => {
     try {
-      const arr = await readBackgroundPositions();
-      const current = pathRef.current;
-      if (arr.length === 0) {
-        if (consume) {
-          try { await clearBackgroundPositions(); } catch { }
-        }
-        return current;
-      }
-      const lastTs = current.length ? current[current.length - 1].timestamp : 0;
-      const newPoints = arr
-        .filter((point) => point.timestamp > lastTs)
-        .sort((a, b) => a.timestamp - b.timestamp);
-      const updated = newPoints.length ? [...current, ...newPoints] : current;
-      if (updated !== current) {
-        pathRef.current = updated;
-        setPath(updated);
-      }
+      const info = await FileSystemLegacy.getInfoAsync(BG_POSITIONS_FILE);
+      if (!info.exists) return path;
+      const raw = await FileSystemLegacy.readAsStringAsync(BG_POSITIONS_FILE);
+      const arr = JSON.parse(raw || '[]') as Coordinate[];
+      if (!Array.isArray(arr) || arr.length === 0) return path;
+      let updated: Coordinate[] = [];
+      setPath((prev) => {
+        const lastTs = prev.length ? prev[prev.length - 1].timestamp : 0;
+        const newPoints = arr.filter((p) => (p.timestamp ?? 0) > lastTs);
+        updated = newPoints.length ? [...prev, ...newPoints] : prev;
+        return updated;
+      });
       if (consume) {
-        try { await clearBackgroundPositions(); } catch { }
+        try { await FileSystemLegacy.deleteAsync(BG_POSITIONS_FILE, { idempotent: true }); } catch { }
       }
-      return updated;
-    } catch {
-      return pathRef.current;
-    }
-  }, []);
-
-  // Le registrazioni background restano registrate dal sistema operativo.
-  // Se il processo viene ricreato, riallinea l'interfaccia senza muovere la camera.
-  React.useEffect(() => {
-    let mounted = true;
-    void (async () => {
-      try {
-        const started = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
-        if (!mounted || !started) return;
-        recordingRef.current = true;
-        setRecording(true);
-        await syncPathFromFile(false);
-      } catch (err) {
-        console.log('[gps] Background recording restore failed', err);
-      }
-    })();
-    return () => { mounted = false; };
-  }, [syncPathFromFile]);
+      return updated.length ? updated : path;
+    } catch { return path; }
+  }, [path]);
 
   // polling GPS
   React.useEffect(() => {
-    if (!recording) return;
     let mounted = true;
     const tick = async () => {
       if (!mounted) return;
@@ -709,7 +605,7 @@ export default function App() {
     void tick();
     const id = setInterval(() => { void tick(); }, 500);
     return () => { mounted = false; clearInterval(id); };
-  }, [recording, syncPathFromFile]);
+  }, [syncPathFromFile]);
 
   const highlightRoute = (routeId: string) => {
     setHighlightedRoute(routeId);
@@ -717,18 +613,6 @@ export default function App() {
   };
 
   const startRecording = async () => {
-    let servicesEnabled = false;
-    try {
-      servicesEnabled = await Location.hasServicesEnabledAsync();
-    } catch (err) {
-      console.log('[gps] Location services check failed', err);
-      Alert.alert('GPS non disponibile', 'Non è stato possibile verificare i servizi di localizzazione.');
-      return;
-    }
-    if (!servicesEnabled) {
-      Alert.alert('Localizzazione disattivata', 'Attiva i servizi di localizzazione per registrare il percorso.');
-      return;
-    }
     const { status: fgStatus } = await Location.requestForegroundPermissionsAsync();
     if (fgStatus !== 'granted') { Alert.alert('Permesso GPS negato!'); return; }
     let bgStatus: Location.PermissionStatus | null = null;
@@ -738,67 +622,52 @@ export default function App() {
     } catch (err) {
       console.log('[gps] Background permission request failed', err);
     }
-    if (bgStatus !== 'granted') {
-      const message = Platform.select({
-        ios:
-          'La registrazione continuerà mentre l’app è aperta. Per registrare con schermo bloccato, abilita Posizione > Sempre nelle impostazioni di iOS.',
-        android:
-          'La registrazione continuerà mentre l’app è aperta. Per registrare con schermo spento, concedi il permesso di posizione "Sempre".',
-        default: 'La registrazione in background non è disponibile senza il relativo permesso.',
-      });
+    if (Platform.OS === 'android' && bgStatus !== 'granted') {
       Alert.alert(
         'Permesso background non concesso',
-        message,
-        [
-          { text: 'Continua in primo piano', style: 'cancel' },
-          { text: 'Apri impostazioni', onPress: () => { void Linking.openSettings(); } },
-        ],
+        'La registrazione funziona mentre tieni aperta l\'app. Per continuare a schermo spento devi concedere "Consenti sempre".'
       );
     }
-    recordingRef.current = true;
     setRecording(true);
-    pathRef.current = [];
     setPath([]);
     setMarkers([]);
-    try { await clearBackgroundPositions(); } catch { }
+    try { await FileSystemLegacy.deleteAsync(BG_POSITIONS_FILE, { idempotent: true }); } catch { }
     if (bgStatus === 'granted') {
       try {
         const started = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
         if (!started) {
-          await Location.startLocationUpdatesAsync(
-            LOCATION_TASK_NAME,
-            BACKGROUND_LOCATION_OPTIONS,
-          );
+          await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
+            ...RECORDING_LOCATION_OPTIONS,
+            showsBackgroundLocationIndicator: true,
+            foregroundService: {
+              notificationTitle: 'GPS attivo',
+              notificationBody: "L'app sta registrando la tua posizione",
+            },
+          });
         }
       } catch (err) {
         console.log('[gps] Background location task failed to start', err);
-        Alert.alert(
-          'Background non disponibile',
-          'La registrazione continua in primo piano, ma il sistema non ha avviato il tracciamento in background.',
-        );
       }
     }
   };
 
-  const saveCurrentRoute = async (pathData: Coordinate[] = pathRef.current) => {
+  const saveCurrentRoute = async () => {
     const route_id = uuid.v4() as string;
     const date = new Date().toISOString();
     const name = `Percorso ${new Date().toLocaleDateString()}`;
-    await insertRoute(route_id, name, date, pathData, markers);
+    await insertRoute(route_id, name, date, path, markers);
   };
 
   const stopRecording = async () => {
-    recordingRef.current = false;
     setRecording(false);
     try {
       const started = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
       if (started) await Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME);
     } catch (err) { console.warn('Errore stop location updates:', err); }
-    const finalPath = await syncPathFromFile(true);
     Alert.alert('Salva', 'Vuoi salvare il percorso registrato?', [
       { text: 'No', style: 'cancel' },
       { text: 'Sì', onPress: async () => {
-        try { await saveCurrentRoute(finalPath); }
+        try { await saveCurrentRoute(); }
         catch { Alert.alert('Errore', 'Impossibile salvare il percorso nel database.'); }
       }},
     ]);
@@ -859,17 +728,16 @@ export default function App() {
       }));
       const gpxData = generateGPX(route.path, wmarkers);
       let uri: string | undefined;
-      const safeFileName = sanitizeGpxFileName(fileName);
       try {
+        const safeFileName = fileName?.trim() || `percorso_${Date.now()}`;
         const file = new File(Paths.cache, safeFileName + '.gpx');
-        file.create({ overwrite: true, intermediates: true });
-        file.write(gpxData);
-        uri = file.uri;
+        try { file.create(); } catch { }
+        try { await (file.write(gpxData) as Promise<void> | void); } catch { }
+        // @ts-ignore
+        uri = file.uri ?? (file.getUri ? await file.getUri() : undefined);
       } catch { uri = undefined; }
       if (!uri) {
-        if (!FileSystemLegacy.cacheDirectory) {
-          throw new Error('Directory cache non disponibile');
-        }
+        const safeFileName = fileName?.trim() || `percorso_${Date.now()}`;
         const legacyUri = FileSystemLegacy.cacheDirectory + safeFileName + '.gpx';
         await FileSystemLegacy.writeAsStringAsync(legacyUri, gpxData, { encoding: 'utf8' });
         uri = legacyUri;
@@ -877,26 +745,7 @@ export default function App() {
       if (uri) {
         const available = await Sharing.isAvailableAsync();
         if (!available) Alert.alert('GPX salvato in: ' + uri);
-        else {
-          const sharingOptions =
-            Platform.select<Sharing.SharingOptions>({
-              ios: {
-                UTI: 'public.xml',
-                anchor: {
-                  x: windowWidth / 2,
-                  y: windowHeight / 2,
-                  width: 1,
-                  height: 1,
-                },
-              },
-              android: {
-                mimeType: 'application/gpx+xml',
-                dialogTitle: 'Condividi percorso GPX',
-              },
-              default: {},
-            }) ?? {};
-          await Sharing.shareAsync(uri, sharingOptions);
-        }
+        else await Sharing.shareAsync(uri);
       }
     } catch (error: any) {
       Alert.alert('Errore durante la condivisione', error?.message ?? String(error));
@@ -1008,8 +857,8 @@ export default function App() {
 // MainUI
 // ══════════════════════════════════════════════════════════════════════════════
 const CENTER_ZOOM_LEVEL = 16;
-const COORDINATE_POPUP_WIDTH = 184;
-const COORDINATE_POPUP_HEIGHT = 110;
+const COORDINATE_POPUP_WIDTH = 272;
+const COORDINATE_POPUP_HEIGHT = 208;
 const COORDINATE_POPUP_TAIL_HEIGHT = 9;
 const COORDINATE_POPUP_TAIL_INSET = 12;
 const COORDINATE_POPUP_SAFE_MARGIN = 12;
@@ -1019,8 +868,10 @@ function MapCoordinatePopup(props: {
   copied: boolean;
   onCopy: () => void;
   onClose: () => void;
+  onShowData: () => void;
+  onShowAnalysis: () => void;
 }) {
-  const { point, copied, onCopy, onClose } = props;
+  const { point, copied, onCopy, onClose, onShowData, onShowAnalysis } = props;
   return (
     <View style={mStyles.coordinatePopupBubble}>
       <View style={mStyles.coordinatePopupCard}>
@@ -1054,9 +905,27 @@ function MapCoordinatePopup(props: {
             )}
           </TouchableOpacity>
         </View>
-        <TouchableOpacity onPress={() => {}} style={mStyles.coordinatePopupWeatherButton}>
-          <Text style={mStyles.coordinatePopupWeatherText}>Mostra dati meteo</Text>
-        </TouchableOpacity>
+        <IndexPopupSummary point={point} />
+        <View style={mStyles.coordinatePopupActions}>
+          <TouchableOpacity
+            onPress={onShowData}
+            style={mStyles.coordinatePopupWeatherButton}
+            accessibilityRole="button"
+            accessibilityLabel="Mostra dati meteo e terreno del punto"
+          >
+            <PanelRightOpen size={15} color={UI.textPri} />
+            <Text style={mStyles.coordinatePopupWeatherText}>Mostra dati</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={onShowAnalysis}
+            style={mStyles.coordinatePopupAnalysisButton}
+            accessibilityRole="button"
+            accessibilityLabel="Apri analisi indice del punto"
+          >
+            <Activity size={15} color={UI.textPri} />
+            <Text style={mStyles.coordinatePopupWeatherText}>Analisi indice</Text>
+          </TouchableOpacity>
+        </View>
       </View>
       <View style={mStyles.coordinatePopupTailBorder} />
       <View style={mStyles.coordinatePopupTailFill} />
@@ -1557,6 +1426,8 @@ function MainUI(props: any) {
   const finferliCount = markers.filter((m: MarkerData) => m.tipo === 'Finferlo').length;
   const [coordinateSelection, setCoordinateSelection] = React.useState<CoordinatePopupSelection | null>(null);
   const [coordinatesCopied, setCoordinatesCopied] = React.useState(false);
+  const [pointDetailsPoint, setPointDetailsPoint] = React.useState<SelectedMapPoint | null>(null);
+  const [indexAnalysisPoint, setIndexAnalysisPoint] = React.useState<SelectedMapPoint | null>(null);
 
   // GeoJSON memoizzati
   const currentPathGeoJSON = React.useMemo(() => coordsToGeoJSONLine(path), [path]);
@@ -1595,6 +1466,26 @@ function MainUI(props: any) {
     await Clipboard.setStringAsync(`${point.latitude.toFixed(3)}, ${point.longitude.toFixed(3)}`);
     setCoordinatesCopied(true);
   }, [coordinateSelection]);
+
+  const openPointDetails = React.useCallback(() => {
+    if (!coordinateSelection) return;
+    setIndexAnalysisPoint(null);
+    setPointDetailsPoint(coordinateSelection.point);
+  }, [coordinateSelection]);
+
+  const closePointDetails = React.useCallback(() => {
+    setPointDetailsPoint(null);
+  }, []);
+
+  const openIndexAnalysis = React.useCallback(() => {
+    if (!coordinateSelection) return;
+    setPointDetailsPoint(null);
+    setIndexAnalysisPoint(coordinateSelection.point);
+  }, [coordinateSelection]);
+
+  const closeIndexAnalysis = React.useCallback(() => {
+    setIndexAnalysisPoint(null);
+  }, []);
 
   return (
     <SafeAreaView style={mStyles.root}>
@@ -1856,10 +1747,47 @@ function MainUI(props: any) {
               copied={coordinatesCopied}
               onCopy={copySelectedCoordinates}
               onClose={closeCoordinatePopup}
+              onShowData={openPointDetails}
+              onShowAnalysis={openIndexAnalysis}
             />
           </View>
         </View>
       )}
+
+      <Modal
+        visible={pointDetailsPoint !== null}
+        animationType="slide"
+        presentationStyle="fullScreen"
+        hardwareAccelerated
+        statusBarTranslucent={false}
+        navigationBarTranslucent={false}
+        onRequestClose={closePointDetails}
+      >
+        {pointDetailsPoint && (
+          <PointDetailsScreen
+            point={pointDetailsPoint}
+            onClose={closePointDetails}
+          />
+        )}
+      </Modal>
+
+      <Modal
+        visible={indexAnalysisPoint !== null}
+        animationType="slide"
+        presentationStyle="fullScreen"
+        hardwareAccelerated
+        statusBarTranslucent={false}
+        navigationBarTranslucent={false}
+        onRequestClose={closeIndexAnalysis}
+      >
+        {indexAnalysisPoint && (
+          <IndexAnalysisScreen
+            point={indexAnalysisPoint}
+            initialSpecies={activeLayer === 'finferli' ? 'finferli' : 'porcini'}
+            onClose={closeIndexAnalysis}
+          />
+        )}
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -2055,7 +1983,9 @@ const mStyles = StyleSheet.create({
   coordinatePopupCopyGlyph: { width: 14, height: 14 },
   coordinatePopupCopyBack: { position: 'absolute', left: 1, top: 1, width: 9, height: 10, borderWidth: 1.5, borderColor: UI.textSec, borderRadius: 2 },
   coordinatePopupCopyFront: { position: 'absolute', right: 1, bottom: 1, width: 9, height: 10, borderWidth: 1.5, borderColor: UI.textPri, borderRadius: 2, backgroundColor: UI.bg3 },
-  coordinatePopupWeatherButton: { minHeight: 32, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, borderRadius: 7, borderWidth: 1, borderColor: UI.borderHi, backgroundColor: UI.greenDim },
+  coordinatePopupActions: { flexDirection: 'row', gap: 7 },
+  coordinatePopupWeatherButton: { flex: 1, minHeight: 36, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, borderRadius: 7, borderWidth: 1, borderColor: UI.borderHi, backgroundColor: UI.greenDim },
+  coordinatePopupAnalysisButton: { flex: 1, minHeight: 36, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, borderRadius: 7, borderWidth: 1, borderColor: '#495541', backgroundColor: '#263028' },
   coordinatePopupWeatherText: { color: UI.textPri, fontSize: 11, fontWeight: '800' },
   statsBar: { position: 'absolute', bottom: 138, left: 12, right: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(10,17,11,0.50)', borderWidth: 1, borderColor: UI.border, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 8 },
   statItem: { flex: 1, alignItems: 'center' },

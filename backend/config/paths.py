@@ -21,6 +21,18 @@ FINAL_STATIC_DIR = FINAL_DIR / "static"
 FINAL_METEO_DIR = FINAL_DIR / "meteo"
 FINAL_METEO_HISTORIC_DIR = FINAL_METEO_DIR / "historic"
 
+
+def icon_ruc_time_series_path(year: int) -> Path:
+    return FINAL_METEO_DIR / f"icon_ruc_time_series_{year}.nc"
+
+
+def icon_ruc_recovery_path(year: int) -> Path:
+    return FINAL_METEO_DIR / f"recovery_icon_ruc_time_series_{year}.nc"
+
+
+def hrs_time_series_path(year: int) -> Path:
+    return FINAL_METEO_DIR / f"hrs_time_series_{year}.nc"
+
 OUT_GEOJSON_DIR = OUTPUTS_DIR / "index_geojson"
 OUT_INDEX_NC_DIR = OUTPUTS_DIR / "index_nc"
 OUT_TIF_DIR = OUTPUTS_DIR / "index_tif"

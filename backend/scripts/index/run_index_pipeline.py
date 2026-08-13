@@ -17,12 +17,15 @@ def main() -> None:
     parser.add_argument("--date", default=None, help="Target date YYYY-MM-DD. Defaults to latest meteo date.")
     parser.add_argument("--python", default=sys.executable)
     parser.add_argument("--species", nargs="+", choices=["porcini", "finferli"], default=["porcini", "finferli"])
+    parser.add_argument("--meteo-dir", default=None, help="Directory containing yearly ICON-RUC/HRS series.")
     args = parser.parse_args()
 
     py = args.python
     build_cmd = [py, "-m", "backend.scripts.index.01_build_index_features"]
     if args.date:
         build_cmd += ["--date", args.date]
+    if args.meteo_dir:
+        build_cmd += ["--meteo-dir", args.meteo_dir]
     run_cmd(build_cmd)
 
     compute_cmd = [py, "-m", "backend.scripts.index.02_compute_funghi_index"]

@@ -15,21 +15,26 @@ def select_recent_window(ds: xr.Dataset, target_date: str | None, window_days: i
         raise ValueError("meteo dataset must have a time coordinate")
 
     ds = ds.sortby("time")
-    times = ds["time"].values
+    times = ds["time"].values.astype("datetime64[D]")
     if len(times) == 0:
         raise ValueError("meteo dataset has no time steps")
 
     if target_date is None:
         target = times[-1]
     else:
-        target = np.datetime64(target_date)
+        target = np.datetime64(target_date, "D")
         available = times[times <= target]
         if len(available) == 0:
             raise ValueError(f"no meteo data available up to target date {target_date}")
         target = available[-1]
 
-    recent = ds.sel(time=slice(None, target)).tail(time=window_days)
-    if recent.sizes.get("time", 0) < 8:
+    expected = np.arange(
+        target - np.timedelta64(window_days - 1, "D"),
+        target + np.timedelta64(1, "D"),
+        dtype="datetime64[D]",
+    )
+    recent = ds.reindex(time=expected)
+    if window_days >= 8 and int(np.isfinite(recent["t2m_mean"]).any(("lat", "lon")).sum()) < 8:
         raise ValueError("not enough meteo days to compute the index")
     return recent
 
@@ -90,6 +95,8 @@ def build_feature_dataset(
     target_date: str | None,
     window_days: int,
 ) -> xr.Dataset:
+    if "weather_source" in meteo.data_vars:
+        meteo = meteo.set_coords("weather_source")
     require_vars(
         meteo,
         [
@@ -99,7 +106,6 @@ def build_feature_dataset(
             "precip_sum",
             "rh_mean",
             "rh_min",
-            "gust_mean",
             "gust_max",
         ],
         "meteo dataset",

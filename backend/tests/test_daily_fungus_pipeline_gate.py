@@ -39,7 +39,6 @@ def test_publishable_dates_include_rolling_day_without_snapshot(tmp_path, monkey
     ds.to_netcdf(rolling_path)
 
     monkeypatch.setattr(pipeline, "ROLLING_METEO_NC", rolling_path)
-    monkeypatch.setattr(pipeline, "FINAL_METEO_HISTORIC_DIR", tmp_path / "historic")
     monkeypatch.setattr(pipeline, "is_fully_published", lambda date: date == "2026-07-20")
 
     publishable = pipeline.publishable_unpublished_dates_until(

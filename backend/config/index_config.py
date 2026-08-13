@@ -9,7 +9,6 @@ from backend.config.paths import (
 
 DEFAULT_SPECIES = ("porcini", "finferli")
 
-METEO_RECENT_NC = FINAL_METEO_DIR / "meteo_recent_003deg.nc"
 TERRAIN_STATIC_NC = FINAL_STATIC_DIR / "terrain_static_003deg.nc"
 
 INDEX_FEATURE_WINDOW_DAYS = 19

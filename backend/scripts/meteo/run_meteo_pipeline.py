@@ -139,7 +139,7 @@ def main() -> None:
         description=(
             "Orchestrator unico della pipeline meteo: "
             "01 download raw -> 02 extract hourly -> 03 update hourly buffer -> "
-            "04 build daily -> 05 regrid daily -> 06 update recent final."
+            "04 build daily -> 05 regrid daily -> 06 update yearly time series."
         )
     )
     parser.add_argument(
@@ -247,8 +247,8 @@ def main() -> None:
         print("\nDone OK")
         return
 
-    # 06) Update recent final dataset
-    print("\n[STEP 06] Update recent daily final NetCDF")
+    # 06) Update yearly final dataset
+    print("\n[STEP 06] Update yearly ICON-RUC time series")
     rc06 = step_06_update_recent(py=py, run=run)
 
     if rc06 != 0:

@@ -320,7 +320,8 @@ def _main() -> None:
     parser.add_argument("--buffer-nc", default=str(BUFFER_NC))
     parser.add_argument("--daily-candidates", default=str(INTERMEDIATE_METEO_DIR / "daily_candidates.nc"))
     parser.add_argument("--daily-target", default=str(INTERMEDIATE_METEO_DIR / "daily_003deg.nc"))
-    parser.add_argument("--recent-nc", default=str(FINAL_METEO_DIR / "meteo_recent_003deg.nc"))
+    parser.add_argument("--time-series-nc", default=None, help="Optional yearly ICON-RUC output override.")
+    parser.add_argument("--recent-nc", dest="legacy_recent_nc", default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     py = args.python
@@ -367,7 +368,9 @@ def _main() -> None:
     if args.dry_run:
         print("[DRY RUN] stop")
         print_variable_coverage(buffer_path)
-        print_meteo_recent_coverage(Path(args.recent_nc))
+        series_override = args.time_series_nc or args.legacy_recent_nc
+        if series_override:
+            print_meteo_recent_coverage(Path(series_override))
         return
 
     if runs_to_process and not args.skip_d2_support:
@@ -431,18 +434,20 @@ def _main() -> None:
                 "--overwrite",
             ], allow_failure=True)
             if rc05 == 0:
-                print("\n[STEP 06] Update recent daily final NetCDF")
-                run_cmd([
+                print("\n[STEP 06] Update yearly ICON-RUC time series")
+                update_cmd = [
                     py,
                     "-m",
                     "backend.scripts.meteo.06_update_recent_meteo_nc",
                     "--daily",
                     args.daily_target,
-                    "--out",
-                    args.recent_nc,
                     "--run",
                     latest_processed,
-                ], allow_failure=True)
+                ]
+                series_override = args.time_series_nc or args.legacy_recent_nc
+                if series_override:
+                    update_cmd.extend(["--out", series_override])
+                run_cmd(update_cmd, allow_failure=True)
             else:
                 print("[WARN] 05 non eseguito con successo. Recent non aggiornato.")
         else:
@@ -455,7 +460,9 @@ def _main() -> None:
     if failed:
         print("[FAILED] " + ", ".join(failed))
     print_variable_coverage(buffer_path)
-    print_meteo_recent_coverage(Path(args.recent_nc))
+    series_override = args.time_series_nc or args.legacy_recent_nc
+    if series_override:
+        print_meteo_recent_coverage(Path(series_override))
     print("\nDone")
 
 

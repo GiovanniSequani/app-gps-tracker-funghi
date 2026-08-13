@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import shutil
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -11,7 +10,6 @@ import numpy as np
 import xarray as xr
 
 from backend.config.meteo import FINAL_METEO_DIR, INTERMEDIATE_METEO_DIR
-from backend.config.paths import FINAL_METEO_HISTORIC_DIR
 from backend.scripts.pipeline_logging import (
     print_meteo_recent_coverage,
     run_logged_cmd,
@@ -21,7 +19,9 @@ from backend.scripts.pipeline_logging import (
 ROOT_DIR = Path(__file__).resolve().parents[2]
 METEO_BAT = ROOT_DIR / "backend" / "scripts" / "meteo" / "run_auto_meteo.bat"
 RUC_METEO_BAT = ROOT_DIR / "backend" / "scripts" / "meteo" / "run_auto_meteo_ruc.bat"
-ROLLING_METEO_NC = FINAL_METEO_DIR / "meteo_recent_003deg.nc"
+LEGACY_ROLLING_METEO_NC = FINAL_METEO_DIR / "meteo_recent_003deg.nc"
+# Compatibility alias for callers/tests that explicitly inject a weather file.
+ROLLING_METEO_NC = LEGACY_ROLLING_METEO_NC
 HOURLY_BUFFER_NC = INTERMEDIATE_METEO_DIR / "hourly_buffer.nc"
 UTC = timezone.utc
 LOCAL_TZ = ZoneInfo("Europe/Rome")
@@ -32,13 +32,23 @@ def run_cmd(cmd: list[str]) -> None:
     if returncode != 0:
         raise RuntimeError(f"Command failed with exit code {returncode}")
 
+def latest_icon_series() -> Path:
+    if ROLLING_METEO_NC != LEGACY_ROLLING_METEO_NC:
+        return ROLLING_METEO_NC
+    paths = sorted(FINAL_METEO_DIR.glob("icon_ruc_time_series_*.nc"))
+    if paths:
+        return paths[-1]
+    if LEGACY_ROLLING_METEO_NC.exists():
+        return LEGACY_ROLLING_METEO_NC
+    raise FileNotFoundError("no yearly ICON-RUC time series found")
+
+
 def load_rolling_metadata(path: Path) -> tuple[str, str]:
     if not path.is_file():
         raise FileNotFoundError(f"Rolling meteo dataset not found: {path}")
 
     ds = xr.open_dataset(path)
     try:
-        ds.load()
         time_end = str(ds.attrs.get("time_end", ""))
         latest_run = str(ds.attrs.get("latest_run_time_utc", ""))
         if not time_end:
@@ -194,18 +204,6 @@ def publication_gate(
     raise ValueError(f"publication model non supportato: {model}")
 
 
-def parse_snapshot_date(path: Path) -> str | None:
-    prefix = "meteo_recent_003deg_"
-    stem = path.stem
-    if not stem.startswith(prefix):
-        return None
-    raw = stem[len(prefix):]
-    try:
-        return datetime.strptime(raw, "%Y%m%d").strftime("%Y-%m-%d")
-    except ValueError:
-        return None
-
-
 def index_path_for(date: str) -> Path:
     return ROOT_DIR / "backend" / "outputs" / "index_nc" / f"funghi_index_{date}.nc"
 
@@ -248,29 +246,12 @@ def latest_fully_published_date() -> str | None:
     return max(published) if published else None
 
 
-def complete_historic_dates_after(date_after: str | None, date_to: str) -> list[str]:
-    if not FINAL_METEO_HISTORIC_DIR.is_dir():
-        return []
-
-    out = []
-    for snapshot_path in FINAL_METEO_HISTORIC_DIR.glob("meteo_recent_003deg_*.nc"):
-        snapshot_date = parse_snapshot_date(snapshot_path)
-        if snapshot_date is None:
-            continue
-        if date_after is not None and snapshot_date <= date_after:
-            continue
-        if snapshot_date <= date_to:
-            out.append(snapshot_date)
-    return sorted(set(out))
-
-
 def complete_rolling_dates_until(path: Path, date_to: str) -> list[str]:
     if not path.is_file():
         return []
 
     ds = xr.open_dataset(path)
     try:
-        ds.load()
         if "time" not in ds.coords:
             return []
         dates = {
@@ -291,26 +272,17 @@ def complete_rolling_dates_until(path: Path, date_to: str) -> list[str]:
     return sorted(valid_dates)
 
 
-def complete_candidate_dates_after(date_after: str | None, date_to: str) -> list[str]:
-    dates = set(complete_historic_dates_after(date_after, date_to))
-    dates.update(complete_rolling_dates_until(ROLLING_METEO_NC, date_to))
+def complete_candidate_dates_after(
+    date_after: str | None,
+    date_to: str,
+    series_path: Path | None = None,
+) -> list[str]:
+    dates = set(complete_rolling_dates_until(series_path or latest_icon_series(), date_to))
     return sorted(
         date
         for date in dates
         if date_after is None or date > date_after
     )
-
-
-def ensure_historic_snapshot_for_date(date: str) -> Path:
-    snapshot_name = f"meteo_recent_003deg_{date.replace('-', '')}.nc"
-    snapshot_path = FINAL_METEO_HISTORIC_DIR / snapshot_name
-    if snapshot_path.exists():
-        return snapshot_path
-
-    FINAL_METEO_HISTORIC_DIR.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(ROLLING_METEO_NC, snapshot_path)
-    print(f"[SNAPSHOT] created={snapshot_path.name}")
-    return snapshot_path
 
 
 def publishable_unpublished_dates_until(
@@ -383,9 +355,8 @@ def _main() -> None:
             raise FileNotFoundError(f"Meteo wrapper not found: {meteo_bat}")
         run_cmd(["cmd", "/c", str(meteo_bat)])
 
-    rolling_date, latest_run_raw = load_rolling_metadata(ROLLING_METEO_NC)
-    snapshot_name = f"meteo_recent_003deg_{rolling_date.replace('-', '')}.nc"
-    snapshot_path = FINAL_METEO_HISTORIC_DIR / snapshot_name
+    weather_series = latest_icon_series()
+    rolling_date, latest_run_raw = load_rolling_metadata(weather_series)
     pipeline_date = args.date or rolling_date
     if args.publication_model == "icon-d2-ruc":
         processed_runs = load_processed_ruc_runs_from_hourly_files(
@@ -401,7 +372,6 @@ def _main() -> None:
         model=args.publication_model,
         ruc_min_lead_hours=args.ruc_output_min_lead_hours,
     )
-    snapshot_exists = snapshot_path.exists()
     py = args.python
 
     should_publish = args.force or rolling_gate_ready
@@ -415,7 +385,7 @@ def _main() -> None:
     print(
         f"publish_gate={'ready' if should_publish else 'waiting'} "
         f"reason={'forced' if args.force else rolling_gate_reason} "
-        f"snapshot={snapshot_path.name if snapshot_exists else '[missing]'} force={args.force}"
+        f"weather_series={weather_series.name} force={args.force}"
     )
 
     def run_tile_cleanup() -> None:
@@ -501,8 +471,6 @@ def _main() -> None:
         )
 
         if should_publish:
-            if not snapshot_exists:
-                ensure_historic_snapshot_for_date(rolling_date)
             if rolling_date not in publish_dates and (args.force or not is_fully_published(rolling_date)):
                 publish_dates.append(rolling_date)
 
@@ -516,7 +484,7 @@ def _main() -> None:
         else:
             print("[SKIP] No unpublished complete day found.")
         run_tile_cleanup()
-        print_meteo_recent_coverage(ROLLING_METEO_NC)
+        print_meteo_recent_coverage(weather_series)
         return
 
     if not args.date and not should_publish and publish_dates:
@@ -526,12 +494,10 @@ def _main() -> None:
         print(f"[PUBLISH] Publishing day(s): {publish_dates}")
 
     for date in publish_dates:
-        if not args.date:
-            ensure_historic_snapshot_for_date(date)
         publish_date(date)
 
     if args.skip_tiles:
-        print_meteo_recent_coverage(ROLLING_METEO_NC)
+        print_meteo_recent_coverage(weather_series)
         if publication_errors:
             raise RuntimeError(
                 "Public data publication failed: "
@@ -540,7 +506,7 @@ def _main() -> None:
         print("\nDone")
         return
     run_tile_cleanup()
-    print_meteo_recent_coverage(ROLLING_METEO_NC)
+    print_meteo_recent_coverage(weather_series)
     if publication_errors:
         raise RuntimeError(
             "Public data publication failed after index/tile publication and tile cleanup: "

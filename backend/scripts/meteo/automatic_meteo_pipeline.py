@@ -345,7 +345,9 @@ def _main():
 
     if args.dry_run:
         print("[DRY RUN] stop")
-        print_meteo_recent_coverage(FINAL_METEO_DIR / "meteo_recent_003deg.nc")
+        yearly = sorted(FINAL_METEO_DIR.glob("icon_ruc_time_series_*.nc"))
+        if yearly:
+            print_meteo_recent_coverage(yearly[-1])
         return
 
     # --- esecuzione ---
@@ -380,7 +382,9 @@ def _main():
     if failed:
         print("[FAILED] " + ", ".join(failed))
 
-    print_meteo_recent_coverage(FINAL_METEO_DIR / "meteo_recent_003deg.nc")
+    yearly = sorted(FINAL_METEO_DIR.glob("icon_ruc_time_series_*.nc"))
+    if yearly:
+        print_meteo_recent_coverage(yearly[-1])
 
     print("\nDone")
 

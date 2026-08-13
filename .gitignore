@@ -22,6 +22,8 @@
 /backend/logs/
 /backend/outputs/
 /backend/tmp/
+/backend/data/final/meteo/.hrs_staging/
+*.building
 **/__pycache__/
 *.py[cod]
 /.pytest_cache/

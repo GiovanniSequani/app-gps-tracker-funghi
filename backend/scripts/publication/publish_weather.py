@@ -6,7 +6,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from backend.config.paths import FINAL_METEO_DIR, OUT_INDEX_NC_DIR, OUT_PUBLIC_WEATHER_DIR
+from backend.config.paths import OUT_INDEX_NC_DIR, OUT_PUBLIC_WEATHER_DIR
 from backend.src.publication.supabase import (
     SupabaseClient,
     WeatherPublisher,
@@ -14,6 +14,7 @@ from backend.src.publication.supabase import (
     weather_publication_decision,
 )
 from backend.src.publication.weather import build_weather_dataset
+from backend.src.meteo.time_series import save_composite_window
 
 
 ROOT_DIR = Path(__file__).resolve().parents[3]
@@ -26,8 +27,8 @@ def main() -> None:
     parser.add_argument("--index-date", required=True, help="Published index date YYYY-MM-DD.")
     parser.add_argument(
         "--source",
-        default=str(FINAL_METEO_DIR / "meteo_recent_003deg.nc"),
-        help="Source rolling daily NetCDF.",
+        default=None,
+        help="Prepared weather source override. Default: temporary HRS/ICON composite.",
     )
     parser.add_argument(
         "--output-dir",
@@ -54,7 +55,18 @@ def main() -> None:
             f"matching published index NetCDF not found: {index_path}"
         )
 
-    dataset = build_weather_dataset(Path(args.source), args.index_date)
+    composite_path: Path | None = None
+    if args.source:
+        source_path = Path(args.source)
+    else:
+        composite_path = OUT_PUBLIC_WEATHER_DIR / ".staging" / f"weather_source_{args.index_date}.nc"
+        save_composite_window(args.index_date, 20, composite_path)
+        source_path = composite_path
+    try:
+        dataset = build_weather_dataset(source_path, args.index_date)
+    finally:
+        if composite_path and composite_path.exists():
+            composite_path.unlink()
     output_dir = (
         Path(args.output_dir)
         if args.output_dir

@@ -43,7 +43,8 @@ def main() -> None:
     parser.add_argument("--buffer-nc", default=str(INTERMEDIATE_METEO_DIR / "hourly_buffer.nc"))
     parser.add_argument("--daily-candidates", default=str(INTERMEDIATE_METEO_DIR / "daily_candidates.nc"))
     parser.add_argument("--daily-target", default=str(INTERMEDIATE_METEO_DIR / "daily_003deg.nc"))
-    parser.add_argument("--recent-nc", default=str(FINAL_METEO_DIR / "meteo_recent_003deg.nc"))
+    parser.add_argument("--time-series-nc", default=None, help="Optional yearly ICON-RUC output override.")
+    parser.add_argument("--recent-nc", dest="legacy_recent_nc", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--smi9-support-nc", default=str(DEFAULT_SMI9_SUPPORT_NC))
     parser.add_argument(
         "--target-grid-nc",
@@ -150,18 +151,20 @@ def main() -> None:
         print("\nDone OK")
         return
 
-    print("\n[STEP 06] Update recent daily final NetCDF")
-    rc06 = run_cmd([
+    print("\n[STEP 06] Update yearly ICON-RUC time series")
+    update_cmd = [
         py,
         "-m",
         "backend.scripts.meteo.06_update_recent_meteo_nc",
         "--daily",
         args.daily_target,
-        "--out",
-        args.recent_nc,
         "--run",
         run,
-    ], allow_failure=True)
+    ]
+    output_override = args.time_series_nc or args.legacy_recent_nc
+    if output_override:
+        update_cmd.extend(["--out", output_override])
+    rc06 = run_cmd(update_cmd, allow_failure=True)
     if rc06 != 0:
         print("[WARN] 06 non eseguito con successo.")
     else:

@@ -408,6 +408,11 @@ def parse_manifest_tile_sets(raw: str | None) -> list[dict[str, object]]:
     return parsed
 
 
+def load_remote_manifest_tile_sets() -> list[dict[str, object]]:
+    """Read the exact manifest object; never discover retained sets by recursive listing."""
+    return parse_manifest_tile_sets(fetch_public_text_object(MANIFEST_OBJECT))
+
+
 def build_tile_sets_manifest(tile_dir: Path, retention_days: int | None = None) -> str:
     tile_sets = []
     cutoff = None
@@ -431,7 +436,10 @@ def build_tile_sets_manifest(tile_dir: Path, retention_days: int | None = None) 
 
 def build_manifest_json(tile_sets: list[dict[str, object]]) -> str:
     tile_sets.sort(key=tile_set_sort_key, reverse=True)
-    public_tile_sets = [public_tile_set_item(item) for item in tile_sets]
+    newest_by_date: dict[str, dict[str, object]] = {}
+    for item in tile_sets:
+        newest_by_date.setdefault(str(item["date"]), item)
+    public_tile_sets = [public_tile_set_item(item) for item in newest_by_date.values()]
     return json.dumps(
         {
             "updatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -533,21 +541,7 @@ def list_storage_files_recursive(prefix: str) -> list[str]:
 
 
 def list_remote_tile_sets_from_root() -> list[dict[str, object]]:
-    tile_sets_by_name: dict[str, dict[str, object]] = {}
-    for item in list_storage_prefix(""):
-        name = item.get("name")
-        if not isinstance(name, str) or not name:
-            continue
-        if is_storage_file(item):
-            continue
-        parsed = parse_tile_set_dir_name(name)
-        if parsed is None:
-            continue
-        tile_sets_by_name[str(parsed["name"])] = parsed
-
-    tile_sets = list(tile_sets_by_name.values())
-    tile_sets.sort(key=tile_set_sort_key, reverse=True)
-    return tile_sets
+    return load_remote_manifest_tile_sets()
 
 
 def delete_storage_objects(paths: list[str], batch_size: int = 1000) -> int:
@@ -563,6 +557,18 @@ def delete_storage_objects(paths: list[str], batch_size: int = 1000) -> int:
         deleted += len(batch)
         print(f"[TILE CLEANUP] deleted {deleted}/{len(paths)} objects", flush=True)
     return deleted
+
+
+def delete_known_tile_set(prefix: str, dry_run: bool) -> int:
+    parsed = parse_tile_set_dir_name(prefix)
+    if parsed is None or str(parsed["name"]) != prefix:
+        raise ValueError(f"invalid exact tile-set prefix: {prefix}")
+    if dry_run:
+        print(f"[TILE CLEANUP] dry run exact prefix={prefix}")
+        return 0
+    files = list_storage_files_recursive(prefix)
+    print(f"[TILE CLEANUP] exact prefix={prefix} files={len(files)}")
+    return delete_storage_objects(files)
 
 
 def cleanup_remote_tile_sets(retention_days: int, dry_run: bool) -> list[str]:
@@ -829,7 +835,9 @@ def main() -> None:
         help="Preserve existing local zoom folders and rebuild/upload only the zooms passed with --zoom.",
     )
     parser.add_argument("--manifest-only", action="store_true", help="Only rebuild and upload tile_sets.json from local tile directories.")
+    parser.add_argument("--skip-manifest", action="store_true", help="Upload tiles but leave remote tile_sets.json unchanged.")
     parser.add_argument("--cleanup-only", action="store_true", help="Only delete remote tile sets older than the retention window and update tile_sets.json.")
+    parser.add_argument("--delete-prefix", default=None, help="Delete one exact known tile-set prefix without discovery or manifest changes.")
     parser.add_argument("--retention-days", type=int, default=DEFAULT_TILE_RETENTION_DAYS)
     parser.add_argument("--delete-date-from", default=None, help="With --cleanup-only, delete remote tile sets from this date included, YYYY-MM-DD.")
     parser.add_argument("--delete-date-to", default=None, help="With --cleanup-only, delete remote tile sets up to this date included, YYYY-MM-DD.")
@@ -840,6 +848,11 @@ def main() -> None:
     geojson_dir = Path(args.geojson_dir)
     work_dir = Path(args.work_dir)
     tile_dir = Path(args.tile_dir)
+
+    if args.delete_prefix:
+        deleted = delete_known_tile_set(args.delete_prefix, args.dry_run)
+        print(f"\nDone. Deleted objects: {deleted}")
+        return
 
     if args.cleanup_only:
         if args.delete_date_from or args.delete_date_to:
@@ -858,7 +871,8 @@ def main() -> None:
     if args.manifest_only:
         work_dir.mkdir(parents=True, exist_ok=True)
         tile_dir.mkdir(parents=True, exist_ok=True)
-        upload_tile_sets_manifest(tile_dir, retention_days=args.retention_days)
+        if not args.skip_manifest:
+            upload_tile_sets_manifest(tile_dir, retention_days=args.retention_days)
         print("\nDone")
         return
 
@@ -922,7 +936,7 @@ def main() -> None:
             keep_existing_tiles=args.keep_existing_tiles,
         )
 
-    if not args.dry_run:
+    if not args.dry_run and not args.skip_manifest:
         upload_tile_sets_manifest(tile_dir, retention_days=args.retention_days)
 
     print("\nDone")

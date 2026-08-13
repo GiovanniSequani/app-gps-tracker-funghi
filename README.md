@@ -56,11 +56,11 @@ Large geospatial datasets are not stored in Git. Before the first run, provide:
 | --- | --- |
 | `backend/data/raw/dem/dsm_30m.tif` | Digital elevation model |
 | `backend/data/intermediate/forest/dlt_2023_mosaic.tif` | Categorical forest raster: broadleaf, conifer and non-forest |
-| `backend/data/final/meteo/meteo_recent_003deg.nc` | Initial rolling weather history, ideally 19 complete local days |
+| `backend/data/final/meteo/icon_ruc_time_series_YYYY.nc` | Yearly ICON-D2-RUC daily time series; bootstrapped automatically from legacy snapshots when available |
 
-The weather history is the bootstrap file. The index requires at least 8
-complete days and uses up to the latest 19; after bootstrap, the pipeline keeps
-this dataset updated automatically.
+The index uses an exact 19-calendar-day window. Validated HRS reanalysis days
+override ICON-D2-RUC; missing or incomplete HRS days fall back to ICON-D2-RUC.
+If neither source contains a date, that calendar day remains nodata.
 
 Build the static terrain dataset once, using the Python interpreter configured
 by OSGeo4W:
@@ -127,7 +127,8 @@ trigger, incubation, moisture, stress, temporal carry-over and recovery.
 The backend also maintains:
 
 - a 48-hour rolling hourly weather buffer;
-- a 20-day rolling daily weather dataset and complete-day historical snapshots;
+- one yearly ICON-D2-RUC daily time series plus an atomically refreshed recovery copy;
+- an optional yearly validated HRS time series, composed with ICON-D2-RUC at index time;
 - raw weather runs, retained locally for 30 days;
 - daily index NetCDF files and processing logs;
 - local and remote PNG tiles for zoom levels 3-13;

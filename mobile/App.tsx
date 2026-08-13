@@ -9,6 +9,7 @@ import MapLibreGL, {
   ShapeSource,
   LineLayer,
   CircleLayer,
+  PointAnnotation,
 } from '@maplibre/maplibre-react-native';
 import type { CameraStop, MapViewRef } from '@maplibre/maplibre-react-native';
 import { Activity, PanelRightOpen, Trash2 } from 'lucide-react-native';
@@ -30,6 +31,14 @@ import { IndiceLayerTiles } from './IndiceLayers';
 import PointDetailsScreen from './src/point-details/PointDetailsScreen';
 import IndexAnalysisScreen from './src/index-data/IndexAnalysisScreen';
 import { IndexPopupSummary } from './src/index-data/IndexPopupSummary';
+import AccountArchiveScreen from './src/account/AccountArchiveScreen';
+import { useAccountSession } from './src/account/useAccountSession';
+import { uploadRouteToCloud } from './src/account/routeUpload';
+import { saveRecordingCloudFirst } from './src/account/recordingSave';
+import type { ArchiveMapRoute } from './src/account/types';
+import { TrackNameModal } from './src/account/TrackNameModal';
+import { normalizeTrackName, validateTrackName } from './src/account/validation';
+import { buildRouteEndpointMarkers } from './src/map/routeEndpoints';
 
 declare const process: {
   env?: {
@@ -370,16 +379,22 @@ const checkAndOpenSettingsIfNeeded = async () => {
 // App
 // ══════════════════════════════════════════════════════════════════════════════
 export default function App() {
+  const accountSession = useAccountSession();
   const [recording, setRecording] = React.useState(false);
   const [path, setPath] = React.useState<Coordinate[]>([]);
   const [currentPosition, setCurrentPosition] = React.useState<Coordinate | null>(null);
   const [markers, setMarkers] = React.useState<MarkerData[]>([]);
+  const [recordingNameVisible, setRecordingNameVisible] = React.useState(false);
+  const [recordingName, setRecordingName] = React.useState('');
+  const [recordingNameError, setRecordingNameError] = React.useState<string | null>(null);
+  const [recordingSaveBusy, setRecordingSaveBusy] = React.useState(false);
   const [saveVisible, setSaveVisible] = React.useState(false);
   const [fileName, setFileName] = React.useState('percorso');
   const [initialCenter, setInitialCenter] = React.useState<[number, number]>([10.9916, 45.4384]);
   const [showAll, setShowAll] = React.useState(false);
   const [addedRoutes, setAddedRoutes] = React.useState<string[]>([]);
   const [routesOnMap, setRoutesOnMap] = React.useState<RouteData[]>([]);
+  const [cloudRoutesOnMap, setCloudRoutesOnMap] = React.useState<RouteData[]>([]);
   const [highlightedRoute, setHighlightedRoute] = React.useState<string | null>(null);
   const [activeLayer, setActiveLayer] = React.useState<ActiveLayer>('off');
   const [tileDate, setTileDate] = React.useState(() => getDefaultTileSet().date);
@@ -651,11 +666,37 @@ export default function App() {
     }
   };
 
-  const saveCurrentRoute = async () => {
+  const saveCurrentRoute = async (chosenName: string) => {
     const route_id = uuid.v4() as string;
     const date = new Date().toISOString();
-    const name = `Percorso ${new Date().toLocaleDateString()}`;
-    await insertRoute(route_id, name, date, path, markers);
+    const name = normalizeTrackName(chosenName);
+    const finalPath = await syncPathFromFile(true);
+    const route = { routeId: route_id, name, date, path: finalPath, markers };
+    const result = await saveRecordingCloudFirst(route, Boolean(accountSession.session), {
+      upload: uploadRouteToCloud,
+      saveLocal: async (localRoute) => {
+        await insertRoute(
+          localRoute.routeId,
+          localRoute.name,
+          localRoute.date,
+          localRoute.path.map((point) => ({ ...point, timestamp: point.timestamp ?? Date.now() })),
+          localRoute.markers.map((marker) => ({ ...marker, timestamp: marker.timestamp ?? Date.now() })),
+        );
+      },
+    });
+    if (result.location === 'cloud') {
+      Alert.alert('Percorso salvato', 'Il percorso è stato salvato nell’archivio.');
+    } else if (result.cloudError) {
+      Alert.alert(
+        'Salvato sul dispositivo',
+        'Il caricamento nell’archivio non è riuscito. Il percorso è stato conservato tra quelli non salvati e potrai riprovare dall’Archivio.',
+      );
+    } else {
+      Alert.alert(
+        'Salvato sul dispositivo',
+        'Accedi per usare l’archivio cloud. Il percorso è stato conservato tra quelli non salvati.',
+      );
+    }
   };
 
   const stopRecording = async () => {
@@ -664,14 +705,75 @@ export default function App() {
       const started = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
       if (started) await Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME);
     } catch (err) { console.warn('Errore stop location updates:', err); }
-    Alert.alert('Salva', 'Vuoi salvare il percorso registrato?', [
-      { text: 'No', style: 'cancel' },
-      { text: 'Sì', onPress: async () => {
-        try { await saveCurrentRoute(); }
-        catch { Alert.alert('Errore', 'Impossibile salvare il percorso nel database.'); }
-      }},
-    ]);
+    setRecordingName(`Percorso ${formatLocalDate(new Date())}`);
+    setRecordingNameError(null);
+    setRecordingNameVisible(true);
   };
+
+  const confirmRecordingSave = async () => {
+    if (recordingSaveBusy) return;
+    const validationError = validateTrackName(recordingName);
+    if (validationError) {
+      setRecordingNameError(validationError);
+      return;
+    }
+    setRecordingSaveBusy(true);
+    setRecordingNameError(null);
+    try {
+      await saveCurrentRoute(recordingName);
+      setRecordingNameVisible(false);
+    } catch {
+      setRecordingNameError('Impossibile salvare il percorso nel cloud o sul dispositivo.');
+    } finally {
+      setRecordingSaveBusy(false);
+    }
+  };
+
+  const combinedRoutesOnMap = React.useMemo(
+    () => [...routesOnMap, ...cloudRoutesOnMap],
+    [routesOnMap, cloudRoutesOnMap],
+  );
+
+  const showCloudTrackOnMap = React.useCallback((route: ArchiveMapRoute) => {
+    const mapRoute: RouteData = {
+      route_id: `cloud:${route.routeId}`,
+      name: route.name,
+      date: route.date,
+      path: route.path.map((point) => ({ ...point, timestamp: point.timestamp ?? 0 })),
+      markers: route.markers.flatMap((marker) => {
+        const species = `${marker.tipo} ${marker.name}`.toLowerCase();
+        const tipo = species.includes('porcin')
+          ? 'Porcino'
+          : species.includes('finferl') || species.includes('gallinacc')
+            ? 'Finferlo'
+            : null;
+        return tipo ? [{ ...marker, timestamp: marker.timestamp ?? 0, tipo }] : [];
+      }),
+    };
+    setCloudRoutesOnMap((current) => [
+      ...current.filter((item) => item.route_id !== mapRoute.route_id),
+      mapRoute,
+    ]);
+  }, []);
+
+  const removeRouteFromMap = React.useCallback((routeId: string) => {
+    if (routeId.startsWith('cloud:')) {
+      setCloudRoutesOnMap((current) => current.filter((route) => route.route_id !== routeId));
+      return;
+    }
+    setAddedRoutes((current) => current.filter((id) => id !== routeId));
+  }, []);
+
+  const handleLocalRouteArchived = React.useCallback((routeId: string) => {
+    setAddedRoutes((current) => current.filter((id) => id !== routeId));
+    setRoutesOnMap((current) => current.filter((route) => route.route_id !== routeId));
+  }, []);
+
+  const handleCloudRouteRenamed = React.useCallback((trackId: string, name: string) => {
+    setCloudRoutesOnMap((current) => current.map((route) => (
+      route.route_id === `cloud:${trackId}` ? { ...route, name } : route
+    )));
+  }, []);
 
   const addMarker = React.useCallback(
     async (tipo: 'Porcino' | 'Finferlo') => {
@@ -775,7 +877,8 @@ export default function App() {
       addedRoutes={addedRoutes}
       setAddedRoutes={setAddedRoutes}
       setRoutesOnMap={setRoutesOnMap}
-      routesOnMap={routesOnMap}
+      routesOnMap={combinedRoutesOnMap}
+      removeRouteFromMap={removeRouteFromMap}
       highlightRoute={highlightRoute}
       highlightedRoute={highlightedRoute}
       activeLayer={activeLayer}
@@ -792,33 +895,26 @@ export default function App() {
     />
   ), [
     recording, path, currentPosition, markers, cameraCommand, initialCenter, showAll, visibleMarkers,
-    addedRoutes, routesOnMap, highlightedRoute, tileSets, tilesLoading, tilesError,
+    addedRoutes, combinedRoutesOnMap, highlightedRoute, tileSets, tilesLoading, tilesError,
     activeLayer, tileDate, tileVersion, tileOpacity,
-    runCameraCommand, addMarker
+    runCameraCommand, addMarker, removeRouteFromMap, stopRecording
   ]);
 
   const renderArchiveScreen = React.useCallback(() => (
-    <ManageRoutesScreen
-      addedRoutes={addedRoutes}
-      setAddedRoutes={setAddedRoutes}
-      handleShare={handleShare}
-      saveVisible={saveVisible}
-      setSaveVisible={setSaveVisible}
-      fileName={fileName}
-      setFileName={setFileName}
+    <AccountArchiveScreen
+      sessionState={accountSession}
+      onShowTrackOnMap={showCloudTrackOnMap}
+      onLocalRouteArchived={handleLocalRouteArchived}
+      onCloudRouteRenamed={handleCloudRouteRenamed}
     />
-  ), [addedRoutes, saveVisible, fileName]);
+  ), [accountSession, showCloudTrackOnMap, handleLocalRouteArchived, handleCloudRouteRenamed]);
 
   const renderIndiceScreen = React.useCallback(() => (
     <IndiceScreen
       activeLayer={activeLayer}
       setActiveLayer={setActiveLayer}
-      tileDate={tileDate}
-      setTileDate={setTileDate}
-      tileVersion={tileVersion}
-      setTileVersion={setTileVersion}
     />
-  ), [activeLayer, tileDate, tileVersion]);
+  ), [activeLayer]);
 
   return (
     <SafeAreaProvider>
@@ -826,7 +922,7 @@ export default function App() {
         <Tab.Navigator
           screenOptions={{
             headerShown: false,
-            tabBarStyle: { backgroundColor: UI.bg1, borderTopWidth: 1, borderTopColor: UI.border, paddingTop: 4 },
+            tabBarStyle: { backgroundColor: UI.bg1, borderTopWidth: 1, borderTopColor: UI.border, paddingTop: 4, paddingBottom: 8, minHeight: 62 },
             tabBarActiveTintColor: UI.greenBri,
             tabBarInactiveTintColor: UI.textMut,
             tabBarLabelStyle: { fontSize: 10, fontWeight: '700', letterSpacing: 1.5, textTransform: 'uppercase' },
@@ -849,6 +945,20 @@ export default function App() {
           />
         </Tab.Navigator>
       </NavigationContainer>
+      <TrackNameModal
+        visible={recordingNameVisible}
+        title="Salva percorso"
+        description={accountSession.session
+          ? 'Scegli il nome da usare nell’archivio.'
+          : 'Scegli il nome del percorso. Senza account verrà conservato sul dispositivo.'}
+        value={recordingName}
+        error={recordingNameError}
+        busy={recordingSaveBusy}
+        confirmLabel="Salva percorso"
+        onChange={(value) => { setRecordingName(value); setRecordingNameError(null); }}
+        onCancel={() => { if (!recordingSaveBusy) setRecordingNameVisible(false); }}
+        onConfirm={() => void confirmRecordingSave()}
+      />
     </SafeAreaProvider>
   );
 }
@@ -974,6 +1084,7 @@ const MemoMapCanvas = React.memo(function MemoMapCanvas(props: any) {
     finferliCount,
     finferliGeoJSON,
     routesOnMap,
+    routeEndpointMarkers,
     highlightedRoute,
     selectedMapPoint,
     onCoordinateSelect,
@@ -1178,6 +1289,27 @@ const MemoMapCanvas = React.memo(function MemoMapCanvas(props: any) {
           </React.Fragment>
         );
       })}
+      {routeEndpointMarkers.map((marker: ReturnType<typeof buildRouteEndpointMarkers>[number]) => (
+        <PointAnnotation
+          key={marker.id}
+          id={marker.id}
+          coordinate={marker.coordinate}
+          anchor={{ x: 0.5, y: 0.5 }}
+        >
+          <View
+            collapsable={false}
+            accessible
+            accessibilityRole="image"
+            accessibilityLabel={marker.accessibilityLabel}
+            style={[
+              mStyles.routeEndpointMarker,
+              marker.kind === 'start'
+                ? mStyles.routeEndpointMarkerStart
+                : mStyles.routeEndpointMarkerEnd,
+            ]}
+          />
+        </PointAnnotation>
+      ))}
       {selectedPointGeoJSON && (
         <ShapeSource id="selected-coordinate-source" shape={selectedPointGeoJSON}>
           <CircleLayer
@@ -1220,7 +1352,7 @@ const QuickIndexPanel = React.memo(function QuickIndexPanel(props: any) {
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
   const [indexPanelCollapsed, setIndexPanelCollapsed] = React.useState(false);
   const [panelSide, setPanelSide] = React.useState<'left' | 'right'>('right');
-  const panelWidth = indexPanelCollapsed ? 118 : 210;
+  const panelWidth = indexPanelCollapsed ? 112 : 196;
   const panelHeight = indexPanelCollapsed ? 56 : 230;
   const [panelPos, setPanelPos] = React.useState(() => ({
     x: Math.max(8, screenWidth - panelWidth - 8),
@@ -1381,7 +1513,7 @@ function MainUI(props: any) {
     recording, startRecording, stopRecording, addMarker,
     path, currentPosition, markers, cameraCommand, runCameraCommand, followLocationRef, initialCenter,
     showAll, visibleMarkers, handleDeleteMarker, setShowAll,
-    addedRoutes, setAddedRoutes, setRoutesOnMap, routesOnMap,
+    addedRoutes, setAddedRoutes, setRoutesOnMap, routesOnMap, removeRouteFromMap,
     highlightRoute, highlightedRoute, activeLayer, setActiveLayer,
     tileDate, setTileDate, tileVersion, setTileVersion, tileSets,
     tileOpacity, setTileOpacity, tilesLoading, tilesError
@@ -1433,6 +1565,10 @@ function MainUI(props: any) {
   const currentPathGeoJSON = React.useMemo(() => coordsToGeoJSONLine(path), [path]);
   const porciniGeoJSON = React.useMemo(() => markersToGeoJSON(markers, 'Porcino'), [markers]);
   const finferliGeoJSON = React.useMemo(() => markersToGeoJSON(markers, 'Finferlo'), [markers]);
+  const routeEndpointMarkers = React.useMemo(
+    () => buildRouteEndpointMarkers(routesOnMap, path, recording),
+    [routesOnMap, path, recording],
+  );
 
   const latestPathPosition = path.length > 0 ? path[path.length - 1] : null;
   const currentPos = currentPosition ?? latestPathPosition;
@@ -1509,6 +1645,7 @@ function MainUI(props: any) {
         finferliCount={finferliCount}
         finferliGeoJSON={finferliGeoJSON}
         routesOnMap={routesOnMap}
+        routeEndpointMarkers={routeEndpointMarkers}
         highlightedRoute={highlightedRoute}
         selectedMapPoint={coordinateSelection?.point ?? null}
         onCoordinateSelect={selectMapCoordinate}
@@ -1614,7 +1751,7 @@ function MainUI(props: any) {
                   onPress={() =>
                     Alert.alert('Conferma rimozione', 'Vuoi rimuovere questa rotta dalla mappa?', [
                       { text: 'Annulla', style: 'cancel' },
-                      { text: 'Rimuovi', style: 'destructive', onPress: () => setAddedRoutes((prev: string[]) => prev.filter((r) => r !== route.route_id)) },
+                      { text: 'Rimuovi', style: 'destructive', onPress: () => removeRouteFromMap(route.route_id!) },
                     ])
                   }
                   style={{ paddingLeft: 6 }}
@@ -1928,7 +2065,7 @@ const mStyles = StyleSheet.create({
   tileStatusPillError: { position: 'absolute', top: 86, alignSelf: 'center', backgroundColor: 'rgba(140,48,48,0.92)', borderWidth: 1, borderColor: UI.redBri, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 6 },
   tileStatusText: { color: UI.textPri, fontSize: 11, fontWeight: '700' },
   indexPanel: { position: 'absolute', backgroundColor: 'rgba(10,17,11,0.94)', borderWidth: 1, borderColor: UI.borderHi, borderRadius: 10, padding: 10, gap: 9 },
-  indexPanelCollapsed: { width: 118 },
+  indexPanelCollapsed: { width: 112 },
   indexPanelHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   indexPanelTitle: { color: UI.textPri, fontSize: 11, fontWeight: '900', letterSpacing: 2 },
   indexPanelActions: { flexDirection: 'row', alignItems: 'center', gap: 5 },
@@ -1961,6 +2098,15 @@ const mStyles = StyleSheet.create({
   markerBadge: { width: 20, height: 20, borderRadius: 4, justifyContent: 'center', alignItems: 'center' },
   markerBadgeLetter: { color: '#fff', fontSize: 10, fontWeight: '900' },
   markerName: { flex: 1, color: UI.textPri, fontSize: 11, fontWeight: '500' },
+  routeEndpointMarker: {
+    width: 13,
+    height: 13,
+    borderWidth: 1.5,
+    borderColor: '#000',
+    borderRadius: 1,
+  },
+  routeEndpointMarkerStart: { backgroundColor: '#43b552' },
+  routeEndpointMarkerEnd: { backgroundColor: '#df4a43' },
   showMoreBtn: { marginTop: 6, paddingTop: 6, borderTopWidth: 1, borderTopColor: UI.border, alignItems: 'center' },
   showMoreText: { color: UI.greenBri, fontSize: 10, fontWeight: '700', letterSpacing: 1 },
   routeRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },

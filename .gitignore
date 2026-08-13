@@ -43,3 +43,5 @@ yarn-error.*
 # Graphify generated state
 /graphify-out/
 /.graphify_*.json
+backend/tmp_index_timeseries/
+backend/tmp/historical_index_2025/

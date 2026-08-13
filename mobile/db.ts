@@ -1,6 +1,5 @@
 // db.ts
 import * as SQLite from 'expo-sqlite';
-import { Route } from 'lucide-react-native';
 
 export type Coordinate = {
   latitude: number;
@@ -78,6 +77,7 @@ export const insertRoute = async (
     console.log('Route inserted');
   } catch (err) {
     console.error('Insert route error:', err);
+    throw err;
   }
 };
 
@@ -123,10 +123,13 @@ export const getRouteById = async (route_id: string) => {
 export const deleteRoute = async (route_id: string) => {
   if (!db) throw new Error('DB not initialized');
   try {
-    await db.runAsync(`DELETE FROM waypoints WHERE route_id = ?;`, [route_id]);
-    await db.runAsync(`DELETE FROM routes WHERE route_id = ?;`, [route_id]);
+    await db.withTransactionAsync(async () => {
+      await db!.runAsync(`DELETE FROM waypoints WHERE route_id = ?;`, [route_id]);
+      await db!.runAsync(`DELETE FROM routes WHERE route_id = ?;`, [route_id]);
+    });
     console.log('Route deleted');
   } catch (err) {
     console.error('Delete route error:', err);
+    throw err;
   }
 };

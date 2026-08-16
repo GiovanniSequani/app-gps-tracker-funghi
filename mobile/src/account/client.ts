@@ -5,6 +5,9 @@ import {
   type ArchiveConfig,
   type ArchiveData,
   type GpxTrack,
+  type GpxMushroomMarker,
+  type MushroomSpecies,
+  type GpxTrackPoint,
   type PreparedGpxUpload,
   type ReserveTrackResult,
   type UserProfile,
@@ -22,6 +25,11 @@ const TRACK_COLUMNS = [
   'id', 'storage_path', 'status', 'display_name', 'original_filename',
   'compressed_size_bytes', 'uncompressed_size_bytes', 'started_at', 'ended_at',
   'point_count', 'distance_m', 'ready_at', 'created_at',
+  'trim_start_point_index', 'trim_end_point_index',
+].join(',');
+
+const MUSHROOM_MARKER_COLUMNS = [
+  'id', 'track_id', 'track_point_index', 'latitude', 'longitude', 'species', 'count', 'created_at', 'updated_at',
 ].join(',');
 
 function exactArrayBuffer(bytes: Uint8Array): ArrayBuffer {
@@ -221,4 +229,70 @@ export async function deleteTrack(
       { cause: error, partial: true },
     );
   }
+}
+
+export async function listTrackMushroomMarkers(
+  trackId: string,
+  supabase: SupabaseClient = getAccountSupabaseClient(),
+): Promise<GpxMushroomMarker[]> {
+  const { data, error } = await supabase
+    .from('user_gpx_mushroom_markers')
+    .select(MUSHROOM_MARKER_COLUMNS)
+    .eq('track_id', trackId)
+    .order('track_point_index', { ascending: true });
+  if (error) throw toAccountError(error);
+  return (data ?? []) as unknown as GpxMushroomMarker[];
+}
+
+export async function setTrackTrim(
+  trackId: string,
+  trimStartPointIndex: number | null,
+  trimEndPointIndex: number | null,
+  supabase: SupabaseClient = getAccountSupabaseClient(),
+): Promise<GpxTrack> {
+  const { data, error } = await supabase.rpc('set_my_gpx_track_trim', {
+    p_track_id: trackId,
+    p_trim_start_point_index: trimStartPointIndex,
+    p_trim_end_point_index: trimEndPointIndex,
+  });
+  if (error) throw toAccountError(error);
+  if (!data) throw new AccountArchiveError('track_not_found', 'Traccia non trovata. Aggiorna l’archivio e riprova.');
+  return data as GpxTrack;
+}
+
+export async function saveTrackMushroomMarker(
+  trackId: string,
+  point: GpxTrackPoint,
+  species: MushroomSpecies,
+  count: number,
+  supabase: SupabaseClient = getAccountSupabaseClient(),
+): Promise<GpxMushroomMarker> {
+  if (!Number.isInteger(count) || count < 1 || count > 10000) {
+    throw new AccountArchiveError('invalid_track_edit', 'Il numero di funghi deve essere compreso tra 1 e 10000.');
+  }
+  const { data, error } = await supabase.rpc('save_my_gpx_mushroom_marker', {
+    p_track_id: trackId,
+    p_track_point_index: point.pointIndex,
+    p_latitude: point.latitude,
+    p_longitude: point.longitude,
+    p_species: species,
+    p_count: count,
+  });
+  if (error) throw toAccountError(error);
+  if (!data) throw new AccountArchiveError('unknown', 'Il marker non è stato salvato. Riprova.');
+  return data as GpxMushroomMarker;
+}
+
+export async function deleteTrackMushroomMarker(
+  trackId: string,
+  trackPointIndex: number,
+  species: MushroomSpecies,
+  supabase: SupabaseClient = getAccountSupabaseClient(),
+): Promise<void> {
+  const { error } = await supabase.rpc('delete_my_gpx_mushroom_marker', {
+    p_track_id: trackId,
+    p_track_point_index: trackPointIndex,
+    p_species: species,
+  });
+  if (error) throw toAccountError(error);
 }

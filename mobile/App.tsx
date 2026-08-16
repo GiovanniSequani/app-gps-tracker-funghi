@@ -1,7 +1,8 @@
 import React from 'react';
 import {
   StyleSheet, Text, View, Button, useColorScheme, Alert, TextInput, Modal, Linking,
-  TouchableOpacity, Animated, StatusBar, Platform, ScrollView, RefreshControl, PanResponder, useWindowDimensions
+  TouchableOpacity, Animated, StatusBar, Platform, ScrollView, RefreshControl, PanResponder, useWindowDimensions,
+  BackHandler,
 } from 'react-native';
 import MapLibreGL, {
   MapView,
@@ -12,7 +13,7 @@ import MapLibreGL, {
   PointAnnotation,
 } from '@maplibre/maplibre-react-native';
 import type { CameraStop, MapViewRef } from '@maplibre/maplibre-react-native';
-import { Activity, PanelRightOpen, Trash2 } from 'lucide-react-native';
+import { Activity, PanelRightOpen, Pencil, Trash2 } from 'lucide-react-native';
 import * as Location from 'expo-location';
 import * as Clipboard from 'expo-clipboard';
 import * as TaskManager from 'expo-task-manager';
@@ -32,13 +33,20 @@ import PointDetailsScreen from './src/point-details/PointDetailsScreen';
 import IndexAnalysisScreen from './src/index-data/IndexAnalysisScreen';
 import { IndexPopupSummary } from './src/index-data/IndexPopupSummary';
 import AccountArchiveScreen from './src/account/AccountArchiveScreen';
+import CloudTrackEditor from './src/account/CloudTrackEditor';
 import { useAccountSession } from './src/account/useAccountSession';
 import { uploadRouteToCloud } from './src/account/routeUpload';
 import { saveRecordingCloudFirst } from './src/account/recordingSave';
-import type { ArchiveMapRoute } from './src/account/types';
+import type { ArchiveMapRoute, GpxTrackPoint } from './src/account/types';
 import { TrackNameModal } from './src/account/TrackNameModal';
 import { normalizeTrackName, validateTrackName } from './src/account/validation';
 import { buildRouteEndpointMarkers } from './src/map/routeEndpoints';
+import {
+  effectiveTrim,
+  excludedTrackSegments,
+  nearestTrackPoint,
+  visibleMushroomMarkers,
+} from './src/account/trackEdits';
 
 declare const process: {
   env?: {
@@ -62,6 +70,8 @@ type RouteData = {
   path: Coordinate[];
   markers: MarkerData[];
   route_id?: string;
+  pathSegments?: Coordinate[][];
+  cloudRoute?: ArchiveMapRoute;
 };
 type Route = {
   route_id: string;
@@ -332,6 +342,31 @@ function markersToGeoJSON(
   };
 }
 
+function archiveRouteToMapRoute(route: ArchiveMapRoute): RouteData {
+  const coordinate = (point: { latitude: number; longitude: number; timestamp?: number | null }): Coordinate => ({
+    latitude: point.latitude,
+    longitude: point.longitude,
+    timestamp: point.timestamp ?? 0,
+  });
+  return {
+    route_id: `cloud:${route.routeId}`,
+    name: route.name,
+    date: route.date,
+    path: route.path.map(coordinate),
+    pathSegments: route.pathSegments?.map((segment) => segment.map(coordinate)),
+    markers: route.markers.flatMap((marker) => {
+      const species = `${marker.tipo} ${marker.name}`.toLowerCase();
+      const tipo = species.includes('porcin')
+        ? 'Porcino'
+        : species.includes('finferl') || species.includes('gallinacc')
+          ? 'Finferlo'
+          : null;
+      return tipo ? [{ ...coordinate(marker), name: marker.name, tipo }] : [];
+    }),
+    cloudRoute: route,
+  };
+}
+
 // ─── BACKGROUND TASK (identico all'originale) ─────────────────────────────────
 TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
   if (error) { console.error('Errore task location:', error); return; }
@@ -395,6 +430,9 @@ export default function App() {
   const [addedRoutes, setAddedRoutes] = React.useState<string[]>([]);
   const [routesOnMap, setRoutesOnMap] = React.useState<RouteData[]>([]);
   const [cloudRoutesOnMap, setCloudRoutesOnMap] = React.useState<RouteData[]>([]);
+  const [cloudEditRevision, setCloudEditRevision] = React.useState(0);
+  const [cloudEditRequest, setCloudEditRequest] = React.useState<{ id: number; route: ArchiveMapRoute } | null>(null);
+  const cloudEditRequestSequence = React.useRef(0);
   const [highlightedRoute, setHighlightedRoute] = React.useState<string | null>(null);
   const [activeLayer, setActiveLayer] = React.useState<ActiveLayer>('off');
   const [tileDate, setTileDate] = React.useState(() => getDefaultTileSet().date);
@@ -735,26 +773,30 @@ export default function App() {
   );
 
   const showCloudTrackOnMap = React.useCallback((route: ArchiveMapRoute) => {
-    const mapRoute: RouteData = {
-      route_id: `cloud:${route.routeId}`,
-      name: route.name,
-      date: route.date,
-      path: route.path.map((point) => ({ ...point, timestamp: point.timestamp ?? 0 })),
-      markers: route.markers.flatMap((marker) => {
-        const species = `${marker.tipo} ${marker.name}`.toLowerCase();
-        const tipo = species.includes('porcin')
-          ? 'Porcino'
-          : species.includes('finferl') || species.includes('gallinacc')
-            ? 'Finferlo'
-            : null;
-        return tipo ? [{ ...marker, timestamp: marker.timestamp ?? 0, tipo }] : [];
-      }),
-    };
+    const mapRoute = archiveRouteToMapRoute(route);
     setCloudRoutesOnMap((current) => [
       ...current.filter((item) => item.route_id !== mapRoute.route_id),
       mapRoute,
     ]);
   }, []);
+
+  const editCloudTrackOnMap = React.useCallback((route: ArchiveMapRoute) => {
+    showCloudTrackOnMap(route);
+    cloudEditRequestSequence.current += 1;
+    setCloudEditRequest({ id: cloudEditRequestSequence.current, route });
+  }, [showCloudTrackOnMap]);
+
+  const previewCloudTrackEdit = React.useCallback((route: ArchiveMapRoute) => {
+    const mapRoute = archiveRouteToMapRoute(route);
+    setCloudRoutesOnMap((current) => current.map((item) => (
+      item.route_id === mapRoute.route_id ? mapRoute : item
+    )));
+  }, []);
+
+  const finishCloudTrackEdit = React.useCallback((route: ArchiveMapRoute) => {
+    previewCloudTrackEdit(route);
+    setCloudEditRevision((current) => current + 1);
+  }, [previewCloudTrackEdit]);
 
   const removeRouteFromMap = React.useCallback((routeId: string) => {
     if (routeId.startsWith('cloud:')) {
@@ -892,22 +934,28 @@ export default function App() {
       setTileOpacity={setTileOpacity}
       tilesLoading={tilesLoading}
       tilesError={tilesError}
+      previewCloudTrackEdit={previewCloudTrackEdit}
+      finishCloudTrackEdit={finishCloudTrackEdit}
+      cloudEditRequest={cloudEditRequest}
     />
   ), [
     recording, path, currentPosition, markers, cameraCommand, initialCenter, showAll, visibleMarkers,
     addedRoutes, combinedRoutesOnMap, highlightedRoute, tileSets, tilesLoading, tilesError,
     activeLayer, tileDate, tileVersion, tileOpacity,
-    runCameraCommand, addMarker, removeRouteFromMap, stopRecording
+    runCameraCommand, addMarker, removeRouteFromMap, stopRecording,
+    previewCloudTrackEdit, finishCloudTrackEdit, cloudEditRequest
   ]);
 
   const renderArchiveScreen = React.useCallback(() => (
     <AccountArchiveScreen
       sessionState={accountSession}
       onShowTrackOnMap={showCloudTrackOnMap}
+      onEditTrackOnMap={editCloudTrackOnMap}
       onLocalRouteArchived={handleLocalRouteArchived}
       onCloudRouteRenamed={handleCloudRouteRenamed}
+      cloudEditRevision={cloudEditRevision}
     />
-  ), [accountSession, showCloudTrackOnMap, handleLocalRouteArchived, handleCloudRouteRenamed]);
+  ), [accountSession, showCloudTrackOnMap, editCloudTrackOnMap, handleLocalRouteArchived, handleCloudRouteRenamed, cloudEditRevision]);
 
   const renderIndiceScreen = React.useCallback(() => (
     <IndiceScreen
@@ -1088,6 +1136,9 @@ const MemoMapCanvas = React.memo(function MemoMapCanvas(props: any) {
     highlightedRoute,
     selectedMapPoint,
     onCoordinateSelect,
+    editingCloudTrack,
+    selectedEditPointIndex,
+    onEditPointSelect,
   } = props;
 
   const mapRef = React.useRef<MapViewRef>(null);
@@ -1160,6 +1211,38 @@ const MemoMapCanvas = React.memo(function MemoMapCanvas(props: any) {
     }
   }, [onCoordinateSelect, runCameraCommand]);
 
+  const handleMapPress = React.useCallback(async (feature: GeoJSON.Feature) => {
+    if (!editingCloudTrack?.cloudEdit || feature.geometry.type !== 'Point') return;
+    const [longitude, latitude] = feature.geometry.coordinates;
+    if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) return;
+    const edit = editingCloudTrack.cloudEdit;
+    const trim = effectiveTrim(edit.rawPointCount, edit.trimStartPointIndex, edit.trimEndPointIndex);
+    const point = nearestTrackPoint(edit.rawPoints, { latitude, longitude }, trim.start, trim.end);
+    if (!point) return;
+    try {
+      const [pressedScreenPoint, trackScreenPoint] = await Promise.all([
+        mapRef.current?.getPointInView([longitude, latitude]),
+        mapRef.current?.getPointInView([point.longitude, point.latitude]),
+      ]);
+      if (!pressedScreenPoint || !trackScreenPoint) return;
+      const distance = Math.hypot(
+        pressedScreenPoint[0] - trackScreenPoint[0],
+        pressedScreenPoint[1] - trackScreenPoint[1],
+      );
+      if (distance <= 44) onEditPointSelect(point.pointIndex);
+    } catch {
+      // La selezione Ã¨ un aiuto UI: un errore di proiezione non deve alterare la traccia.
+    }
+  }, [editingCloudTrack, onEditPointSelect]);
+
+  const selectedEditPoint = React.useMemo(() => {
+    if (!editingCloudTrack?.cloudEdit || selectedEditPointIndex === null) return null;
+    const edit = editingCloudTrack.cloudEdit;
+    const trim = effectiveTrim(edit.rawPointCount, edit.trimStartPointIndex, edit.trimEndPointIndex);
+    if (selectedEditPointIndex < trim.start || selectedEditPointIndex > trim.end) return null;
+    return edit.rawPoints.find((point: GpxTrackPoint) => point.pointIndex === selectedEditPointIndex) ?? null;
+  }, [editingCloudTrack, selectedEditPointIndex]);
+
   return (
     <View
       style={StyleSheet.absoluteFillObject}
@@ -1175,7 +1258,8 @@ const MemoMapCanvas = React.memo(function MemoMapCanvas(props: any) {
         logoEnabled={false}
         attributionEnabled={false}
         compassEnabled={false}
-        onLongPress={handleMapLongPress}
+        onLongPress={editingCloudTrack ? undefined : handleMapLongPress}
+        onPress={editingCloudTrack ? handleMapPress : undefined}
         onRegionWillChange={() => { followLocationRef.current = false; }}
       >
       <Camera
@@ -1251,25 +1335,56 @@ const MemoMapCanvas = React.memo(function MemoMapCanvas(props: any) {
         </ShapeSource>
       )}
 
+      {editingCloudTrack?.cloudEdit && (() => {
+        const edit = editingCloudTrack.cloudEdit;
+        const trim = effectiveTrim(edit.rawPointCount, edit.trimStartPointIndex, edit.trimEndPointIndex);
+        return excludedTrackSegments(edit.segments, trim.start, trim.end).map((segment, segmentIndex) => (
+          <ShapeSource
+            key={`excluded-${segmentIndex}`}
+            id={`edit-excluded-source-${segmentIndex}`}
+            shape={coordsToGeoJSONLine(segment.map((point) => ({ ...point, timestamp: point.timestamp ?? 0 })))}
+          >
+            <LineLayer
+              id={`edit-excluded-layer-${segmentIndex}`}
+              style={{
+                lineColor: '#9aa09b',
+                lineWidth: 3,
+                lineOpacity: 0.72,
+                lineDasharray: [1.5, 1.5],
+                lineCap: 'round',
+                lineJoin: 'round',
+              }}
+            />
+          </ShapeSource>
+        ));
+      })()}
+
       {routesOnMap.map((route: RouteData, idx: number) => {
         const isHighlighted = highlightedRoute === route.route_id;
-        const lineGeoJSON = coordsToGeoJSONLine(route.path.filter((p) => p.latitude != null && p.longitude != null));
+        const isEditing = editingCloudTrack?.routeId === route.cloudRoute?.routeId;
+        const pathSegments = route.pathSegments?.length ? route.pathSegments : [route.path];
         const rPorcini = markersToGeoJSON(route.markers, 'Porcino');
         const rFinferli = markersToGeoJSON(route.markers, 'Finferlo');
         return (
           <React.Fragment key={route.route_id ?? idx}>
-            <ShapeSource id={`saved-path-source-${idx}`} shape={lineGeoJSON}>
-              <LineLayer
-                id={`saved-path-layer-${idx}`}
-                style={{
-                  lineColor: isHighlighted ? '#003cff' : '#1e8fff',
-                  lineWidth: isHighlighted ? 4 : 1.5,
-                  lineCap: 'round',
-                  lineJoin: 'round',
-                  lineOpacity: isHighlighted ? 1 : 0.57,
-                }}
-              />
-            </ShapeSource>
+            {pathSegments.map((segment, segmentIndex) => (
+              <ShapeSource
+                key={`saved-path-${idx}-${segmentIndex}`}
+                id={`saved-path-source-${idx}-${segmentIndex}`}
+                shape={coordsToGeoJSONLine(segment.filter((p) => p.latitude != null && p.longitude != null))}
+              >
+                <LineLayer
+                  id={`saved-path-layer-${idx}-${segmentIndex}`}
+                  style={{
+                    lineColor: isEditing ? '#63c779' : isHighlighted ? '#003cff' : '#1e8fff',
+                    lineWidth: isEditing ? 4 : isHighlighted ? 4 : 1.5,
+                    lineCap: 'round',
+                    lineJoin: 'round',
+                    lineOpacity: isEditing || isHighlighted ? 1 : 0.57,
+                  }}
+                />
+              </ShapeSource>
+            ))}
             {rPorcini.features.length > 0 && (
               <ShapeSource id={`saved-porcini-source-${idx}`} shape={rPorcini}>
                 <CircleLayer
@@ -1289,6 +1404,44 @@ const MemoMapCanvas = React.memo(function MemoMapCanvas(props: any) {
           </React.Fragment>
         );
       })}
+      {routesOnMap.flatMap((route: RouteData) => {
+        const edit = route.cloudRoute?.cloudEdit;
+        if (!edit) return [];
+        const trim = effectiveTrim(edit.rawPointCount, edit.trimStartPointIndex, edit.trimEndPointIndex);
+        return visibleMushroomMarkers(edit.mushroomMarkers, trim.start, trim.end).map((marker) => (
+          <PointAnnotation
+            key={`cloud-marker-${route.cloudRoute!.routeId}-${marker.track_point_index}-${marker.species}`}
+            id={`cloud-marker-${route.cloudRoute!.routeId}-${marker.track_point_index}-${marker.species}`}
+            coordinate={[marker.longitude, marker.latitude]}
+            anchor={{ x: marker.species === 'porcini' ? 1 : 0, y: 0.5 }}
+          >
+            <View
+              collapsable={false}
+              accessible
+              accessibilityRole="image"
+              accessibilityLabel={`${marker.count} ${marker.species} al punto ${marker.track_point_index + 1}`}
+              style={[
+                mStyles.cloudMushroomMarker,
+                marker.species === 'porcini' ? mStyles.cloudMushroomMarkerPorcini : mStyles.cloudMushroomMarkerFinferli,
+              ]}
+            >
+              <Text style={[
+                mStyles.cloudMushroomMarkerText,
+                marker.species === 'porcini' ? mStyles.cloudMushroomMarkerTextPorcini : mStyles.cloudMushroomMarkerTextFinferli,
+              ]}>{marker.species === 'porcini' ? 'P' : 'F'} {marker.count}</Text>
+            </View>
+          </PointAnnotation>
+        ));
+      })}
+      {selectedEditPoint && (
+        <PointAnnotation
+          id="cloud-edit-selected-point"
+          coordinate={[selectedEditPoint.longitude, selectedEditPoint.latitude]}
+          anchor={{ x: 0.5, y: 0.5 }}
+        >
+          <View collapsable={false} style={mStyles.cloudEditSelectedPoint} />
+        </PointAnnotation>
+      )}
       {routeEndpointMarkers.map((marker: ReturnType<typeof buildRouteEndpointMarkers>[number]) => (
         <PointAnnotation
           key={marker.id}
@@ -1516,7 +1669,8 @@ function MainUI(props: any) {
     addedRoutes, setAddedRoutes, setRoutesOnMap, routesOnMap, removeRouteFromMap,
     highlightRoute, highlightedRoute, activeLayer, setActiveLayer,
     tileDate, setTileDate, tileVersion, setTileVersion, tileSets,
-    tileOpacity, setTileOpacity, tilesLoading, tilesError
+    tileOpacity, setTileOpacity, tilesLoading, tilesError,
+    previewCloudTrackEdit, finishCloudTrackEdit, cloudEditRequest,
   } = props;
 
   // fetch percorsi salvati quando cambiano gli addedRoutes
@@ -1560,6 +1714,9 @@ function MainUI(props: any) {
   const [coordinatesCopied, setCoordinatesCopied] = React.useState(false);
   const [pointDetailsPoint, setPointDetailsPoint] = React.useState<SelectedMapPoint | null>(null);
   const [indexAnalysisPoint, setIndexAnalysisPoint] = React.useState<SelectedMapPoint | null>(null);
+  const [editingCloudRoute, setEditingCloudRoute] = React.useState<ArchiveMapRoute | null>(null);
+  const [selectedEditPointIndex, setSelectedEditPointIndex] = React.useState<number | null>(null);
+  const lastCloudEditRequestId = React.useRef(0);
 
   // GeoJSON memoizzati
   const currentPathGeoJSON = React.useMemo(() => coordsToGeoJSONLine(path), [path]);
@@ -1569,6 +1726,9 @@ function MainUI(props: any) {
     () => buildRouteEndpointMarkers(routesOnMap, path, recording),
     [routesOnMap, path, recording],
   );
+  const editingMapRoute = editingCloudRoute
+    ? routesOnMap.find((route: RouteData) => route.route_id === `cloud:${editingCloudRoute.routeId}`) ?? null
+    : null;
 
   const latestPathPosition = path.length > 0 ? path[path.length - 1] : null;
   const currentPos = currentPosition ?? latestPathPosition;
@@ -1613,6 +1773,47 @@ function MainUI(props: any) {
     setPointDetailsPoint(null);
   }, []);
 
+  const openCloudEditor = React.useCallback((route: RouteData) => {
+    if (recording) {
+      Alert.alert('Registrazione in corso', 'Termina la registrazione prima di modificare un percorso salvato.');
+      return;
+    }
+    if (!route.cloudRoute?.cloudEdit) {
+      Alert.alert('Modifica non disponibile', 'Questa traccia non dispone dei metadati necessari per la modifica.');
+      return;
+    }
+    closeCoordinatePopup();
+    setSelectedEditPointIndex(null);
+    setEditingCloudRoute(route.cloudRoute);
+  }, [closeCoordinatePopup, recording]);
+
+  React.useEffect(() => {
+    if (!cloudEditRequest || cloudEditRequest.id === lastCloudEditRequestId.current) return;
+    lastCloudEditRequestId.current = cloudEditRequest.id;
+    openCloudEditor(archiveRouteToMapRoute(cloudEditRequest.route));
+  }, [cloudEditRequest, openCloudEditor]);
+
+  const cancelCloudEditor = React.useCallback((originalRoute: ArchiveMapRoute) => {
+    previewCloudTrackEdit(originalRoute);
+    setSelectedEditPointIndex(null);
+    setEditingCloudRoute(null);
+  }, [previewCloudTrackEdit]);
+
+  const saveCloudEditor = React.useCallback((updatedRoute: ArchiveMapRoute) => {
+    finishCloudTrackEdit(updatedRoute);
+    setSelectedEditPointIndex(null);
+    setEditingCloudRoute(null);
+  }, [finishCloudTrackEdit]);
+
+  React.useEffect(() => {
+    if (!editingCloudRoute) return undefined;
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      cancelCloudEditor(editingCloudRoute);
+      return true;
+    });
+    return () => subscription.remove();
+  }, [cancelCloudEditor, editingCloudRoute]);
+
   const openIndexAnalysis = React.useCallback(() => {
     if (!coordinateSelection) return;
     setPointDetailsPoint(null);
@@ -1649,6 +1850,9 @@ function MainUI(props: any) {
         highlightedRoute={highlightedRoute}
         selectedMapPoint={coordinateSelection?.point ?? null}
         onCoordinateSelect={selectMapCoordinate}
+        editingCloudTrack={editingMapRoute?.cloudRoute ?? null}
+        selectedEditPointIndex={selectedEditPointIndex}
+        onEditPointSelect={setSelectedEditPointIndex}
       />
 
       {/* ── HEADER PILL ──────────────────────────────────────────────────── */}
@@ -1669,7 +1873,7 @@ function MainUI(props: any) {
         </View>
       )}
 
-      <QuickIndexPanel
+      {!editingCloudRoute && <QuickIndexPanel
         activeLayer={activeLayer}
         setActiveLayer={setActiveLayer}
         tileDate={tileDate}
@@ -1680,7 +1884,7 @@ function MainUI(props: any) {
         tileOpacity={tileOpacity}
         setTileOpacity={setTileOpacity}
         tilesLoading={tilesLoading}
-      />
+      />}
 
       {/* ── OVERLAY LISTA FUNGHI (destra) ────────────────────────────────── */}
       {recording && markers.length > 0 && (
@@ -1711,7 +1915,7 @@ function MainUI(props: any) {
       )}
 
       {/* ── OVERLAY PERCORSI IN MAPPA (sinistra) ─────────────────────────── */}
-      {routesOnMap.length > 0 && (
+      {!editingCloudRoute && routesOnMap.length > 0 && (
         <View style={mStyles.overlayLeft}>
           <View style={mStyles.overlayHeader}>
             <Text style={mStyles.overlayLabel}>IN MAPPA</Text>
@@ -1747,6 +1951,15 @@ function MainUI(props: any) {
                   <View style={mStyles.routeTrackDot} />
                   <Text style={mStyles.routeRowName} numberOfLines={1} ellipsizeMode="tail">{route.name}</Text>
                 </TouchableOpacity>
+                {route.cloudRoute && (
+                  <TouchableOpacity
+                    onPress={() => openCloudEditor(route)}
+                    style={mStyles.routeEditButton}
+                    accessibilityLabel={`Modifica ${route.name}`}
+                  >
+                    <Pencil size={14} color={UI.amberBri} />
+                  </TouchableOpacity>
+                )}
                 <TouchableOpacity
                   onPress={() =>
                     Alert.alert('Conferma rimozione', 'Vuoi rimuovere questa rotta dalla mappa?', [
@@ -1785,6 +1998,7 @@ function MainUI(props: any) {
       )}
 
       {/* ── PULSANTE CENTRA ───────────────────────────────────────────────── */}
+      {!editingCloudRoute && <>
       <TouchableOpacity
         style={recording ? mStyles.centerBtnRecording : mStyles.centerBtn}
         onPress={() => {
@@ -1854,6 +2068,17 @@ function MainUI(props: any) {
           <Text style={mStyles.mainBtnText}>{recording ? 'FERMA REGISTRAZIONE' : 'AVVIA REGISTRAZIONE'}</Text>
         </TouchableOpacity>
       </View>
+      </>}
+
+      {editingCloudRoute && (
+        <CloudTrackEditor
+          route={editingCloudRoute}
+          selectedPointIndex={selectedEditPointIndex}
+          onDraftChange={previewCloudTrackEdit}
+          onCancel={cancelCloudEditor}
+          onSaved={saveCloudEditor}
+        />
+      )}
 
       {coordinateSelection && (
         <View style={mStyles.coordinatePopupOverlay}>
@@ -2107,10 +2332,18 @@ const mStyles = StyleSheet.create({
   },
   routeEndpointMarkerStart: { backgroundColor: '#43b552' },
   routeEndpointMarkerEnd: { backgroundColor: '#df4a43' },
+  cloudMushroomMarker: { minWidth: 30, height: 24, paddingHorizontal: 5, borderRadius: 12, borderWidth: 1.5, borderColor: '#000', alignItems: 'center', justifyContent: 'center' },
+  cloudMushroomMarkerPorcini: { backgroundColor: '#965123' },
+  cloudMushroomMarkerFinferli: { backgroundColor: '#ffd900' },
+  cloudMushroomMarkerText: { fontSize: 9, lineHeight: 11, fontWeight: '900' },
+  cloudMushroomMarkerTextPorcini: { color: '#fff' },
+  cloudMushroomMarkerTextFinferli: { color: '#111' },
+  cloudEditSelectedPoint: { width: 18, height: 18, borderRadius: 9, borderWidth: 3, borderColor: '#fff', backgroundColor: 'rgba(99,199,121,0.65)' },
   showMoreBtn: { marginTop: 6, paddingTop: 6, borderTopWidth: 1, borderTopColor: UI.border, alignItems: 'center' },
   showMoreText: { color: UI.greenBri, fontSize: 10, fontWeight: '700', letterSpacing: 1 },
   routeRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
   routeRowTouch: { flex: 1, flexDirection: 'row', alignItems: 'center', paddingVertical: 3, gap: 8 },
+  routeEditButton: { width: 28, height: 28, borderRadius: 6, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: UI.border },
   routeTrackDot: { width: 14, height: 3, borderRadius: 2, backgroundColor: '#1e8fff' },
   routeRowName: { flex: 1, color: UI.textPri, fontSize: 11, fontWeight: '500' },
   coordinatePopupOverlay: { ...StyleSheet.absoluteFillObject, zIndex: 100, elevation: 100 },

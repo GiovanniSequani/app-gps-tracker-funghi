@@ -1,6 +1,13 @@
 import { XMLParser } from 'fast-xml-parser';
 import { gunzipSync, strFromU8 } from 'fflate';
-import { AccountArchiveError, type GpxCoordinate, type GpxMarker, type ParsedGpxRoute } from './types';
+import {
+  AccountArchiveError,
+  type GpxCoordinate,
+  type GpxMarker,
+  type GpxTrackPoint,
+  type GpxTrackSegment,
+  type ParsedGpxRoute,
+} from './types';
 import { safeGpxName } from './validation';
 
 type UnknownRecord = Record<string, unknown>;
@@ -122,14 +129,40 @@ export function parseGpxBytes(
 
   const tracks = array(gpx.trk).map(record).filter((value): value is UnknownRecord => value !== null);
   const routes = array(gpx.rte).map(record).filter((value): value is UnknownRecord => value !== null);
-  const trackPoints = tracks.flatMap((track) => (
-    array(track.trkseg).flatMap((segment) => array(record(segment)?.trkpt))
-  ));
+  let rawTrackPointCount = 0;
+  const trackSegments: GpxTrackSegment[] = [];
+  for (const track of tracks) {
+    for (const segmentValue of array(track.trkseg)) {
+      const segmentRecord = record(segmentValue);
+      const rawPoints = array(segmentRecord?.trkpt);
+      const startPointIndex = rawTrackPointCount;
+      const points = rawPoints.flatMap((value) => {
+        const pointIndex = rawTrackPointCount++;
+        const point = coordinate(value);
+        return point ? [{ ...point, pointIndex } satisfies GpxTrackPoint] : [];
+      });
+      if (rawPoints.length > 0) {
+        trackSegments.push({
+          startPointIndex,
+          endPointIndex: rawTrackPointCount - 1,
+          points,
+        });
+      }
+    }
+  }
+  const trackPoints = trackSegments.flatMap((segment) => segment.points);
   const routePoints = routes.flatMap((route) => array(route.rtept));
-  const path = [...trackPoints, ...routePoints]
+  const parsedRoutePoints = routePoints
     .map(coordinate)
     .filter((value): value is GpxCoordinate => value !== null);
+  const path = trackPoints.length > 0 ? trackPoints : parsedRoutePoints;
   if (path.length === 0) throw new AccountArchiveError('unknown', 'Il GPX non contiene punti di traccia validi.');
+
+  if (trackSegments.length === 0 && parsedRoutePoints.length > 0) {
+    rawTrackPointCount = parsedRoutePoints.length;
+    const points = parsedRoutePoints.map((point, pointIndex) => ({ ...point, pointIndex }));
+    trackSegments.push({ startPointIndex: 0, endPointIndex: points.length - 1, points });
+  }
 
   const markers = array(gpx.wpt)
     .map(marker)
@@ -145,5 +178,8 @@ export function parseGpxBytes(
     startedAt,
     porciniCount: markers.filter((item) => species(`${item.tipo} ${item.name}`) === 'Porcino').length,
     finferliCount: markers.filter((item) => species(`${item.tipo} ${item.name}`) === 'Finferlo').length,
+    trackPoints: trackSegments.flatMap((segment) => segment.points),
+    trackSegments,
+    rawTrackPointCount,
   };
 }

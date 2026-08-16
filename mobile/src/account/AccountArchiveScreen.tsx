@@ -4,7 +4,9 @@ import {
   Alert,
   Animated,
   KeyboardAvoidingView,
+  Modal,
   Platform,
+  Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -26,8 +28,10 @@ import {
   LogIn,
   LogOut,
   MapPinned,
+  MoreHorizontal,
   Pencil,
   RefreshCw,
+  Scissors,
   ShieldCheck,
   Trash2,
   UploadCloud,
@@ -40,6 +44,7 @@ import {
   createTrackDownloadUrl,
   deleteTrack,
   getArchiveConfig,
+  listTrackMushroomMarkers,
   loadArchiveData,
   signIn,
   signOut,
@@ -59,6 +64,7 @@ import type {
   ParsedGpxRoute,
 } from './types';
 import { normalizeTrackName, safeGpxName, toAccountError, validateTrackName } from './validation';
+import { effectiveTrim, snapMarkersToTrack, trimTrackSegments } from './trackEdits';
 
 type LocalRoute = { route_id: string; name: string; date: string };
 type FullLocalRoute = LocalRoute & {
@@ -133,9 +139,7 @@ function TrackRow(props: {
       <View style={styles.trackCopy}>
         <View style={styles.trackTitleRow}>
           <Text style={styles.trackName} numberOfLines={1}>{props.title}</Text>
-          <Text style={[styles.sourceBadge, props.source === 'local' && styles.sourceBadgeLocal]}>
-            {props.source === 'cloud' ? 'ARCHIVIO' : 'LOCALE'}
-          </Text>
+          {props.source === 'local' && <Text style={styles.sourceBadgeLocal}>LOCALE</Text>}
         </View>
         <Text style={styles.muted}>{props.subtitle}</Text>
         {props.stats}
@@ -149,8 +153,10 @@ function TrackRow(props: {
 export default function AccountArchiveScreen(props: {
   sessionState: AccountSessionState;
   onShowTrackOnMap: (route: ArchiveMapRoute) => void;
+  onEditTrackOnMap: (route: ArchiveMapRoute) => void;
   onLocalRouteArchived: (routeId: string) => void;
   onCloudRouteRenamed: (trackId: string, name: string) => void;
+  cloudEditRevision: number;
 }) {
   const { sessionState } = props;
   const navigation = useNavigation<any>();
@@ -167,12 +173,13 @@ export default function AccountArchiveScreen(props: {
   const [authBusy, setAuthBusy] = React.useState(false);
   const [authError, setAuthError] = React.useState<string | null>(null);
   const [authNotice, setAuthNotice] = React.useState<string | null>(null);
-  const [actions, setActions] = React.useState<Record<string, 'upload' | 'download' | 'delete' | 'map' | 'import'>>({});
+  const [actions, setActions] = React.useState<Record<string, 'upload' | 'download' | 'delete' | 'map' | 'edit' | 'import'>>({});
   const [partialDeletes, setPartialDeletes] = React.useState<Set<string>>(() => new Set());
   const [nameAction, setNameAction] = React.useState<NameAction | null>(null);
   const [trackName, setTrackName] = React.useState('');
   const [trackNameError, setTrackNameError] = React.useState<string | null>(null);
   const [trackNameBusy, setTrackNameBusy] = React.useState(false);
+  const [trackMenu, setTrackMenu] = React.useState<GpxTrack | null>(null);
   const loadSequence = React.useRef(0);
   const detailSequence = React.useRef(0);
   const cloudDetailsRef = React.useRef<Record<string, CloudDetail>>({});
@@ -274,15 +281,43 @@ export default function AccountArchiveScreen(props: {
     if (!config) throw new Error('Configurazione archivio non ancora disponibile.');
     updateCloudDetails((current) => ({ ...current, [track.id]: { ...current[track.id], loading: true, error: undefined } }));
     try {
-      const bytes = await downloadTrackBytes(track);
+      const [bytes, serverMarkers] = await Promise.all([
+        downloadTrackBytes(track),
+        listTrackMushroomMarkers(track.id),
+      ]);
       const parsed = parseGpxBytes(bytes, track.original_filename || `${track.display_name}.gpx.gz`, config.max_uncompressed_bytes);
-      const route = routeSummary({
+      const rawPointCount = track.point_count ?? parsed.rawTrackPointCount;
+      if (track.point_count !== null && parsed.rawTrackPointCount !== track.point_count) {
+        throw new Error('Il numero di punti del GPX non corrisponde ai metadati della traccia.');
+      }
+      const trim = effectiveTrim(rawPointCount, track.trim_start_point_index, track.trim_end_point_index);
+      const snappedMarkers = snapMarkersToTrack(serverMarkers, parsed.trackPoints);
+      const pathSegments = trimTrackSegments(parsed.trackSegments, trim.start, trim.end);
+      const routeBase = routeSummary({
         routeId: track.id,
         name: track.display_name,
         date: track.ready_at ?? track.created_at,
-        path: parsed.path,
+        path: pathSegments.flat(),
         markers: parsed.markers,
       });
+      const route = {
+        ...routeBase,
+        porciniCount: routeBase.porciniCount + snappedMarkers
+          .filter((marker) => marker.species === 'porcini')
+          .reduce((total, marker) => total + marker.count, 0),
+        finferliCount: routeBase.finferliCount + snappedMarkers
+          .filter((marker) => marker.species === 'finferli')
+          .reduce((total, marker) => total + marker.count, 0),
+        pathSegments,
+        cloudEdit: track.point_count === null ? undefined : {
+          rawPointCount,
+          rawPoints: parsed.trackPoints,
+          segments: parsed.trackSegments,
+          trimStartPointIndex: track.trim_start_point_index,
+          trimEndPointIndex: track.trim_end_point_index,
+          mushroomMarkers: snappedMarkers,
+        },
+      } satisfies ArchiveMapRoute;
       updateCloudDetails((current) => ({ ...current, [track.id]: { route, loading: false } }));
       return route;
     } catch (reason) {
@@ -319,11 +354,20 @@ export default function AccountArchiveScreen(props: {
       setTrackName('');
       setTrackNameError(null);
       setTrackNameBusy(false);
+      setTrackMenu(null);
       setLoading(false);
       return;
     }
     setAuthVisible(false);
   }, [sessionState.session]);
+
+  React.useEffect(() => {
+    if (props.cloudEditRevision === 0) return;
+    detailSequence.current += 1;
+    setCloudDetails({});
+    cloudDetailsRef.current = {};
+    void refresh();
+  }, [props.cloudEditRevision, refresh]);
 
   useFocusEffect(React.useCallback(() => {
     void refresh();
@@ -488,6 +532,19 @@ export default function AccountArchiveScreen(props: {
     finally { setActions((current) => { const next = { ...current }; delete next[track.id]; return next; }); }
   };
 
+  const handleEditOnMap = async (track: GpxTrack) => {
+    setTrackMenu(null);
+    setActions((current) => ({ ...current, [track.id]: 'edit' }));
+    setError(null);
+    try {
+      const route = await loadCloudDetail(track);
+      if (!route.cloudEdit) throw new Error('Questa traccia non dispone dei metadati necessari per la modifica.');
+      props.onEditTrackOnMap(route);
+      navigation.navigate('Mappa');
+    } catch (reason) { setError(toAccountError(reason).message); }
+    finally { setActions((current) => { const next = { ...current }; delete next[track.id]; return next; }); }
+  };
+
   const performDelete = async (track: GpxTrack) => {
     setActions((current) => ({ ...current, [track.id]: 'delete' })); setError(null);
     try {
@@ -566,9 +623,9 @@ export default function AccountArchiveScreen(props: {
             const detail = cloudDetails[track.id];
             return <TrackRow key={track.id} source="cloud" title={track.display_name} subtitle={`${formatDate(track.ready_at ?? track.created_at)} · ${formatBytes(track.compressed_size_bytes)}`} stats={<TrackStats distanceM={track.distance_m} pointCount={track.point_count} porciniCount={detail?.route?.porciniCount} finferliCount={detail?.route?.finferliCount} loadingSpecies={detail?.loading} />} warning={partialDeletes.has(track.id) ? 'File eliminato; completa la cancellazione dei metadati.' : detail?.error ? 'Dettagli GPX temporaneamente non disponibili.' : undefined}>
               <TouchableOpacity style={styles.iconButton} onPress={() => void handleShowOnMap(track)} disabled={Boolean(actions[track.id])} accessibilityLabel={`Mostra ${track.display_name} sulla mappa`}>{actions[track.id] === 'map' ? <ActivityIndicator size="small" color={COLORS.green} /> : <MapPinned size={19} color={COLORS.green} />}</TouchableOpacity>
-              <TouchableOpacity style={styles.iconButton} onPress={() => void handleDownload(track)} disabled={Boolean(actions[track.id])} accessibilityLabel={`Scarica ${track.display_name}`}>{actions[track.id] === 'download' ? <ActivityIndicator size="small" color={COLORS.green} /> : <CloudDownload size={19} color={COLORS.text} />}</TouchableOpacity>
-              <TouchableOpacity style={styles.iconButton} onPress={() => openNameAction({ kind: 'rename', track }, track.display_name)} disabled={Boolean(actions[track.id])} accessibilityLabel={`Rinomina ${track.display_name}`}><Pencil size={18} color={COLORS.amber} /></TouchableOpacity>
-              <TouchableOpacity style={styles.iconButton} onPress={() => requestDelete(track)} disabled={Boolean(actions[track.id])} accessibilityLabel={`Elimina ${track.display_name}`}>{actions[track.id] === 'delete' ? <ActivityIndicator size="small" color={COLORS.red} /> : <Trash2 size={19} color={COLORS.red} />}</TouchableOpacity>
+              <TouchableOpacity style={styles.iconButton} onPress={() => setTrackMenu(track)} disabled={Boolean(actions[track.id])} accessibilityLabel={`Altre azioni per ${track.display_name}`}>
+                {actions[track.id] ? <ActivityIndicator size="small" color={COLORS.text} /> : <MoreHorizontal size={21} color={COLORS.text} />}
+              </TouchableOpacity>
             </TrackRow>;
           })}
 
@@ -587,6 +644,34 @@ export default function AccountArchiveScreen(props: {
           </TrackRow>)}
         </View>}
       </ScrollView>
+      <Modal visible={Boolean(trackMenu)} transparent animationType="fade" onRequestClose={() => setTrackMenu(null)}>
+        <View style={styles.menuBackdrop}>
+          <Pressable style={StyleSheet.absoluteFillObject} onPress={() => setTrackMenu(null)} accessibilityLabel="Chiudi menu percorso" />
+          {trackMenu && (
+            <View style={[styles.trackMenu, { paddingBottom: Math.max(14, safeAreaInsets.bottom + 8) }]} onStartShouldSetResponder={() => true}>
+              <View style={styles.trackMenuHeader}>
+                <View style={styles.trackMenuCopy}>
+                  <Text style={styles.trackMenuEyebrow}>AZIONI PERCORSO</Text>
+                  <Text style={styles.trackMenuTitle} numberOfLines={1}>{trackMenu.display_name}</Text>
+                </View>
+                <TouchableOpacity style={styles.menuClose} onPress={() => setTrackMenu(null)} accessibilityLabel="Chiudi menu"><Text style={styles.menuCloseText}>×</Text></TouchableOpacity>
+              </View>
+              <TouchableOpacity style={styles.menuAction} onPress={() => { const track = trackMenu; setTrackMenu(null); openNameAction({ kind: 'rename', track }, track.display_name); }} accessibilityLabel={`Rinomina ${trackMenu.display_name}`}>
+                <Pencil size={19} color={COLORS.amber} /><Text style={styles.menuActionText}>Rinomina</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.menuAction} onPress={() => void handleEditOnMap(trackMenu)} accessibilityLabel={`Modifica ${trackMenu.display_name} sulla mappa`}>
+                <Scissors size={19} color={COLORS.green} /><Text style={styles.menuActionText}>Edita</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.menuAction} onPress={() => { const track = trackMenu; setTrackMenu(null); void handleDownload(track); }} accessibilityLabel={`Scarica ${trackMenu.display_name}`}>
+                <CloudDownload size={19} color={COLORS.text} /><Text style={styles.menuActionText}>Scarica</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.menuAction} onPress={() => { const track = trackMenu; setTrackMenu(null); requestDelete(track); }} accessibilityLabel={`Elimina ${trackMenu.display_name}`}>
+                <Trash2 size={19} color={COLORS.red} /><Text style={[styles.menuActionText, styles.menuDeleteText]}>Elimina</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+        </View>
+      </Modal>
       <TrackNameModal
         visible={Boolean(nameAction)}
         title={nameAction?.kind === 'rename' ? 'Rinomina percorso' : nameAction?.kind === 'import' ? 'Importa percorso' : 'Salva nell’archivio'}
@@ -631,8 +716,7 @@ const styles = StyleSheet.create({
   trackCopy: { flex: 1, minWidth: 0, gap: 2 },
   trackTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   trackName: { flexShrink: 1, color: COLORS.text, fontWeight: '700', fontSize: 14 },
-  sourceBadge: { color: COLORS.green, borderWidth: 1, borderColor: '#477d52', borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1, fontSize: 8, fontWeight: '900', letterSpacing: 0.6 },
-  sourceBadgeLocal: { color: COLORS.amber, borderColor: '#735f30' },
+  sourceBadgeLocal: { color: COLORS.amber, borderWidth: 1, borderColor: '#735f30', borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1, fontSize: 8, fontWeight: '900', letterSpacing: 0.6 },
   trackActions: { width: 85, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', gap: 5 },
   iconButton: { width: 40, height: 40, borderRadius: 8, borderWidth: 1, borderColor: COLORS.border, alignItems: 'center', justifyContent: 'center' },
   uploadButton: { minHeight: 38, paddingHorizontal: 11, borderRadius: 8, backgroundColor: COLORS.green, flexDirection: 'row', gap: 5, alignItems: 'center' },
@@ -645,6 +729,17 @@ const styles = StyleSheet.create({
   errorText: { color: '#ffaaaa', fontSize: 12, lineHeight: 18 },
   noticeToast: { position: 'absolute', zIndex: 20, left: 16, right: 16, minHeight: 46, borderRadius: 10, borderWidth: 1, borderColor: '#477d52', backgroundColor: '#17351d', paddingHorizontal: 14, paddingVertical: 11, justifyContent: 'center', elevation: 8 },
   noticeToastText: { color: '#c7f4cf', fontSize: 13, lineHeight: 18, fontWeight: '700', textAlign: 'center' },
+  menuBackdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.58)' },
+  trackMenu: { backgroundColor: COLORS.panel, borderTopLeftRadius: 16, borderTopRightRadius: 16, borderTopWidth: 1, borderColor: COLORS.border, paddingHorizontal: 16, paddingTop: 13, gap: 4 },
+  trackMenuHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingBottom: 8 },
+  trackMenuCopy: { flex: 1, minWidth: 0 },
+  trackMenuEyebrow: { color: COLORS.green, fontSize: 9, fontWeight: '900', letterSpacing: 1.2 },
+  trackMenuTitle: { color: COLORS.text, fontSize: 17, fontWeight: '800', marginTop: 2 },
+  menuClose: { width: 38, height: 38, borderRadius: 8, borderWidth: 1, borderColor: COLORS.border, alignItems: 'center', justifyContent: 'center' },
+  menuCloseText: { color: COLORS.text, fontSize: 24, lineHeight: 27 },
+  menuAction: { minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: 12, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: COLORS.border, paddingHorizontal: 4 },
+  menuActionText: { color: COLORS.text, fontSize: 14, fontWeight: '700' },
+  menuDeleteText: { color: COLORS.red },
   warning: { color: COLORS.amber, fontSize: 11, lineHeight: 16 },
   retry: { color: COLORS.text, fontWeight: '800', textDecorationLine: 'underline' },
 });

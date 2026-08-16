@@ -2,7 +2,18 @@ import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../supabase', () => ({ getAccountSupabaseClient: vi.fn() }));
 
-import { createTrackDownloadUrl, deleteTrack, loadArchiveData, renameTrack, signUp, uploadPreparedTrack } from '../client';
+import {
+  createTrackDownloadUrl,
+  deleteTrack,
+  deleteTrackMushroomMarker,
+  listTrackMushroomMarkers,
+  loadArchiveData,
+  renameTrack,
+  saveTrackMushroomMarker,
+  setTrackTrim,
+  signUp,
+  uploadPreparedTrack,
+} from '../client';
 import type { GpxTrack, PreparedGpxUpload } from '../types';
 
 const prepared: PreparedGpxUpload = {
@@ -31,6 +42,8 @@ const readyTrack: GpxTrack = {
   distance_m: 123,
   ready_at: '2026-08-08T09:01:00Z',
   created_at: '2026-08-08T09:00:00Z',
+  trim_start_point_index: null,
+  trim_end_point_index: null,
 };
 
 describe('account archive client', () => {
@@ -162,5 +175,53 @@ describe('account archive client', () => {
     } as never);
     expect(createSignedUrl).toHaveBeenCalledWith(readyTrack.storage_path, 60);
     expect(result).toBe('https://signed.example/track');
+  });
+
+  it('salva il trim inclusivo tramite la RPC prevista', async () => {
+    const rpc = vi.fn().mockResolvedValue({
+      data: { ...readyTrack, trim_start_point_index: 1, trim_end_point_index: 8 },
+      error: null,
+    });
+    await setTrackTrim(readyTrack.id, 1, 8, { rpc } as never);
+    expect(rpc).toHaveBeenCalledWith('set_my_gpx_track_trim', {
+      p_track_id: readyTrack.id,
+      p_trim_start_point_index: 1,
+      p_trim_end_point_index: 8,
+    });
+  });
+
+  it('salva count maggiore di uno sul vero indice e sulle coordinate GPX', async () => {
+    const rpc = vi.fn().mockResolvedValue({ data: { id: 'marker-id', count: 7 }, error: null });
+    await saveTrackMushroomMarker(readyTrack.id, {
+      pointIndex: 42,
+      latitude: 45.123,
+      longitude: 10.456,
+    }, 'finferli', 7, { rpc } as never);
+    expect(rpc).toHaveBeenCalledWith('save_my_gpx_mushroom_marker', {
+      p_track_id: readyTrack.id,
+      p_track_point_index: 42,
+      p_latitude: 45.123,
+      p_longitude: 10.456,
+      p_species: 'finferli',
+      p_count: 7,
+    });
+  });
+
+  it('lista e rimuove i marker soltanto attraverso contratto pubblico e RPC', async () => {
+    const order = vi.fn().mockResolvedValue({ data: [{ id: 'm1', track_point_index: 2, species: 'porcini', count: 3 }], error: null });
+    const eq = vi.fn().mockReturnValue({ order });
+    const from = vi.fn().mockReturnValue({ select: vi.fn().mockReturnValue({ eq }) });
+    const rpc = vi.fn().mockResolvedValue({ error: null });
+    const markers = await listTrackMushroomMarkers(readyTrack.id, { from } as never);
+    await deleteTrackMushroomMarker(readyTrack.id, 2, 'porcini', { rpc } as never);
+    expect(from).toHaveBeenCalledWith('user_gpx_mushroom_markers');
+    expect(eq).toHaveBeenCalledWith('track_id', readyTrack.id);
+    expect(order).toHaveBeenCalledWith('track_point_index', { ascending: true });
+    expect(markers[0].count).toBe(3);
+    expect(rpc).toHaveBeenCalledWith('delete_my_gpx_mushroom_marker', {
+      p_track_id: readyTrack.id,
+      p_track_point_index: 2,
+      p_species: 'porcini',
+    });
   });
 });

@@ -31,4 +31,15 @@ describe('GPX import parser', () => {
   it('rifiuta un payload oltre il limite configurato', () => {
     expect(() => decodeGpxBytes(strToU8(xml), 'bosco.gpx', 10)).toThrow(/limite/);
   });
+
+  it('mantiene ordine raw e confini dei segmenti per gli indici backend', () => {
+    const segmented = `<gpx version="1.1"><trk><trkseg>
+      <trkpt lat="45" lon="10"/><trkpt lat="999" lon="10"/>
+    </trkseg><trkseg><trkpt lat="46" lon="11"/><trkpt lat="47" lon="12"/></trkseg></trk></gpx>`;
+    const parsed = parseGpxBytes(strToU8(segmented), 'segmenti.gpx', 100_000);
+    expect(parsed.rawTrackPointCount).toBe(4);
+    expect(parsed.trackPoints.map((point) => point.pointIndex)).toEqual([0, 2, 3]);
+    expect(parsed.trackSegments.map((segment) => [segment.startPointIndex, segment.endPointIndex]))
+      .toEqual([[0, 1], [2, 3]]);
+  });
 });

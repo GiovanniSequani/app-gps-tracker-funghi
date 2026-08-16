@@ -11,6 +11,7 @@ export function routeSummary(input: {
 }): ArchiveMapRoute {
   return {
     ...input,
+    pathSegments: [input.path],
     distanceM: calculateDistanceM(input.path),
     pointCount: input.path.length,
     porciniCount: input.markers.filter((marker) => marker.tipo.toLowerCase().includes('porcin')).length,

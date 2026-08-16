@@ -57,6 +57,9 @@ export function toAccountError(error: unknown): AccountArchiveError {
   if (/track.*not found|traccia.*non trovata|no rows|not found/.test(message)) {
     return new AccountArchiveError('track_not_found', 'Traccia non trovata. Aggiorna l’archivio e riprova.', { cause: error });
   }
+  if (/trim|point_count|point index|marker count|marker species|marker.*outside|almeno due punti/.test(message)) {
+    return new AccountArchiveError('invalid_track_edit', 'La modifica della traccia non è valida. Controlla il taglio e i marker.', { cause: error });
+  }
   if (/display.?name|track.?name|invalid.*name|nome.*non valid/.test(message)) {
     return new AccountArchiveError('invalid_track_name', 'Il nome della traccia non è valido.', { cause: error });
   }

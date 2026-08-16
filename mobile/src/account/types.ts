@@ -34,6 +34,8 @@ export type GpxTrack = {
   distance_m: number | null;
   ready_at: string | null;
   created_at: string;
+  trim_start_point_index: number | null;
+  trim_end_point_index: number | null;
 };
 
 export type ArchiveData = {
@@ -55,6 +57,30 @@ export type GpxCoordinate = {
   timestamp?: number | null;
 };
 
+export type GpxTrackPoint = GpxCoordinate & {
+  pointIndex: number;
+};
+
+export type GpxTrackSegment = {
+  startPointIndex: number;
+  endPointIndex: number;
+  points: GpxTrackPoint[];
+};
+
+export type MushroomSpecies = 'porcini' | 'finferli';
+
+export type GpxMushroomMarker = {
+  id: string;
+  track_id: string;
+  track_point_index: number;
+  latitude: number;
+  longitude: number;
+  species: MushroomSpecies;
+  count: number;
+  created_at: string;
+  updated_at: string;
+};
+
 export type GpxMarker = GpxCoordinate & {
   name: string;
   tipo: string;
@@ -67,6 +93,18 @@ export type ParsedGpxRoute = {
   startedAt: string | null;
   porciniCount: number;
   finferliCount: number;
+  trackPoints: GpxTrackPoint[];
+  trackSegments: GpxTrackSegment[];
+  rawTrackPointCount: number;
+};
+
+export type CloudTrackEditData = {
+  rawPointCount: number;
+  rawPoints: GpxTrackPoint[];
+  segments: GpxTrackSegment[];
+  trimStartPointIndex: number | null;
+  trimEndPointIndex: number | null;
+  mushroomMarkers: GpxMushroomMarker[];
 };
 
 export type ArchiveMapRoute = {
@@ -79,6 +117,8 @@ export type ArchiveMapRoute = {
   pointCount: number;
   porciniCount: number;
   finferliCount: number;
+  pathSegments?: GpxCoordinate[][];
+  cloudEdit?: CloudTrackEditData;
 };
 
 export type PreparedGpxUpload = {
@@ -114,6 +154,7 @@ export type AccountErrorCode =
   | 'partial_delete'
   | 'invalid_track_name'
   | 'track_not_found'
+  | 'invalid_track_edit'
   | 'network'
   | 'configuration'
   | 'unknown';

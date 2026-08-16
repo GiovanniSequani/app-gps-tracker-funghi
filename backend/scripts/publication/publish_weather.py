@@ -100,7 +100,7 @@ def main() -> None:
             batch_size = 200
     client = SupabaseClient.from_env(env_file)
     latest_index_date = latest_tile_index_date(client)
-    decision = weather_publication_decision(dataset.version, latest_index_date)
+    decision = weather_publication_decision(dataset.index_date.isoformat(), latest_index_date)
     if decision == "skip_older":
         print(
             f"[WEATHER SKIP] requested={dataset.version} "

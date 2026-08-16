@@ -17,14 +17,19 @@ Supabase Postgres tables:
 - `public_weather_cells`: one row per grid cell and version, with five
   20-element `smallint[]` arrays.
 
-The version is the index date in `YYYY-MM-DD` form. Only the current version is
-readable through RLS. Publication stages all rows, validates them in a database
-transaction, changes the pointer, and deletes the previous version in the same
-transaction. At most two versions exist during upload and one after publish.
+The immutable version is `YYYY-MM-DD-<12 hex>`, where the suffix identifies the
+content. The logical index date remains the separate `index_date` field. This
+allows an HRS reanalysis to replace weather for the same date atomically. Only
+the current version is readable through RLS. Publication stages all rows,
+validates them in a database transaction, changes the pointer, and deletes the
+previous version in the same transaction. At most two versions exist during
+upload and one after publish. Clients must always follow the pointer and must
+not derive or guess a version from the date.
 
 ### Source and sampling
 
-Source: `backend/data/final/meteo/meteo_recent_003deg.nc`.
+Source: the 20-day HRS/ICON composition built from the canonical yearly series
+in `backend/data/final/meteo/`.
 
 The builder always creates the 20 consecutive calendar slots ending on the
 index date. Missing source days and non-finite source values are encoded as

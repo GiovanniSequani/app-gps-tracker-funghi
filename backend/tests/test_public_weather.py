@@ -76,6 +76,8 @@ def test_selects_last_20_days_without_future_dates(tmp_path: Path) -> None:
 
     dataset = build_weather_dataset(source, "2026-01-20")
 
+    assert dataset.version.startswith("2026-01-20-")
+    assert dataset.metadata["version"] == dataset.version
     assert len(dataset.dates) == 20
     assert dataset.dates[0] == date(2026, 1, 1)
     assert dataset.dates[-1] == date(2026, 1, 20)
@@ -165,6 +167,7 @@ class FakeWeatherClient:
         if function == "prepare_public_weather_version":
             self.datasets[version] = {
                 "version": version,
+                "index_date": str(payload["p_index_date"]),
                 "status": "staging",
                 "content_sha256": payload["p_content_sha256"],
                 "expected_cells": int(payload["p_rows"]) * int(payload["p_cols"]),
@@ -197,13 +200,14 @@ def test_weather_publication_is_idempotent_and_cleans_only_old_version(tmp_path:
     }
     client.cells["2026-01-19"] = {}
     client.current_version = "2026-01-19"
+    client.datasets["2026-01-19"]["index_date"] = "2026-01-19"
 
     first = WeatherPublisher(client, batch_size=2).publish(dataset)
     second = WeatherPublisher(client, batch_size=2).publish(dataset)
 
     assert first.action == "published"
     assert second.action == "unchanged"
-    assert set(client.datasets) == {"2026-01-20"}
+    assert set(client.datasets) == {dataset.version}
     assert client.unrelated_tiles == {"keep": True}
 
 
@@ -213,6 +217,13 @@ def test_weather_pointer_is_unchanged_when_final_validation_fails(tmp_path: Path
     dataset = build_weather_dataset(source, "2026-01-20")
     client = FakeWeatherClient()
     client.current_version = "2026-01-19"
+    client.datasets["2026-01-19"] = {
+        "version": "2026-01-19",
+        "index_date": "2026-01-19",
+        "status": "current",
+        "content_sha256": "0" * 64,
+        "expected_cells": 1,
+    }
     client.fail_publish = True
 
     with pytest.raises(RuntimeError, match="incomplete"):
@@ -227,12 +238,37 @@ def test_older_weather_never_replaces_newer_current_version(tmp_path: Path) -> N
     dataset = build_weather_dataset(source, "2026-01-20")
     client = FakeWeatherClient()
     client.current_version = "2026-01-21"
+    client.datasets["2026-01-21"] = {
+        "version": "2026-01-21",
+        "index_date": "2026-01-21",
+        "status": "current",
+        "content_sha256": "0" * 64,
+        "expected_cells": 1,
+    }
 
     result = WeatherPublisher(client).publish(dataset)
 
     assert result.action == "skipped_older"
     assert client.current_version == "2026-01-21"
     assert "2026-01-20" not in client.datasets
+
+
+def test_same_date_weather_reanalysis_replaces_content_atomically(tmp_path: Path) -> None:
+    source = tmp_path / "weather.nc"
+    write_weather_source(source)
+    original = build_weather_dataset(source, "2026-01-20")
+    write_weather_source(source, missing_day=date(2026, 1, 8))
+    revised = build_weather_dataset(source, "2026-01-20")
+    assert original.version != revised.version
+
+    client = FakeWeatherClient()
+    WeatherPublisher(client, batch_size=2).publish(original)
+    result = WeatherPublisher(client, batch_size=2).publish(revised)
+
+    assert result.action == "published"
+    assert client.current_version == revised.version
+    assert client.datasets[revised.version]["index_date"] == "2026-01-20"
+    assert set(client.datasets) == {revised.version}
 
 
 class FakeTileManifestClient:

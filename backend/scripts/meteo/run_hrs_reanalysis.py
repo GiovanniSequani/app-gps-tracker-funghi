@@ -11,7 +11,11 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from backend.config.index_config import INDEX_FEATURE_WINDOW_DAYS, INDEX_OUTPUT_TEMPLATE
+from backend.config.index_config import (
+    INDEX_FEATURES_TEMPLATE,
+    INDEX_FEATURE_WINDOW_DAYS,
+    INDEX_OUTPUT_TEMPLATE,
+)
 from backend.config.paths import FINAL_METEO_DIR, hrs_time_series_path, icon_ruc_time_series_path
 from backend.scripts.pipeline_logging import run_logged_cmd
 from backend.src.meteo.time_series import import_hrs, validate_hrs
@@ -86,6 +90,58 @@ def manifest_payload(entries: list[dict[str, object]], revisions: dict[date, int
         {"updatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), "tileSets": updated},
         separators=(",", ":"),
     ) + "\n").encode("utf-8")
+
+
+def promote_reanalysis_outputs(
+    affected: tuple[date, ...],
+    stage_indices: Path,
+    stage_features: Path,
+    index_dir: Path,
+    feature_dir: Path,
+    backup_dir: Path,
+) -> None:
+    """Replace each index together with the exact features used to compute it."""
+
+    index_backup = backup_dir / "index_nc"
+    feature_backup = backup_dir / "features"
+    index_backup.mkdir(parents=True, exist_ok=True)
+    feature_backup.mkdir(parents=True, exist_ok=True)
+    feature_dir.mkdir(parents=True, exist_ok=True)
+
+    promoted: list[tuple[Path, Path | None]] = []
+    try:
+        for item in affected:
+            suffix = item.isoformat()
+            pairs = (
+                (
+                    stage_features / f"index_features_{suffix}.nc",
+                    feature_dir / f"index_features_{suffix}.nc",
+                    feature_backup / f"index_features_{suffix}.nc",
+                ),
+                (
+                    stage_indices / f"funghi_index_{suffix}.nc",
+                    index_dir / f"funghi_index_{suffix}.nc",
+                    index_backup / f"funghi_index_{suffix}.nc",
+                ),
+            )
+            for source, destination, backup in pairs:
+                if not source.is_file():
+                    raise RuntimeError(f"missing staged output {source}")
+                previous = backup if destination.exists() else None
+                if previous is not None:
+                    try:
+                        os.link(destination, previous)
+                    except OSError:
+                        shutil.copy2(destination, previous)
+                os.replace(source, destination)
+                promoted.append((destination, previous))
+    except Exception:
+        for destination, previous in reversed(promoted):
+            if previous is not None and previous.exists():
+                os.replace(previous, destination)
+            elif destination.exists():
+                destination.unlink()
+        raise
 
 
 def main() -> None:
@@ -181,23 +237,14 @@ def main() -> None:
             staged = stage_indices / f"funghi_index_{item.isoformat()}.nc"
             if not staged.is_file():
                 raise RuntimeError(f"missing staged index {staged}")
-        backup_indices = staging_dir / "index_backup"
-        backup_indices.mkdir(parents=True, exist_ok=True)
-        replaced: list[date] = []
-        try:
-            for item in affected:
-                destination = index_dir / f"funghi_index_{item.isoformat()}.nc"
-                if destination.exists():
-                    shutil.copy2(destination, backup_indices / destination.name)
-                os.replace(stage_indices / destination.name, destination)
-                replaced.append(item)
-        except Exception:
-            for item in replaced:
-                backup = backup_indices / f"funghi_index_{item.isoformat()}.nc"
-                destination = index_dir / backup.name
-                if backup.exists():
-                    os.replace(backup, destination)
-            raise
+        promote_reanalysis_outputs(
+            affected,
+            stage_indices,
+            stage_features,
+            index_dir,
+            Path(str(INDEX_FEATURES_TEMPLATE)).parent,
+            staging_dir / "backup",
+        )
     except Exception:
         raise
 
@@ -217,6 +264,17 @@ def main() -> None:
     publish_dates = tuple(item for item in affected if item in retained)
     revisions = {item: retained[item] + 1 for item in publish_dates}
     print(f"[HRS PUBLISH] retained_affected={len(publish_dates)}")
+    latest = max(retained) if retained else None
+    if latest is not None and latest in publish_dates:
+        # Validate the exact active index/feature pair before any remote tile
+        # pointer can be changed. The real publish below repeats the build and
+        # performs its own atomic current.json switch.
+        feature_path = Path(str(INDEX_FEATURES_TEMPLATE).format(date=latest.isoformat()))
+        run_cmd([
+            args.python, "-m", "backend.scripts.publication.publish_index_point",
+            "--index-date", latest.isoformat(), "--features", str(feature_path),
+            "--dry-run",
+        ])
     for item in publish_dates:
         run_cmd([
             args.python, "-m", "backend.scripts.tiles.01_build_tiles_gdal",
@@ -226,7 +284,17 @@ def main() -> None:
             "--env-file", str(env_file),
         ])
     if publish_dates:
-        latest = max(retained)
+        if latest is not None and latest in publish_dates:
+            feature_path = Path(str(INDEX_FEATURES_TEMPLATE).format(date=latest.isoformat()))
+            run_cmd([
+                args.python, "-m", "backend.scripts.publication.publish_index_point",
+                "--index-date", latest.isoformat(), "--features", str(feature_path),
+                "--env-file", str(env_file),
+            ])
+            run_cmd([
+                args.python, "-m", "backend.scripts.publication.publish_weather",
+                "--index-date", latest.isoformat(), "--env-file", str(env_file),
+            ])
         client.storage_upload(
             "tiles", "tile_sets.json", manifest_payload(entries, revisions),
             content_type="application/json; charset=utf-8", cache_control="0",
@@ -235,15 +303,6 @@ def main() -> None:
         verified = retained_versions(verified_entries)
         if any(verified.get(item) != revisions[item] for item in publish_dates):
             raise RuntimeError("remote tile_sets.json verification failed after atomic switch")
-        if latest in publish_dates:
-            run_cmd([
-                args.python, "-m", "backend.scripts.publication.publish_index_point",
-                "--index-date", latest.isoformat(), "--env-file", str(env_file),
-            ])
-            run_cmd([
-                args.python, "-m", "backend.scripts.publication.publish_weather",
-                "--index-date", latest.isoformat(), "--env-file", str(env_file),
-            ])
         for item in publish_dates:
             old_prefix = f"{item.isoformat()}_v{retained[item]}"
             run_cmd([

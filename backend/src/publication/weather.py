@@ -208,7 +208,6 @@ def build_weather_dataset(
         parsed_index_date = datetime.strptime(index_date, "%Y-%m-%d").date()
     else:
         parsed_index_date = index_date
-    version = validate_version(parsed_index_date.isoformat())
     if day_count <= 0:
         raise ValueError("day_count must be positive")
     if stride <= 0:
@@ -314,7 +313,6 @@ def build_weather_dataset(
         }
         metadata_core: dict[str, object] = {
             "contract_version": 1,
-            "version": version,
             "index_date": parsed_index_date.isoformat(),
             "dates": [item.isoformat() for item in required_dates],
             "day_count": day_count,
@@ -348,7 +346,9 @@ def build_weather_dataset(
             digest_parts.append(name.encode("ascii"))
             digest_parts.append(quantized[name].astype("<i2", copy=False).tobytes(order="C"))
         content_sha256 = sha256_bytes(b"".join(digest_parts))
+        version = validate_version(f"{parsed_index_date.isoformat()}-{content_sha256[:12]}")
         metadata = dict(metadata_core)
+        metadata["version"] = version
         metadata["content_sha256"] = content_sha256
 
     return WeatherDataset(

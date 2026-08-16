@@ -339,7 +339,7 @@ class WeatherPublisher:
         rows = self.client.rest_select(
             "public_weather_datasets",
             params={
-                "select": "version,status,content_sha256,expected_cells",
+                "select": "version,index_date,status,content_sha256,expected_cells",
                 "version": f"eq.{version}",
             },
         )
@@ -347,15 +347,18 @@ class WeatherPublisher:
 
     def publish(self, dataset: WeatherDataset) -> WeatherPublishResult:
         current = self._current()
-        if (
-            current
-            and isinstance(current.get("current_version"), str)
-            and str(current["current_version"]) > dataset.version
-        ):
+        current_version = str(current["current_version"]) if current else None
+        current_dataset = self._dataset(current_version) if current_version else None
+        current_date = (
+            str(current_dataset["index_date"])
+            if current_dataset and isinstance(current_dataset.get("index_date"), str)
+            else None
+        )
+        if current_date is not None and current_date > dataset.index_date.isoformat():
             stats = self.client.rpc("public_weather_storage_stats", {})
             return WeatherPublishResult("skipped_older", dataset.version, 0, stats)
-        if current and current.get("current_version") == dataset.version:
-            remote = self._dataset(dataset.version)
+        if current_version == dataset.version:
+            remote = current_dataset
             if (
                 remote
                 and remote.get("status") == "current"

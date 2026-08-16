@@ -8,7 +8,11 @@ import numpy as np
 import xarray as xr
 
 from backend.scripts.meteo.run_hrs_reanalysis import affected_index_dates
-from backend.scripts.meteo.run_hrs_reanalysis import manifest_payload, retained_versions
+from backend.scripts.meteo.run_hrs_reanalysis import (
+    manifest_payload,
+    promote_reanalysis_outputs,
+    retained_versions,
+)
 from backend.src.index.features import select_recent_window
 from backend.src.meteo.time_series import (
     HRS_VARIABLE_MAP,
@@ -177,6 +181,35 @@ def test_reanalysis_publishes_only_manifest_dates_with_new_revision() -> None:
     payload = manifest_payload(entries, {date(2026, 6, 5): 3}).decode("utf-8")
     assert '"date":"2026-06-05","version":"3"' in payload
     assert "2026-06-04" not in payload
+
+
+def test_reanalysis_promotes_matching_features_with_indices(tmp_path: Path) -> None:
+    item = date(2026, 8, 12)
+    stage_indices = tmp_path / "stage" / "index"
+    stage_features = tmp_path / "stage" / "features"
+    index_dir = tmp_path / "active" / "index"
+    feature_dir = tmp_path / "active" / "features"
+    for directory in (stage_indices, stage_features, index_dir, feature_dir):
+        directory.mkdir(parents=True)
+
+    index_name = f"funghi_index_{item.isoformat()}.nc"
+    feature_name = f"index_features_{item.isoformat()}.nc"
+    (stage_indices / index_name).write_bytes(b"new-index")
+    (stage_features / feature_name).write_bytes(b"new-features")
+    (index_dir / index_name).write_bytes(b"old-index")
+    (feature_dir / feature_name).write_bytes(b"old-features")
+
+    promote_reanalysis_outputs(
+        (item,),
+        stage_indices,
+        stage_features,
+        index_dir,
+        feature_dir,
+        tmp_path / "backup",
+    )
+
+    assert (index_dir / index_name).read_bytes() == b"new-index"
+    assert (feature_dir / feature_name).read_bytes() == b"new-features"
 
 
 def test_tile_manifest_keeps_only_newest_version_per_date() -> None:

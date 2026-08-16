@@ -12,6 +12,7 @@ backend/admin jobs and must never be embedded in either client.
 | `public.gpx_archive_config` | Readable by anon/authenticated; writable only by service role |
 | `public.user_profiles` | Authenticated user can read their row and update only `username` |
 | `public.user_gpx_tracks` | Authenticated user can read only their rows; writes use RPCs |
+| `public.user_gpx_mushroom_markers` | Authenticated user can read only markers on their tracks; writes use RPCs |
 | Storage bucket `user-gpx` | Private; authenticated access only to owned, reserved paths |
 
 Initial limits are 50 tracks, 10 MiB per compressed object and 50 MiB declared
@@ -70,6 +71,11 @@ Future research jobs must select only users whose profile currently has
 access control; any research export must remove user ID, filename and Storage
 path before model use.
 
+The current consent explicitly covers raw GPX tracks. Mushroom markers are
+separate user annotations: include them in research only after the legal text
+and its version explicitly cover that use. The schema keeps raw data and edits
+separate so this distinction remains enforceable.
+
 ## GPX object and metadata
 
 Every object has one canonical, non-user-chosen path:
@@ -91,6 +97,10 @@ same bytes. Optional bbox is:
 ```json
 {"west": 10.1, "south": 45.2, "east": 10.4, "north": 45.5}
 ```
+
+The raw `.gpx.gz` object and `storage_path` remain immutable after upload.
+Simple edits are stored as reversible metadata and never rewrite or duplicate
+the GPX object.
 
 ### Display name
 
@@ -192,6 +202,67 @@ The RPC applies the same normalization and validation used by
 the updated metadata row. It rejects IDs belonging to another user. It never
 changes `storage_path`, `original_filename`, the Storage object or quota usage.
 
+## Trim and mushroom markers
+
+Editing requires a ready track with a non-null `point_count`. Point indices are
+zero-based and refer to all GPX `trkpt` elements flattened in document order
+across every `trkseg`. A client should retain the original segment boundaries
+when rendering the selected interval.
+
+Trim is inclusive and stored on `user_gpx_tracks` as
+`trim_start_point_index` and `trim_end_point_index`. Both null means the full
+raw track. Set or replace the trim with:
+
+```text
+rpc('set_my_gpx_track_trim', {
+  p_track_id: track.id,
+  p_trim_start_point_index: 15, // null means the raw first point
+  p_trim_end_point_index: 420   // null means the raw last point
+})
+```
+
+At least two points must remain. Passing both indices as null resets the trim;
+requesting the complete raw bounds is normalized to the same null/null state.
+The RPC returns the updated track row and never changes the Storage object.
+
+A mushroom marker is anchored to one raw track-point index and stores
+`latitude`, `longitude`, `species`, `count`, `created_at` and `updated_at`.
+`species` is the stable lowercase code `porcini` or `finferli`; clients may
+translate it only for presentation. `count` is the number of mushrooms of that
+species recorded at that point, from 1 through 10000. Create or replace a
+marker with:
+
+```text
+rpc('save_my_gpx_mushroom_marker', {
+  p_track_id: track.id,
+  p_track_point_index: 120,
+  p_latitude: 46.36642,
+  p_longitude: 11.50647,
+  p_species: 'porcini',
+  p_count: 3
+})
+```
+
+There is at most one marker per track-point index and species. Therefore the
+same point may contain both a porcini marker and a finferli marker, each with
+its own count. Saving the same combination again updates its position and
+count. Delete one species without affecting the other with:
+
+```text
+rpc('delete_my_gpx_mushroom_marker', {
+  p_track_id: track.id,
+  p_track_point_index: 120,
+  p_species: 'porcini'
+})
+```
+
+List markers through `user_gpx_mushroom_markers`, filtering by `track_id` and
+ordering by `track_point_index`. RLS limits results to the owner. Authenticated
+clients have SELECT only; all mutations use the owner-scoped RPCs. Clients must
+snap marker coordinates to the selected GPX point because Postgres cannot
+inspect the compressed object. Markers outside the current trim remain stored
+but should be hidden; they reappear if the trim is expanded or reset.
+
 ## Delete sequence
 
 1. Delete the owned Storage object through the Storage API.
@@ -238,6 +309,18 @@ the incremental display-name migration:
 
 ```text
 backend/supabase/migrations/202608130001_gpx_display_name_and_rename.sql
+```
+
+Then apply the incremental editing migration:
+
+```text
+backend/supabase/migrations/202608160001_gpx_track_edits.sql
+```
+
+Finally apply the marker-species migration:
+
+```text
+backend/supabase/migrations/202608160002_gpx_marker_species.sql
 ```
 
 Expected SQL Editor result is `Success. No rows returned`. Then, from the

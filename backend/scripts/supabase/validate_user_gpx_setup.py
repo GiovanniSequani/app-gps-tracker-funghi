@@ -28,7 +28,8 @@ def main() -> None:
         f"max_tracks={summary.max_tracks_per_user} "
         f"max_compressed_bytes={summary.max_compressed_bytes} "
         f"max_uncompressed_bytes={summary.max_uncompressed_bytes} "
-        f"profiles={summary.profile_count} tracks={summary.track_count}"
+        f"profiles={summary.profile_count} tracks={summary.track_count} "
+        f"markers={summary.marker_count}"
     )
 
 

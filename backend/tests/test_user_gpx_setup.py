@@ -36,6 +36,18 @@ DISPLAY_NAME_MIGRATION = (
     / "migrations"
     / "202608130001_gpx_display_name_and_rename.sql"
 )
+TRACK_EDITS_MIGRATION = (
+    Path(__file__).resolve().parents[1]
+    / "supabase"
+    / "migrations"
+    / "202608160001_gpx_track_edits.sql"
+)
+MARKER_SPECIES_MIGRATION = (
+    Path(__file__).resolve().parents[1]
+    / "supabase"
+    / "migrations"
+    / "202608160002_gpx_marker_species.sql"
+)
 
 
 def valid_audit() -> dict[str, object]:
@@ -51,10 +63,15 @@ def valid_audit() -> dict[str, object]:
             "file_size_limit": 10_485_760,
             "allowed_mime_types": ["application/gzip", "application/x-gzip"],
         },
-        "rls": {"user_profiles": True, "user_gpx_tracks": True},
+        "rls": {
+            "user_profiles": True,
+            "user_gpx_tracks": True,
+            "user_gpx_mushroom_markers": True,
+        },
         "policies": sorted(EXPECTED_GPX_POLICIES),
         "profiles": 3,
         "tracks": 7,
+        "markers": 11,
     }
 
 
@@ -65,6 +82,7 @@ def test_gpx_setup_audit_accepts_complete_private_contract() -> None:
     assert summary.max_compressed_bytes == 10_485_760
     assert summary.profile_count == 3
     assert summary.track_count == 7
+    assert summary.marker_count == 11
 
 
 @pytest.mark.parametrize(
@@ -173,6 +191,99 @@ def test_gpx_rename_is_owner_scoped_and_does_not_change_storage_path() -> None:
     assert "update storage.objects" not in rename_sql
     assert "grant execute on function public.rename_my_gpx_track(uuid, text)" in sql
     assert "to authenticated" in sql
+
+
+def test_gpx_trim_is_reversible_owner_scoped_metadata_only() -> None:
+    sql = TRACK_EDITS_MIGRATION.read_text(encoding="utf-8").lower()
+    trim_sql = sql.split(
+        "create or replace function public.set_my_gpx_track_trim(", 1
+    )[1].split("$$;", 1)[0]
+
+    assert "add column if not exists trim_start_point_index integer" in sql
+    assert "add column if not exists trim_end_point_index integer" in sql
+    assert "user_gpx_tracks_trim_range" in sql
+    assert "and user_id = caller_id" in trim_sql
+    assert "and status = 'ready'" in trim_sql
+    assert "track.point_count is null" in trim_sql
+    assert "trim_start_point_index = null" in trim_sql
+    assert "trim_end_point_index = null" in trim_sql
+    assert "set storage_path" not in trim_sql
+    assert "update storage.objects" not in sql
+
+
+def test_gpx_markers_are_private_counted_and_anchored_to_raw_points() -> None:
+    sql = TRACK_EDITS_MIGRATION.read_text(encoding="utf-8").lower()
+    save_sql = sql.split(
+        "create or replace function public.save_my_gpx_mushroom_marker(", 1
+    )[1].split("$$;", 1)[0]
+    delete_sql = sql.split(
+        "create or replace function public.delete_my_gpx_mushroom_marker(", 1
+    )[1].split("$$;", 1)[0]
+
+    assert "create table if not exists public.user_gpx_mushroom_markers" in sql
+    assert "foreign key (track_id, user_id)" in sql
+    assert "references public.user_gpx_tracks(id, user_id)" in sql
+    assert "on delete cascade" in sql
+    assert "unique (track_id, track_point_index)" in sql
+    assert "count integer not null check (count between 1 and 10000)" in sql
+    assert "created_at timestamptz not null" in sql
+    assert "updated_at timestamptz not null" in sql
+    assert "p_track_point_index >= track.point_count" in save_sql
+    assert "and user_id = caller_id" in save_sql
+    assert "on conflict (track_id, track_point_index)" in save_sql
+    assert "count = excluded.count" in save_sql
+    assert "and user_id = caller_id" in delete_sql
+
+    assert "alter table public.user_gpx_mushroom_markers enable row level security" in sql
+    assert "create policy user_gpx_mushroom_markers_read_own" in sql
+    assert "using ((select auth.uid()) = user_id)" in sql
+    assert "grant select on public.user_gpx_mushroom_markers to authenticated" in sql
+    assert "grant insert on public.user_gpx_mushroom_markers" not in sql
+    assert "grant update on public.user_gpx_mushroom_markers" not in sql
+    assert "grant delete on public.user_gpx_mushroom_markers" not in sql
+
+
+def test_gpx_edit_rpcs_are_authenticated_only_and_keep_storage_immutable() -> None:
+    sql = TRACK_EDITS_MIGRATION.read_text(encoding="utf-8").lower()
+
+    for signature in (
+        "set_my_gpx_track_trim(uuid, integer, integer)",
+        "delete_my_gpx_mushroom_marker(uuid, integer)",
+    ):
+        assert f"grant execute on function public.{signature}" in sql
+    assert "grant execute on function public.save_my_gpx_mushroom_marker(" in sql
+    assert "to authenticated" in sql
+    assert "storage_path" not in sql
+    assert "storage.objects" not in sql
+
+
+def test_gpx_marker_species_contract_is_explicit_private_and_non_destructive() -> None:
+    sql = MARKER_SPECIES_MIGRATION.read_text(encoding="utf-8").lower()
+    save_sql = sql.split(
+        "create or replace function public.save_my_gpx_mushroom_marker(", 1
+    )[1].split("$$;", 1)[0]
+    delete_sql = sql.split(
+        "create or replace function public.delete_my_gpx_mushroom_marker(", 1
+    )[1].split("$$;", 1)[0]
+
+    assert "add column if not exists species text" in sql
+    assert "alter column species set not null" in sql
+    assert "check (species in ('porcini', 'finferli'))" in sql
+    assert "where species is null" in sql
+    assert "generic gpx mushroom markers exist" in sql
+    assert "(track_id, track_point_index, species)" in sql
+    assert "p_species text" in save_sql
+    assert "normalized_species not in ('porcini', 'finferli')" in save_sql
+    assert "and user_id = caller_id" in save_sql
+    assert "on conflict (track_id, track_point_index, species)" in save_sql
+    assert "species = normalized_species" in delete_sql
+    assert "and user_id = caller_id" in delete_sql
+    assert "drop function if exists public.save_my_gpx_mushroom_marker(" in sql
+    assert "drop function if exists public.delete_my_gpx_mushroom_marker(" in sql
+    assert "from public, anon" in sql
+    assert "to authenticated" in sql
+    assert "storage_path" not in sql
+    assert "storage.objects" not in sql
 
 
 def test_gpx_gzip_validator_checks_real_content(tmp_path: Path) -> None:

@@ -9,6 +9,7 @@ EXPECTED_GPX_POLICIES = {
     "user_profiles_read_own",
     "user_profiles_update_username",
     "user_gpx_tracks_read_own",
+    "user_gpx_mushroom_markers_read_own",
     "user_gpx_objects_select_own",
     "user_gpx_objects_insert_reserved",
     "user_gpx_objects_delete_own",
@@ -22,6 +23,7 @@ class GpxSetupSummary:
     max_uncompressed_bytes: int
     profile_count: int
     track_count: int
+    marker_count: int
 
 
 def validate_gpx_setup_audit(payload: Any) -> GpxSetupSummary:
@@ -39,7 +41,12 @@ def validate_gpx_setup_audit(payload: Any) -> GpxSetupSummary:
     if bucket.get("public") is not False:
         raise ValueError("user-gpx bucket must be private")
     if not isinstance(rls, dict) or not all(
-        rls.get(table) is True for table in ("user_profiles", "user_gpx_tracks")
+        rls.get(table) is True
+        for table in (
+            "user_profiles",
+            "user_gpx_tracks",
+            "user_gpx_mushroom_markers",
+        )
     ):
         raise ValueError("RLS is not enabled on all private user tables")
     if not isinstance(policies, list):
@@ -65,4 +72,5 @@ def validate_gpx_setup_audit(payload: Any) -> GpxSetupSummary:
         max_uncompressed_bytes=max_uncompressed,
         profile_count=int(payload.get("profiles", 0)),
         track_count=int(payload.get("tracks", 0)),
+        marker_count=int(payload.get("markers", 0)),
     )

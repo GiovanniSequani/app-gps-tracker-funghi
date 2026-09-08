@@ -12,7 +12,7 @@ describe('salvataggio registrazione cloud-first', () => {
   it('non scrive in locale quando il cloud riesce', async () => {
     const upload = vi.fn().mockResolvedValue(track);
     const saveLocal = vi.fn();
-    await expect(saveRecordingCloudFirst(route, true, { upload, saveLocal }))
+    await expect(saveRecordingCloudFirst(route, true, { upload, saveLocal, shareGuest: vi.fn() }))
       .resolves.toMatchObject({ location: 'cloud', track });
     expect(upload).toHaveBeenCalledOnce();
     expect(saveLocal).not.toHaveBeenCalled();
@@ -22,17 +22,19 @@ describe('salvataggio registrazione cloud-first', () => {
     const failure = new Error('offline');
     const saveLocal = vi.fn().mockResolvedValue(undefined);
     await expect(saveRecordingCloudFirst(route, true, {
-      upload: vi.fn().mockRejectedValue(failure), saveLocal,
+      upload: vi.fn().mockRejectedValue(failure), saveLocal, shareGuest: vi.fn(),
     })).resolves.toEqual({ location: 'local', cloudError: failure });
     expect(saveLocal).toHaveBeenCalledWith(route);
   });
 
-  it('senza account usa direttamente il fallback locale', async () => {
+  it('senza account condivide il GPX senza creare un archivio locale', async () => {
     const upload = vi.fn();
-    const saveLocal = vi.fn().mockResolvedValue(undefined);
-    await expect(saveRecordingCloudFirst(route, false, { upload, saveLocal }))
-      .resolves.toEqual({ location: 'local', cloudError: undefined });
+    const saveLocal = vi.fn();
+    const shareGuest = vi.fn().mockResolvedValue(undefined);
+    await expect(saveRecordingCloudFirst(route, false, { upload, saveLocal, shareGuest }))
+      .resolves.toEqual({ location: 'shared' });
     expect(upload).not.toHaveBeenCalled();
-    expect(saveLocal).toHaveBeenCalledOnce();
+    expect(saveLocal).not.toHaveBeenCalled();
+    expect(shareGuest).toHaveBeenCalledWith(route);
   });
 });

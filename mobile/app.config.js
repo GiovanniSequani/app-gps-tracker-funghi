@@ -29,6 +29,7 @@ const isValidSupabaseUrl = (value) =>
 
 module.exports = ({ config }) => ({
   ...config,
+  scheme: 'funghitracker',
   extra: {
     ...config.extra,
     supabaseUrl: isValidSupabaseUrl(env.EXPO_PUBLIC_SUPABASE_URL)

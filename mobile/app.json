@@ -2,7 +2,7 @@
   "expo": {
     "name": "Funghi Tracker",
     "slug": "funghi-tracker",
-    "version": "1.6.0",
+    "version": "1.8.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -14,13 +14,13 @@
     },
     "ios": {
       "bundleIdentifier": "com.giovannisequani.funghitracker",
-      "buildNumber": "10",
+      "buildNumber": "12",
       "supportsTablet": true,
       "userInterfaceStyle": "automatic"
     },
     "android": {
       "package": "com.giovannisequani.funghitracker",
-      "versionCode": 10,
+      "versionCode": 12,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"

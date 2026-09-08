@@ -20,6 +20,9 @@ import {
   TriangleAlert,
 } from 'lucide-react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { IndexHistoryChart } from '../index-history/IndexHistoryChart';
+import type { IndexHistoryLoader } from '../index-history/types';
+import { useIndexHistory } from '../index-history/useIndexHistory';
 import { formatItalianDate } from '../point-details/labels';
 import type { PointCoordinate } from '../point-details/types';
 import { buildPorciniAnalysis, type IndexAnalysisFactor } from './analysis';
@@ -164,13 +167,16 @@ export default function IndexAnalysisScreen({
   initialSpecies,
   onClose,
   loader,
+  historyLoader,
 }: {
   point: PointCoordinate;
   initialSpecies: IndexSpecies;
   onClose: () => void;
   loader?: IndexPointLoader;
+  historyLoader?: IndexHistoryLoader;
 }) {
   const { state, retry } = useIndexPoint(point, true, loader);
+  const { state: historyState, retry: retryHistory } = useIndexHistory(point, true, historyLoader);
   const { width: windowWidth } = useWindowDimensions();
   const [species, setSpecies] = React.useState<IndexSpecies>(initialSpecies);
 
@@ -220,6 +226,37 @@ export default function IndexAnalysisScreen({
           { width: Math.min(windowWidth, 720) },
         ]}
       >
+        {historyState.status === 'loading' && (
+          <View style={styles.historyStateBlock} accessibilityLiveRegion="polite">
+            <ActivityIndicator color={COLORS.green} />
+            <Text style={styles.stateText}>Caricamento andamento recente…</Text>
+          </View>
+        )}
+        {historyState.status === 'outside' && (
+          <View style={styles.historyStateBlock}>
+            <Text style={styles.stateTitle}>Storico fuori copertura</Text>
+            <Text style={styles.stateText}>Lo storico dell’indice non copre questa coordinata.</Text>
+          </View>
+        )}
+        {(historyState.status === 'error' || historyState.status === 'unavailable') && (
+          <View style={styles.historyStateBlock}>
+            <Text style={[styles.stateTitle, styles.stateError]}>Storico non disponibile</Text>
+            <Text style={styles.stateText}>{historyState.message}</Text>
+            <TouchableOpacity
+              onPress={retryHistory}
+              style={styles.retryButton}
+              accessibilityRole="button"
+              accessibilityLabel="Riprova il caricamento dello storico indice"
+            >
+              <RefreshCw size={16} color={COLORS.text} />
+              <Text style={styles.retryText}>Riprova</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+        {historyState.status === 'ready' && (
+          <IndexHistoryChart history={historyState.data} contentWidth={windowWidth} />
+        )}
+
         {state.status === 'loading' && (
           <View style={styles.stateBlock} accessibilityLiveRegion="polite">
             <ActivityIndicator color={COLORS.green} />
@@ -332,6 +369,7 @@ const styles = StyleSheet.create({
   scroll: { flex: 1 },
   content: { maxWidth: 720, alignSelf: 'center', paddingBottom: 24 },
   stateBlock: { minHeight: 160, padding: 24, alignItems: 'center', justifyContent: 'center', gap: 10 },
+  historyStateBlock: { minHeight: 190, padding: 24, alignItems: 'center', justifyContent: 'center', gap: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: COLORS.border },
   stateTitle: { color: COLORS.text, fontSize: 16, fontWeight: '800', textAlign: 'center' },
   stateText: { color: COLORS.muted, fontSize: 13, lineHeight: 19, textAlign: 'center' },
   stateError: { color: COLORS.coral },

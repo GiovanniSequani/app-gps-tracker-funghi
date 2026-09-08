@@ -9,6 +9,8 @@ import {
 import { RefreshCw } from 'lucide-react-native';
 import { formatItalianDate } from '../point-details/labels';
 import type { PointCoordinate } from '../point-details/types';
+import { selectLimitedIndexDay } from '../index-access';
+import { useIndexHistory } from '../index-history/useIndexHistory';
 import { useIndexPoint } from './useIndexPoint';
 
 const COLORS = {
@@ -31,8 +33,11 @@ function scoreLabel(value: number | null): string {
   return value === null ? 'N/D' : scoreFormatter.format(value);
 }
 
-export function IndexPopupSummary({ point }: { point: PointCoordinate }) {
-  const { state, retry } = useIndexPoint(point, true);
+export function IndexPopupSummary({ point, fullIndexAccess }: { point: PointCoordinate; fullIndexAccess: boolean }) {
+  const current = useIndexPoint(point, fullIndexAccess);
+  const history = useIndexHistory(point, !fullIndexAccess);
+  const state = fullIndexAccess ? current.state : history.state;
+  const retry = fullIndexAccess ? current.retry : history.retry;
 
   if (state.status === 'loading') {
     return (
@@ -44,22 +49,31 @@ export function IndexPopupSummary({ point }: { point: PointCoordinate }) {
   }
 
   if (state.status === 'ready') {
+    const currentData = fullIndexAccess && current.state.status === 'ready' ? current.state.data : null;
+    const limitedDay = !fullIndexAccess && history.state.status === 'ready'
+      ? selectLimitedIndexDay(history.state.data)
+      : null;
+    const indexDate = currentData?.indexDate ?? limitedDay?.date ?? null;
+    const porciniScore = currentData?.porciniScore ?? limitedDay?.porciniScore ?? null;
+    const finferliScore = currentData?.finferliScore ?? limitedDay?.finferliScore ?? null;
+    if (!indexDate) return <View style={styles.errorRow} accessibilityLiveRegion="polite"><Text style={[styles.message, styles.warning]}>Nessuna data pubblica disponibile.</Text></View>;
     return (
       <View style={styles.summary} accessibilityLiveRegion="polite">
         <View style={styles.dateRow}>
           <Text style={styles.label}>Indice</Text>
-          <Text style={styles.date}>{formatItalianDate(state.data.indexDate)}</Text>
+          <Text style={styles.date}>{formatItalianDate(indexDate)}</Text>
         </View>
         <View style={styles.scores}>
           <View style={styles.score}>
             <Text style={styles.label}>Porcini</Text>
-            <Text style={styles.scoreValue}>{scoreLabel(state.data.porciniScore)}</Text>
+            <Text style={styles.scoreValue}>{scoreLabel(porciniScore)}</Text>
           </View>
           <View style={styles.score}>
             <Text style={styles.label}>Finferli</Text>
-            <Text style={styles.scoreValue}>{scoreLabel(state.data.finferliScore)}</Text>
+            <Text style={styles.scoreValue}>{scoreLabel(finferliScore)}</Text>
           </View>
         </View>
+        {!fullIndexAccess && <Text style={styles.accessNote}>Indice pubblico · 7 giorni di ritardo</Text>}
       </View>
     );
   }
@@ -142,6 +156,7 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     fontVariant: ['tabular-nums'],
   },
+  accessNote: { color: COLORS.warning, fontSize: 9, lineHeight: 12, fontWeight: '700' },
   errorRow: {
     minHeight: 70,
     padding: 8,

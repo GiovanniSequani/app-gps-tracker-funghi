@@ -157,6 +157,13 @@ export type AccountErrorCode =
   | 'invalid_track_edit'
   | 'network'
   | 'configuration'
+  | 'lifecycle_unavailable'
+  | 'rights_unavailable'
+  | 'export_rate_limited'
+  | 'export_expired'
+  | 'deletion_rate_limited'
+  | 'deletion_token_invalid'
+  | 'account_restricted'
   | 'unknown';
 
 export class AccountArchiveError extends Error {

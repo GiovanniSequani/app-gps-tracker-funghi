@@ -20,6 +20,29 @@ describe('account archive map invariants', () => {
     expect(app).not.toMatch(/showCloudTrackOnMap[\s\S]{0,800}runCameraCommand/);
   });
 
+  it('mantiene il modal Auth fuori dalla mappa e non introduce comandi camera', () => {
+    const app = fs.readFileSync(path.resolve(__dirname, '../../../App.tsx'), 'utf8');
+    const callbackModal = fs.readFileSync(path.resolve(__dirname, '../AuthCallbackModal.tsx'), 'utf8');
+    const deepLinks = fs.readFileSync(path.resolve(__dirname, '../useAuthDeepLinks.ts'), 'utf8');
+    expect(app.match(/<MemoMapCanvas\b/g)).toHaveLength(1);
+    expect(app.indexOf('<AuthCallbackModal')).toBeGreaterThan(app.indexOf('</NavigationContainer>'));
+    expect(`${callbackModal}\n${deepLinks}`).not.toMatch(/runCameraCommand|centerCamera|setCameraCommand|MapView/);
+  });
+
+  it('dopo la conferma torna al tab Mappa senza comandare la camera', () => {
+    const app = fs.readFileSync(path.resolve(__dirname, '../../../App.tsx'), 'utf8');
+    const callbackModal = fs.readFileSync(path.resolve(__dirname, '../AuthCallbackModal.tsx'), 'utf8');
+    const completion = app.slice(
+      app.indexOf('const completeAuthCallback'),
+      app.indexOf("const [recordingStatus"),
+    );
+    expect(app).toContain('<NavigationContainer ref={rootNavigationRef}>');
+    expect(completion).toContain("rootNavigationRef.navigate('Mappa')");
+    expect(completion).not.toMatch(/runCameraCommand|centerCamera|setCameraCommand/);
+    expect(callbackModal).toContain('<Text style={styles.primaryText}>Torna alla mappa</Text>');
+    expect(callbackModal).not.toContain('Linking.openURL');
+  });
+
   it('mantiene la mappa montata e non muove la camera durante l’editing cloud', () => {
     const app = fs.readFileSync(path.resolve(__dirname, '../../../App.tsx'), 'utf8');
     expect(app.match(/<MemoMapCanvas\b/g)).toHaveLength(1);
@@ -42,6 +65,12 @@ describe('account archive map invariants', () => {
     expect(source).toContain("porcini} porcini");
     expect(source).toContain("finferli} finferli");
     expect(source).not.toContain("props.source === 'cloud' ? 'ARCHIVIO'");
+  });
+
+  it('usa la data di inizio GPX sia in archivio sia sulla traccia convertita per la mappa', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, '../AccountArchiveScreen.tsx'), 'utf8');
+    expect(source.match(/getCloudTrackDate\(track\)/g)).toHaveLength(2);
+    expect(source).not.toContain('track.ready_at ?? track.created_at');
   });
 
   it('mantiene in riga solo mappa e menu, con le altre azioni nel menu', () => {

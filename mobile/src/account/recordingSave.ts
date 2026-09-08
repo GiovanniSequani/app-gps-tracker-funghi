@@ -9,7 +9,7 @@ export type RecordedRoute = {
 };
 
 export type RecordingSaveResult = {
-  location: 'cloud' | 'local';
+  location: 'cloud' | 'local' | 'shared';
   track?: GpxTrack;
   cloudError?: unknown;
 };
@@ -20,6 +20,7 @@ export async function saveRecordingCloudFirst(
   dependencies: {
     upload: (route: Pick<RecordedRoute, 'name' | 'path' | 'markers'>) => Promise<GpxTrack>;
     saveLocal: (route: RecordedRoute) => Promise<void>;
+    shareGuest: (route: RecordedRoute) => Promise<void>;
   },
 ): Promise<RecordingSaveResult> {
   let cloudError: unknown;
@@ -32,6 +33,10 @@ export async function saveRecordingCloudFirst(
     }
   }
 
+  if (!authenticated) {
+    await dependencies.shareGuest(route);
+    return { location: 'shared' };
+  }
   await dependencies.saveLocal(route);
   return { location: 'local', cloudError };
 }

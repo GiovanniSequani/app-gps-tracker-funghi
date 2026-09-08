@@ -89,9 +89,11 @@ const CALCULATION_STEPS = [
 interface Props {
   activeLayer: ActiveLayer;
   setActiveLayer: (layer: ActiveLayer) => void;
+  fullIndexAccess: boolean;
+  onRequestAccess: () => void;
 }
 
-export default function IndiceScreen({ activeLayer, setActiveLayer }: Props) {
+export default function IndiceScreen({ activeLayer, setActiveLayer, fullIndexAccess, onRequestAccess }: Props) {
   const activeLabel = LAYERS.find((layer) => layer.key === activeLayer)?.label ?? 'Nessuno';
 
   return (
@@ -104,6 +106,10 @@ export default function IndiceScreen({ activeLayer, setActiveLayer }: Props) {
       </View>
 
       <ScrollView style={s.body} contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>
+        {!fullIndexAccess && <View style={s.accessNotice} accessibilityLiveRegion="polite">
+          <View style={s.accessCopy}><Text style={s.accessTitle}>INDICE PUBBLICO</Text><Text style={s.accessText}>Ultimo giorno disponibile con 7 giorni di ritardo.</Text></View>
+          <TouchableOpacity style={s.accessButton} onPress={onRequestAccess} accessibilityRole="button"><Text style={s.accessButtonText}>Accesso completo</Text></TouchableOpacity>
+        </View>}
         <View style={s.section}>
           <View style={s.sectionHead}>
             <Text style={s.sectionTitle}>INDICE SULLA MAPPA</Text>
@@ -207,6 +213,9 @@ const s = StyleSheet.create({
   headerSub: { color: UI.textMut, fontSize: 11, fontWeight: '600', marginTop: 4 },
   body: { flex: 1 },
   scroll: { padding: 14, gap: 12 },
+  accessNotice: { minHeight: 58, flexDirection: 'row', alignItems: 'center', gap: 10, borderWidth: 1, borderColor: '#765039', borderRadius: 9, backgroundColor: '#201911', padding: 11 },
+  accessCopy: { flex: 1 }, accessTitle: { color: '#e5b16f', fontSize: 9, fontWeight: '900', letterSpacing: 1.4 }, accessText: { color: UI.textSec, fontSize: 11, lineHeight: 16, marginTop: 2 },
+  accessButton: { minHeight: 36, justifyContent: 'center', borderRadius: 7, borderWidth: 1, borderColor: '#8d674c', paddingHorizontal: 10 }, accessButtonText: { color: UI.textPri, fontSize: 10, fontWeight: '800' },
   section: {
     backgroundColor: UI.bg1,
     borderRadius: 9,

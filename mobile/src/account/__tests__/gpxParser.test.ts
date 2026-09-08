@@ -1,6 +1,7 @@
 import { gzipSync, strToU8 } from 'fflate';
 import { describe, expect, it } from 'vitest';
 import { decodeGpxBytes, parseGpxBytes } from '../gpxParser';
+import { getCloudTrackDate } from '../trackDates';
 
 const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" xmlns="http://www.topografix.com/GPX/1/1">
@@ -41,5 +42,19 @@ describe('GPX import parser', () => {
     expect(parsed.trackPoints.map((point) => point.pointIndex)).toEqual([0, 2, 3]);
     expect(parsed.trackSegments.map((segment) => [segment.startPointIndex, segment.endPointIndex]))
       .toEqual([[0, 1], [2, 3]]);
+  });
+
+  it('usa la data storica del GPX importato invece della data di caricamento cloud', () => {
+    const historicalGpx = `<gpx version="1.1"><trk><name>Uscita storica</name><trkseg>
+      <trkpt lat="45.1" lon="10.2"><time>2019-10-12T06:30:00Z</time></trkpt>
+      <trkpt lat="45.2" lon="10.3"><time>2019-10-12T07:15:00Z</time></trkpt>
+    </trkseg></trk></gpx>`;
+    const parsed = parseGpxBytes(strToU8(historicalGpx), 'uscita-storica.gpx', 100_000);
+
+    expect(getCloudTrackDate({
+      started_at: parsed.startedAt,
+      ready_at: '2026-08-23T10:05:00Z',
+      created_at: '2026-08-23T10:00:00Z',
+    })).toBe('2019-10-12T06:30:00.000Z');
   });
 });

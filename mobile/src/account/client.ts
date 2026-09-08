@@ -20,6 +20,13 @@ import {
   toAccountError,
   validateTrackName,
 } from './validation';
+import {
+  AUTH_CONFIRM_REDIRECT_URL,
+  AUTH_RECOVERY_REDIRECT_URL,
+  isUsedOrExpiredTokenError,
+  type AuthCallbackRequest,
+} from './authCallbacks';
+import type { AccountLifecyclePublicConfig } from './lifecycle';
 
 const TRACK_COLUMNS = [
   'id', 'storage_path', 'status', 'display_name', 'original_filename',
@@ -62,24 +69,100 @@ export async function signIn(email: string, password: string): Promise<Session> 
   return data.session;
 }
 
+export type SignUpInput = {
+  email: string;
+  password: string;
+  username: string;
+  lifecycleConfig: AccountLifecyclePublicConfig;
+};
+
+export function buildSignUpMetadata(input: SignUpInput): Record<string, unknown> {
+  const username = normalizeUsername(input.username);
+  if (!input.lifecycleConfig.api_available || !input.lifecycleConfig.lifecycle_enabled) {
+    throw new AccountArchiveError('lifecycle_unavailable', 'Configurazione account non disponibile. Riprova più tardi.');
+  }
+  const termsVersion = input.lifecycleConfig.current_terms_version;
+  const privacyVersion = input.lifecycleConfig.current_privacy_version;
+  if (!termsVersion || !privacyVersion) {
+    throw new AccountArchiveError(
+      'lifecycle_unavailable',
+      'Le versioni correnti dei documenti non sono disponibili. Riprova più tardi.',
+    );
+  }
+  return {
+    username,
+    terms_accepted: true,
+    privacy_acknowledged: true,
+    terms_version: termsVersion,
+    privacy_version: privacyVersion,
+    terms_acceptance_source: 'mobile',
+  };
+}
+
 export async function signUp(
-  input: { email: string; password: string; username: string },
+  input: SignUpInput,
   supabase: SupabaseClient = getAccountSupabaseClient(),
 ): Promise<{ session: Session | null }> {
   const { data, error } = await supabase.auth.signUp({
     email: input.email.trim(),
     password: input.password,
     options: {
-      data: {
-        username: normalizeUsername(input.username),
-        terms_accepted: true,
-        privacy_accepted: true,
-        raw_gpx_research_consent: true,
-      },
+      emailRedirectTo: AUTH_CONFIRM_REDIRECT_URL,
+      data: buildSignUpMetadata(input),
     },
   });
   if (error) throw toAccountError(error);
   return { session: data.session };
+}
+
+export async function requestPasswordRecovery(
+  email: string,
+  supabase: SupabaseClient = getAccountSupabaseClient(),
+): Promise<void> {
+  const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+    redirectTo: AUTH_RECOVERY_REDIRECT_URL,
+  });
+  if (!error) return;
+  const normalized = toAccountError(error);
+  if (normalized.code === 'network' || normalized.code === 'configuration') throw normalized;
+  throw new AccountArchiveError(
+    'unknown',
+    'Non è stato possibile inviare il messaggio. Attendi e riprova.',
+    { cause: error },
+  );
+}
+
+export async function verifyAuthCallback(
+  request: AuthCallbackRequest,
+  supabase: SupabaseClient = getAccountSupabaseClient(),
+): Promise<void> {
+  const { error } = await supabase.auth.verifyOtp({
+    token_hash: request.tokenHash,
+    type: request.type,
+  });
+  if (!error) return;
+  const normalized = toAccountError(error);
+  if (normalized.code === 'network' || normalized.code === 'configuration') throw normalized;
+  if (!isUsedOrExpiredTokenError(error)) {
+    throw new AccountArchiveError(
+      'unknown',
+      'Non è stato possibile verificare il link. Controlla la rete e riprova.',
+      { cause: error },
+    );
+  }
+  throw new AccountArchiveError(
+    'unknown',
+    'Il link non è valido, è scaduto o è già stato usato. Richiedine uno nuovo.',
+    { cause: error },
+  );
+}
+
+export async function updateRecoveredPassword(
+  password: string,
+  supabase: SupabaseClient = getAccountSupabaseClient(),
+): Promise<void> {
+  const { error } = await supabase.auth.updateUser({ password });
+  if (error) throw toAccountError(error);
 }
 
 export async function signOut(): Promise<void> {

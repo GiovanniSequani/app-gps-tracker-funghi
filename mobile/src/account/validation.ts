@@ -66,6 +66,21 @@ export function toAccountError(error: unknown): AccountArchiveError {
   if (/username|duplicate|unique|database error saving new user/.test(message)) {
     return new AccountArchiveError('duplicate_username', 'Username già in uso. Scegline un altro.', { cause: error });
   }
+  if (/account rights are not enabled|account_export_jobs|schema cache.*account_export_jobs|could not find the table.*account_export_jobs|could not find the function.*(?:request_my_data_export|request_my_account_deletion_verification|confirm_account_deletion)|schema cache.*(?:request_my_data_export|request_my_account_deletion_verification|confirm_account_deletion)/.test(message)) {
+    return new AccountArchiveError('rights_unavailable', 'Export ed eliminazione account non sono ancora disponibili. Riprova più tardi.', { cause: error });
+  }
+  if (/data export rate limit exceeded/.test(message)) {
+    return new AccountArchiveError('export_rate_limited', 'Hai già richiesto un export di recente. Controlla lo stato del job corrente o riprova più tardi.', { cause: error });
+  }
+  if (/export must be requested before deletion is confirmed/.test(message)) {
+    return new AccountArchiveError('account_restricted', 'L’export deve essere richiesto prima di confermare la cancellazione dell’account.', { cause: error });
+  }
+  if (/verification token.*(?:invalid|expired|used)|(?:invalid|expired|used).*verification token|deletion.*token.*(?:invalid|expired|used)/.test(message)) {
+    return new AccountArchiveError('deletion_token_invalid', 'Il link non è valido, è scaduto oppure è già stato usato. Richiedi una nuova email.', { cause: error });
+  }
+  if (/deletion verification rate limit exceeded/.test(message)) {
+    return new AccountArchiveError('deletion_rate_limited', 'Controlla l’email: se la richiesta può essere elaborata riceverai il link di conferma.', { cause: error });
+  }
   if (error instanceof TypeError || /fetch|network|failed to fetch|network request failed/.test(message)) {
     return new AccountArchiveError('network', 'Errore di rete. Controlla la connessione e riprova.', { cause: error });
   }

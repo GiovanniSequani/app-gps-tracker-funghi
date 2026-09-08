@@ -2,7 +2,7 @@ import React from 'react';
 import {
   StyleSheet, Text, View, Button, useColorScheme, Alert, TextInput, Modal, Linking,
   TouchableOpacity, Animated, StatusBar, Platform, ScrollView, RefreshControl, PanResponder, useWindowDimensions,
-  BackHandler,
+  AppState, BackHandler,
 } from 'react-native';
 import MapLibreGL, {
   MapView,
@@ -23,7 +23,7 @@ import * as Sharing from 'expo-sharing';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { initDB, insertRoute, getAllRoutes, getRouteById, deleteRoute } from './db';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { NavigationContainer } from '@react-navigation/native';
+import { createNavigationContainerRef, NavigationContainer } from '@react-navigation/native';
 import uuid from 'react-native-uuid';
 import * as Updates from 'expo-updates';
 import Constants from 'expo-constants';
@@ -35,12 +35,43 @@ import { IndexPopupSummary } from './src/index-data/IndexPopupSummary';
 import AccountArchiveScreen from './src/account/AccountArchiveScreen';
 import CloudTrackEditor from './src/account/CloudTrackEditor';
 import { useAccountSession } from './src/account/useAccountSession';
+import { useAccountLifecycle } from './src/account/useAccountLifecycle';
+import { AuthCallbackModal } from './src/account/AuthCallbackModal';
+import { IndexAccessNoticeModal } from './src/IndexAccessNoticeModal';
+import { useAuthDeepLinks } from './src/account/useAuthDeepLinks';
 import { uploadRouteToCloud } from './src/account/routeUpload';
-import { saveRecordingCloudFirst } from './src/account/recordingSave';
+import { saveRecordingCloudFirst, type RecordedRoute } from './src/account/recordingSave';
 import type { ArchiveMapRoute, GpxTrackPoint } from './src/account/types';
 import { TrackNameModal } from './src/account/TrackNameModal';
 import { normalizeTrackName, validateTrackName } from './src/account/validation';
+import { buildGpxXml } from './src/account/gpx';
+import { filterTileSetsForIndexAccess } from './src/index-access';
 import { buildRouteEndpointMarkers } from './src/map/routeEndpoints';
+import {
+  canAppendRecordingPoint,
+  isRecordingSession,
+  isTimestampPaused,
+  nextRecordingStatus,
+  type RecordingPauseWindow,
+  type RecordingStatus,
+} from './src/recording/recordingState';
+import {
+  createRecordingDraft,
+  mergeRecordingDraftPoints,
+  shouldCheckpointRecording,
+  type RecordingDraft,
+  type RecordingDraftStatus,
+} from './src/recording/recordingDraft';
+import {
+  clearRecordingDraft,
+  CorruptRecordingDraftError,
+  ensureRecordingRecoveryDirectory,
+  loadRecordingDraft,
+  RECORDING_BACKGROUND_POSITIONS_FILE,
+  RECORDING_STATUS_FILE,
+  writeRecordingDraft,
+} from './src/recording/recordingDraftStorage';
+import { RecordingRecoveryModal } from './src/recording/RecordingRecoveryModal';
 import {
   effectiveTrim,
   excludedTrackSegments,
@@ -107,8 +138,8 @@ type CoordinatePopupSelection = {
 
 // ─── Costanti ─────────────────────────────────────────────────────────────────
 const Tab = createBottomTabNavigator();
+const rootNavigationRef = createNavigationContainerRef<any>();
 const LOCATION_TASK_NAME = 'background-location-task';
-const BG_POSITIONS_FILE = `${FileSystemLegacy.cacheDirectory}bg_positions.json`;
 const MAP_MIN_ZOOM_LEVEL = 3;
 const MAP_MAX_ZOOM_LEVEL = 18;
 const RECORDING_LOCATION_OPTIONS: Location.LocationOptions = {
@@ -372,15 +403,21 @@ TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
   if (error) { console.error('Errore task location:', error); return; }
   if (data) {
     try {
+      const statusInfo = await FileSystemLegacy.getInfoAsync(RECORDING_STATUS_FILE);
+      if (!statusInfo.exists) return;
+      const recordingStatus = await FileSystemLegacy.readAsStringAsync(RECORDING_STATUS_FILE);
+      if (!canAppendRecordingPoint(recordingStatus as RecordingStatus)) return;
       const { locations } = data as any;
       let arr: Coordinate[] = [];
       try {
-        const info = await FileSystemLegacy.getInfoAsync(BG_POSITIONS_FILE);
+        const info = await FileSystemLegacy.getInfoAsync(RECORDING_BACKGROUND_POSITIONS_FILE);
         if (info.exists) {
-          const raw = await FileSystemLegacy.readAsStringAsync(BG_POSITIONS_FILE);
+          const raw = await FileSystemLegacy.readAsStringAsync(RECORDING_BACKGROUND_POSITIONS_FILE);
           arr = JSON.parse(raw || '[]');
         }
       } catch { arr = []; }
+      const latestStatus = await FileSystemLegacy.readAsStringAsync(RECORDING_STATUS_FILE);
+      if (!canAppendRecordingPoint(latestStatus as RecordingStatus)) return;
       (locations as any[]).forEach((loc) => {
         arr.push({
           latitude: loc.coords.latitude,
@@ -388,7 +425,7 @@ TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
           timestamp: typeof loc.timestamp === 'number' ? loc.timestamp : Date.now(),
         });
       });
-      await FileSystemLegacy.writeAsStringAsync(BG_POSITIONS_FILE, JSON.stringify(arr));
+      await FileSystemLegacy.writeAsStringAsync(RECORDING_BACKGROUND_POSITIONS_FILE, JSON.stringify(arr));
     } catch (err) {
       console.error('Errore scrittura file bg positions:', err);
     }
@@ -415,7 +452,19 @@ const checkAndOpenSettingsIfNeeded = async () => {
 // ══════════════════════════════════════════════════════════════════════════════
 export default function App() {
   const accountSession = useAccountSession();
-  const [recording, setRecording] = React.useState(false);
+  const accountLifecycle = useAccountLifecycle(accountSession.session, accountSession.loading);
+  const indexAccessReady = !accountSession.loading && !accountLifecycle.loading;
+  const fullIndexAccess = Boolean(accountSession.session && accountLifecycle.fullAccess);
+  const [indexAccessNoticeOpen, setIndexAccessNoticeOpen] = React.useState(false);
+  const indexAccessNoticeKeyRef = React.useRef<string | null>(null);
+  const authDeepLink = useAuthDeepLinks();
+  const completeAuthCallback = React.useCallback(() => {
+    authDeepLink.dismiss();
+    if (rootNavigationRef.isReady()) rootNavigationRef.navigate('Mappa');
+  }, [authDeepLink.dismiss]);
+  const [recordingStatus, setRecordingStatus] = React.useState<RecordingStatus>('idle');
+  const [recordingActionBusy, setRecordingActionBusy] = React.useState(false);
+  const recording = isRecordingSession(recordingStatus);
   const [path, setPath] = React.useState<Coordinate[]>([]);
   const [currentPosition, setCurrentPosition] = React.useState<Coordinate | null>(null);
   const [markers, setMarkers] = React.useState<MarkerData[]>([]);
@@ -423,6 +472,11 @@ export default function App() {
   const [recordingName, setRecordingName] = React.useState('');
   const [recordingNameError, setRecordingNameError] = React.useState<string | null>(null);
   const [recordingSaveBusy, setRecordingSaveBusy] = React.useState(false);
+  const [recoveryDraft, setRecoveryDraft] = React.useState<RecordingDraft | null>(null);
+  const [recoveryBusy, setRecoveryBusy] = React.useState(false);
+  const [recoveryError, setRecoveryError] = React.useState<string | null>(null);
+  const [recoveryChecking, setRecoveryChecking] = React.useState(true);
+  const [recoveryCorrupt, setRecoveryCorrupt] = React.useState(false);
   const [saveVisible, setSaveVisible] = React.useState(false);
   const [fileName, setFileName] = React.useState('percorso');
   const [initialCenter, setInitialCenter] = React.useState<[number, number]>([10.9916, 45.4384]);
@@ -433,6 +487,14 @@ export default function App() {
   const [cloudEditRevision, setCloudEditRevision] = React.useState(0);
   const [cloudEditRequest, setCloudEditRequest] = React.useState<{ id: number; route: ArchiveMapRoute } | null>(null);
   const cloudEditRequestSequence = React.useRef(0);
+
+  React.useEffect(() => {
+    if (!indexAccessReady || fullIndexAccess) return;
+    setCloudRoutesOnMap([]);
+    setCloudEditRequest(null);
+    setAddedRoutes([]);
+    setRoutesOnMap([]);
+  }, [fullIndexAccess, indexAccessReady]);
   const [highlightedRoute, setHighlightedRoute] = React.useState<string | null>(null);
   const [activeLayer, setActiveLayer] = React.useState<ActiveLayer>('off');
   const [tileDate, setTileDate] = React.useState(() => getDefaultTileSet().date);
@@ -441,16 +503,104 @@ export default function App() {
   const [tileOpacity, setTileOpacity] = React.useState(0.85);
   const [tilesLoading, setTilesLoading] = React.useState(true);
   const [tilesError, setTilesError] = React.useState<string | null>(null);
+  const loadedTileAccessLevelRef = React.useRef<boolean | null>(null);
   const [cameraCommand, setCameraCommand] = React.useState<CameraCommand | null>(null);
   const followLocationRef = React.useRef(true);
   const cameraCommandIdRef = React.useRef(0);
   const initialCameraCenteredRef = React.useRef(false);
   // Camera ref: tipo è il componente Camera stesso
-  const recordingRef = React.useRef(recording);
+  const recordingStatusRef = React.useRef<RecordingStatus>(recordingStatus);
+  const recordingPauseWindowsRef = React.useRef<RecordingPauseWindow[]>([]);
+  const recordingActionBusyRef = React.useRef(false);
+  const recordingSessionIdRef = React.useRef<string | null>(null);
+  const recordingStartedAtRef = React.useRef<string | null>(null);
+  const lastCheckpointPointCountRef = React.useRef(0);
+  const scheduledCheckpointPointCountRef = React.useRef(0);
+  const pendingFinishedDraftRef = React.useRef<RecordingDraft | null>(null);
+  const pathRef = React.useRef<Coordinate[]>(path);
+  const markersRef = React.useRef<MarkerData[]>(markers);
+
+  React.useEffect(() => {
+    if (!indexAccessReady) return;
+    if (fullIndexAccess) {
+      indexAccessNoticeKeyRef.current = null;
+      setIndexAccessNoticeOpen(false);
+      return;
+    }
+    const key = accountSession.session
+      ? `${accountSession.session.user.id}:${accountLifecycle.access?.account_state ?? 'unknown'}:${accountLifecycle.access?.restriction_reason ?? 'unknown'}`
+      : 'guest';
+    if (indexAccessNoticeKeyRef.current === key) return;
+    indexAccessNoticeKeyRef.current = key;
+    setIndexAccessNoticeOpen(true);
+  }, [accountLifecycle.access, accountSession.session, fullIndexAccess, indexAccessReady]);
 
   const visibleMarkers = showAll ? markers : markers.slice(0, 5);
 
-  React.useEffect(() => { recordingRef.current = recording; }, [recording]);
+  const updateRecordingStatus = React.useCallback((status: RecordingStatus) => {
+    recordingStatusRef.current = status;
+    setRecordingStatus(status);
+  }, []);
+
+  const persistRecordingStatus = React.useCallback(async (status: RecordingStatus) => {
+    await ensureRecordingRecoveryDirectory();
+    await FileSystemLegacy.writeAsStringAsync(RECORDING_STATUS_FILE, status);
+  }, []);
+
+  const updateRecordingActionBusy = React.useCallback((busy: boolean) => {
+    recordingActionBusyRef.current = busy;
+    setRecordingActionBusy(busy);
+  }, []);
+
+  const checkpointRecordingDraft = React.useCallback(async (
+    status: RecordingDraftStatus,
+    options?: { force?: boolean; path?: Coordinate[]; markers?: MarkerData[] },
+  ): Promise<RecordingDraft | null> => {
+    const sessionId = recordingSessionIdRef.current;
+    const startedAt = recordingStartedAtRef.current;
+    if (!sessionId || !startedAt) return null;
+    const draftPath = options?.path ?? pathRef.current;
+    if (!options?.force && !shouldCheckpointRecording(
+      scheduledCheckpointPointCountRef.current,
+      draftPath.length,
+    )) {
+      return null;
+    }
+    const draft = createRecordingDraft({
+      sessionId,
+      status,
+      startedAt,
+      path: draftPath,
+      markers: options?.markers ?? markersRef.current,
+      pauseWindows: recordingPauseWindowsRef.current.map((window) => ({ ...window })),
+    });
+    const scheduledPointCount = draftPath.length;
+    scheduledCheckpointPointCountRef.current = scheduledPointCount;
+    try {
+      await writeRecordingDraft(draft);
+      lastCheckpointPointCountRef.current = scheduledPointCount;
+      return draft;
+    } catch (err) {
+      if (scheduledCheckpointPointCountRef.current === scheduledPointCount) {
+        scheduledCheckpointPointCountRef.current = lastCheckpointPointCountRef.current;
+      }
+      throw err;
+    }
+  }, []);
+
+  const hydrateRecordingDraft = React.useCallback((draft: RecordingDraft) => {
+    const recoveredPath = draft.path.map((point) => ({ ...point }));
+    const recoveredMarkers = draft.markers.map((marker) => ({ ...marker }));
+    pathRef.current = recoveredPath;
+    markersRef.current = recoveredMarkers;
+    setPath(recoveredPath);
+    setMarkers(recoveredMarkers);
+    recordingSessionIdRef.current = draft.sessionId;
+    recordingStartedAtRef.current = draft.startedAt;
+    recordingPauseWindowsRef.current = draft.pauseWindows.map((window) => ({ ...window }));
+    lastCheckpointPointCountRef.current = recoveredPath.length;
+    scheduledCheckpointPointCountRef.current = recoveredPath.length;
+  }, []);
 
   React.useEffect(() => {
     if (tileSets.length > 0 && tileDate && tileVersion && tilesError) {
@@ -520,6 +670,82 @@ export default function App() {
   }, []);
 
   React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const storedDraft = await loadRecordingDraft();
+        if (!storedDraft) return;
+
+        await persistRecordingStatus('paused');
+        try {
+          const started = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
+          if (started) await Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME);
+        } catch (err) {
+          console.warn('[gps-recovery] Impossibile arrestare il task precedente:', err);
+        }
+
+        let backgroundPoints: Coordinate[] = [];
+        try {
+          const info = await FileSystemLegacy.getInfoAsync(RECORDING_BACKGROUND_POSITIONS_FILE);
+          if (info.exists) {
+            const raw = await FileSystemLegacy.readAsStringAsync(RECORDING_BACKGROUND_POSITIONS_FILE);
+            const parsed = JSON.parse(raw || '[]');
+            if (Array.isArray(parsed)) backgroundPoints = parsed as Coordinate[];
+          }
+        } catch (err) {
+          console.warn('[gps-recovery] Ultimi punti background non leggibili:', err);
+        }
+
+        const pauseWindows = storedDraft.pauseWindows.map((window) => ({ ...window }));
+        if (pauseWindows.at(-1)?.endedAt !== null) {
+          pauseWindows.push({ startedAt: Date.now(), endedAt: null });
+        }
+        const mergedPath = mergeRecordingDraftPoints(storedDraft.path, backgroundPoints)
+          .filter((point) => !isTimestampPaused(point.timestamp, pauseWindows));
+        const interruptedDraft = createRecordingDraft({
+          sessionId: storedDraft.sessionId,
+          status: 'interrupted',
+          startedAt: storedDraft.startedAt,
+          path: mergedPath,
+          markers: storedDraft.markers,
+          pauseWindows,
+        });
+        await writeRecordingDraft(interruptedDraft);
+        if (!cancelled) setRecoveryDraft(interruptedDraft);
+      } catch (err) {
+        console.warn('[gps-recovery] Recovery non disponibile:', err);
+        if (!cancelled && err instanceof CorruptRecordingDraftError) {
+          setRecoveryCorrupt(true);
+          Alert.alert(
+            'Registrazione non recuperabile',
+            'La bozza della registrazione è danneggiata. Puoi conservarla per un tentativo successivo oppure eliminarla.',
+            [
+              { text: 'Mantieni', style: 'cancel' },
+              {
+                text: 'Elimina',
+                style: 'destructive',
+                onPress: () => {
+                  void clearRecordingDraft().then(() => setRecoveryCorrupt(false));
+                },
+              },
+            ],
+          );
+        }
+      } finally {
+        if (!cancelled) setRecoveryChecking(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [persistRecordingStatus]);
+
+  React.useEffect(() => {
+    if (!indexAccessReady) return;
+    if (loadedTileAccessLevelRef.current === fullIndexAccess) return;
+    if (loadedTileAccessLevelRef.current === true && !fullIndexAccess) {
+      setTileSets([]);
+      setTileDate('');
+      setTileVersion('');
+    }
     let mounted = true;
     (async () => {
       try {
@@ -530,12 +756,15 @@ export default function App() {
         if (available.length === 0) {
           throw new Error('No valid tile set found in tile manifest');
         }
-        const latest = available[0];
+        const allowed = filterTileSetsForIndexAccess(available, fullIndexAccess);
+        if (allowed.length === 0) throw new Error('Nessuna data indice disponibile per il livello di accesso corrente.');
+        const latest = allowed[0];
         if (!mounted) return;
         console.log('[tiles] Bootstrap selected latest tile set', latest);
-        setTileSets(available);
+        setTileSets(allowed);
         setTileDate(latest.date);
         setTileVersion(latest.version);
+        loadedTileAccessLevelRef.current = fullIndexAccess;
       } catch (err) {
         if (!mounted) return;
         const message = err instanceof Error ? err.message : 'Errore caricamento tiles';
@@ -583,7 +812,9 @@ export default function App() {
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status !== 'granted') return;
 
-        const options = recording ? RECORDING_LOCATION_OPTIONS : FOREGROUND_LOCATION_OPTIONS;
+        const options = recordingStatus === 'recording'
+          ? RECORDING_LOCATION_OPTIONS
+          : FOREGROUND_LOCATION_OPTIONS;
         subscription = await Location.watchPositionAsync(options, (location) => {
           if (!mounted) return;
           const coordinate = locationToCoordinate(location);
@@ -601,11 +832,13 @@ export default function App() {
             });
           }
 
-          if (recordingRef.current) {
+          if (canAppendRecordingPoint(recordingStatusRef.current)) {
             setPath((prev) => {
               const lastTimestamp = prev.length ? prev[prev.length - 1].timestamp ?? 0 : 0;
               if ((coordinate.timestamp ?? 0) <= lastTimestamp) return prev;
-              return [...prev, coordinate];
+              const updated = [...prev, coordinate];
+              pathRef.current = updated;
+              return updated;
             });
           }
         });
@@ -618,35 +851,53 @@ export default function App() {
       mounted = false;
       subscription?.remove();
     };
-  }, [recording, runCameraCommand]);
+  }, [recordingStatus, runCameraCommand]);
 
   const handleDeleteMarker = (marker: MarkerData) => {
     Alert.alert('Conferma eliminazione', `Vuoi eliminare ${marker.name}?`, [
       { text: 'Annulla', style: 'cancel' },
-      { text: 'Elimina', style: 'destructive', onPress: () => setMarkers((m) => m.filter((x) => x.name !== marker.name)) },
+      {
+        text: 'Elimina',
+        style: 'destructive',
+        onPress: () => {
+          const updated = markersRef.current.filter((item) => item.name !== marker.name);
+          markersRef.current = updated;
+          setMarkers(updated);
+          if (isRecordingSession(recordingStatusRef.current)) {
+            void checkpointRecordingDraft(
+              recordingStatusRef.current === 'paused' ? 'paused' : 'recording',
+              { force: true, markers: updated },
+            );
+          }
+        },
+      },
     ]);
   };
 
   const syncPathFromFile = React.useCallback(async (consume = false): Promise<Coordinate[]> => {
     try {
-      const info = await FileSystemLegacy.getInfoAsync(BG_POSITIONS_FILE);
-      if (!info.exists) return path;
-      const raw = await FileSystemLegacy.readAsStringAsync(BG_POSITIONS_FILE);
+      const info = await FileSystemLegacy.getInfoAsync(RECORDING_BACKGROUND_POSITIONS_FILE);
+      if (!info.exists) return pathRef.current;
+      const raw = await FileSystemLegacy.readAsStringAsync(RECORDING_BACKGROUND_POSITIONS_FILE);
       const arr = JSON.parse(raw || '[]') as Coordinate[];
-      if (!Array.isArray(arr) || arr.length === 0) return path;
-      let updated: Coordinate[] = [];
-      setPath((prev) => {
-        const lastTs = prev.length ? prev[prev.length - 1].timestamp : 0;
-        const newPoints = arr.filter((p) => (p.timestamp ?? 0) > lastTs);
-        updated = newPoints.length ? [...prev, ...newPoints] : prev;
-        return updated;
-      });
-      if (consume) {
-        try { await FileSystemLegacy.deleteAsync(BG_POSITIONS_FILE, { idempotent: true }); } catch { }
+      if (!Array.isArray(arr) || arr.length === 0) return pathRef.current;
+      const previous = pathRef.current;
+      const lastTs = previous.length ? previous[previous.length - 1].timestamp : 0;
+      const newPoints = arr.filter((p) => (
+        (p.timestamp ?? 0) > lastTs
+        && !isTimestampPaused(p.timestamp ?? 0, recordingPauseWindowsRef.current)
+      ));
+      const updated = newPoints.length ? [...previous, ...newPoints] : previous;
+      if (updated !== previous) {
+        pathRef.current = updated;
+        setPath(updated);
       }
-      return updated.length ? updated : path;
-    } catch { return path; }
-  }, [path]);
+      if (consume) {
+        try { await FileSystemLegacy.deleteAsync(RECORDING_BACKGROUND_POSITIONS_FILE, { idempotent: true }); } catch { }
+      }
+      return updated;
+    } catch { return pathRef.current; }
+  }, [fullIndexAccess, indexAccessReady]);
 
   // polling GPS
   React.useEffect(() => {
@@ -660,33 +911,89 @@ export default function App() {
     return () => { mounted = false; clearInterval(id); };
   }, [syncPathFromFile]);
 
+  React.useEffect(() => {
+    if (!isRecordingSession(recordingStatus)) return;
+    const draftStatus: RecordingDraftStatus = recordingStatus === 'paused' ? 'paused' : 'recording';
+    void checkpointRecordingDraft(draftStatus).catch((err) => {
+      console.warn('[gps-recovery] Checkpoint non riuscito:', err);
+    });
+  }, [path.length, recordingStatus, checkpointRecordingDraft]);
+
+  React.useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active' || !isRecordingSession(recordingStatusRef.current)) return;
+      void syncPathFromFile(false)
+        .then((updatedPath) => checkpointRecordingDraft(
+          recordingStatusRef.current === 'paused' ? 'paused' : 'recording',
+          { force: true, path: updatedPath },
+        ))
+        .catch((err) => console.warn('[gps-recovery] Checkpoint background non riuscito:', err));
+    });
+    return () => subscription.remove();
+  }, [checkpointRecordingDraft, syncPathFromFile]);
+
   const highlightRoute = (routeId: string) => {
     setHighlightedRoute(routeId);
     setTimeout(() => setHighlightedRoute(null), 1000);
   };
 
   const startRecording = async () => {
-    const { status: fgStatus } = await Location.requestForegroundPermissionsAsync();
-    if (fgStatus !== 'granted') { Alert.alert('Permesso GPS negato!'); return; }
-    let bgStatus: Location.PermissionStatus | null = null;
-    try {
-      const result = await Location.requestBackgroundPermissionsAsync();
-      bgStatus = result.status;
-    } catch (err) {
-      console.log('[gps] Background permission request failed', err);
+    if (recordingStatusRef.current !== 'idle' || recordingActionBusyRef.current) return;
+    if (recoveryChecking) {
+      Alert.alert('Controllo in corso', 'Attendi il controllo delle registrazioni interrotte.');
+      return;
     }
-    if (Platform.OS === 'android' && bgStatus !== 'granted') {
+    if (recoveryDraft || recoveryCorrupt) {
       Alert.alert(
-        'Permesso background non concesso',
-        'La registrazione funziona mentre tieni aperta l\'app. Per continuare a schermo spento devi concedere "Consenti sempre".'
+        'Registrazione precedente',
+        'Gestisci prima la registrazione interrotta trovata sul dispositivo.',
       );
+      return;
     }
-    setRecording(true);
-    setPath([]);
-    setMarkers([]);
-    try { await FileSystemLegacy.deleteAsync(BG_POSITIONS_FILE, { idempotent: true }); } catch { }
-    if (bgStatus === 'granted') {
+    updateRecordingActionBusy(true);
+    try {
+      const { status: fgStatus } = await Location.requestForegroundPermissionsAsync();
+      if (fgStatus !== 'granted') {
+        Alert.alert('Permesso GPS negato!');
+        return;
+      }
+      let bgStatus: Location.PermissionStatus | null = null;
       try {
+        const result = await Location.requestBackgroundPermissionsAsync();
+        bgStatus = result.status;
+      } catch (err) {
+        console.log('[gps] Background permission request failed', err);
+      }
+      if (Platform.OS === 'android' && bgStatus !== 'granted') {
+        Alert.alert(
+          'Permesso background non concesso',
+          'La registrazione funziona mentre tieni aperta l\'app. Per continuare a schermo spento devi concedere "Consenti sempre".'
+        );
+      }
+      await clearRecordingDraft();
+      const sessionId = uuid.v4() as string;
+      const startedAt = new Date().toISOString();
+      recordingSessionIdRef.current = sessionId;
+      recordingStartedAtRef.current = startedAt;
+      pathRef.current = [];
+      markersRef.current = [];
+      setPath([]);
+      setMarkers([]);
+      recordingPauseWindowsRef.current = [];
+      lastCheckpointPointCountRef.current = 0;
+      scheduledCheckpointPointCountRef.current = 0;
+      try { await FileSystemLegacy.deleteAsync(RECORDING_BACKGROUND_POSITIONS_FILE, { idempotent: true }); } catch { }
+      await writeRecordingDraft(createRecordingDraft({
+        sessionId,
+        status: 'recording',
+        startedAt,
+        path: [],
+        markers: [],
+        pauseWindows: [],
+      }));
+      await persistRecordingStatus('recording');
+      updateRecordingStatus(nextRecordingStatus(recordingStatusRef.current, 'start'));
+      if (bgStatus === 'granted') {
         const started = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
         if (!started) {
           await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
@@ -698,9 +1005,92 @@ export default function App() {
             },
           });
         }
-      } catch (err) {
-        console.log('[gps] Background location task failed to start', err);
       }
+    } catch (err) {
+      console.log('[gps] Recording failed to start', err);
+      if (recordingStatusRef.current === 'idle') {
+        Alert.alert('Avvio non riuscito', 'Controlla i permessi GPS e riprova.');
+      } else {
+        Alert.alert(
+          'Registrazione avviata',
+          'La registrazione funziona in primo piano, ma il GPS in background non è disponibile.',
+        );
+      }
+    } finally {
+      updateRecordingActionBusy(false);
+    }
+  };
+
+  const pauseRecording = async () => {
+    if (recordingStatusRef.current !== 'recording' || recordingActionBusyRef.current) return;
+    updateRecordingActionBusy(true);
+    recordingPauseWindowsRef.current.push({ startedAt: Date.now(), endedAt: null });
+    updateRecordingStatus(nextRecordingStatus(recordingStatusRef.current, 'pause'));
+    try {
+      await persistRecordingStatus('paused');
+      const started = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
+      if (started) await Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME);
+      const pausedPath = await syncPathFromFile(false);
+      await checkpointRecordingDraft('paused', { force: true, path: pausedPath });
+    } catch (err) {
+      console.warn('[gps] Errore durante la pausa:', err);
+      Alert.alert(
+        'Pausa attivata',
+        'La traccia resta in pausa, ma non è stato possibile arrestare correttamente il servizio GPS in background.',
+      );
+    } finally {
+      updateRecordingActionBusy(false);
+    }
+  };
+
+  const resumeRecording = async () => {
+    if (recordingStatusRef.current !== 'paused' || recordingActionBusyRef.current) return;
+    updateRecordingActionBusy(true);
+    try {
+      const { status: foregroundStatus } = await Location.requestForegroundPermissionsAsync();
+      if (foregroundStatus !== 'granted') throw new Error('Foreground location permission denied');
+      const openPause = recordingPauseWindowsRef.current.at(-1);
+      if (openPause?.endedAt === null) openPause.endedAt = Date.now();
+      await persistRecordingStatus('recording');
+      const { status: backgroundStatus } = await Location.getBackgroundPermissionsAsync();
+      if (backgroundStatus === 'granted') {
+        const started = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
+        if (!started) {
+          await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
+            ...RECORDING_LOCATION_OPTIONS,
+            showsBackgroundLocationIndicator: true,
+            foregroundService: {
+              notificationTitle: 'GPS attivo',
+              notificationBody: "L'app sta registrando la tua posizione",
+            },
+          });
+        }
+      }
+      updateRecordingStatus(nextRecordingStatus(recordingStatusRef.current, 'resume'));
+      await checkpointRecordingDraft('recording', { force: true });
+    } catch (err) {
+      console.warn('[gps] Errore durante la ripresa:', err);
+      try { await persistRecordingStatus('paused'); } catch { }
+      const lastPause = recordingPauseWindowsRef.current.at(-1);
+      if (lastPause) lastPause.endedAt = null;
+      updateRecordingStatus('paused');
+      Alert.alert('Ripresa non riuscita', 'Controlla i permessi GPS e riprova.');
+    } finally {
+      updateRecordingActionBusy(false);
+    }
+  };
+
+  const shareGuestRecording = async (route: RecordedRoute) => {
+    if (!await Sharing.isAvailableAsync()) {
+      throw new Error('La condivisione file non è disponibile su questo dispositivo.');
+    }
+    const safeName = route.name.replace(/[^a-z0-9_-]+/gi, '_').replace(/^_+|_+$/g, '') || 'percorso';
+    const uri = `${FileSystemLegacy.cacheDirectory}${safeName}.gpx`;
+    try {
+      await FileSystemLegacy.writeAsStringAsync(uri, buildGpxXml(route.name, route.path, route.markers), { encoding: 'utf8' });
+      await Sharing.shareAsync(uri, { mimeType: 'application/gpx+xml', dialogTitle: 'Salva o condividi il percorso GPX' });
+    } finally {
+      await FileSystemLegacy.deleteAsync(uri, { idempotent: true }).catch(() => undefined);
     }
   };
 
@@ -709,8 +1099,8 @@ export default function App() {
     const date = new Date().toISOString();
     const name = normalizeTrackName(chosenName);
     const finalPath = await syncPathFromFile(true);
-    const route = { routeId: route_id, name, date, path: finalPath, markers };
-    const result = await saveRecordingCloudFirst(route, Boolean(accountSession.session), {
+    const route = { routeId: route_id, name, date, path: finalPath, markers: markersRef.current };
+    const result = await saveRecordingCloudFirst(route, Boolean(accountSession.session && accountLifecycle.fullAccess), {
       upload: uploadRouteToCloud,
       saveLocal: async (localRoute) => {
         await insertRoute(
@@ -721,31 +1111,66 @@ export default function App() {
           localRoute.markers.map((marker) => ({ ...marker, timestamp: marker.timestamp ?? Date.now() })),
         );
       },
+      shareGuest: shareGuestRecording,
     });
+    try { await clearRecordingDraft(); } catch (err) {
+      console.warn('[gps-recovery] Pulizia della bozza non riuscita:', err);
+    }
+    recordingSessionIdRef.current = null;
+    recordingStartedAtRef.current = null;
+    pendingFinishedDraftRef.current = null;
+    lastCheckpointPointCountRef.current = 0;
+    scheduledCheckpointPointCountRef.current = 0;
+    setRecoveryDraft(null);
     if (result.location === 'cloud') {
       Alert.alert('Percorso salvato', 'Il percorso è stato salvato nell’archivio.');
+    } else if (result.location === 'shared') {
+      Alert.alert('Percorso condiviso', 'Il GPX non è stato conservato nell’app. Salvalo con l’app scelta se vuoi mantenerne una copia.');
     } else if (result.cloudError) {
       Alert.alert(
         'Salvato sul dispositivo',
         'Il caricamento nell’archivio non è riuscito. Il percorso è stato conservato tra quelli non salvati e potrai riprovare dall’Archivio.',
       );
-    } else {
-      Alert.alert(
-        'Salvato sul dispositivo',
-        'Accedi per usare l’archivio cloud. Il percorso è stato conservato tra quelli non salvati.',
-      );
     }
   };
 
   const stopRecording = async () => {
-    setRecording(false);
+    if (!isRecordingSession(recordingStatusRef.current) || recordingActionBusyRef.current) return;
+    updateRecordingActionBusy(true);
+    const openPause = recordingPauseWindowsRef.current.at(-1);
+    if (openPause?.endedAt === null) openPause.endedAt = Date.now();
+    recordingPauseWindowsRef.current.push({ startedAt: Date.now(), endedAt: null });
+    updateRecordingStatus(nextRecordingStatus(recordingStatusRef.current, 'stop'));
+    try { await persistRecordingStatus('idle'); } catch { }
     try {
       const started = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
       if (started) await Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME);
     } catch (err) { console.warn('Errore stop location updates:', err); }
+    const finalPath = await syncPathFromFile(false);
+    try {
+      pendingFinishedDraftRef.current = await checkpointRecordingDraft('interrupted', {
+        force: true,
+        path: finalPath,
+      });
+    } catch (err) {
+      console.warn('[gps-recovery] Checkpoint finale non riuscito:', err);
+      const sessionId = recordingSessionIdRef.current;
+      const startedAt = recordingStartedAtRef.current;
+      if (sessionId && startedAt) {
+        pendingFinishedDraftRef.current = createRecordingDraft({
+          sessionId,
+          status: 'interrupted',
+          startedAt,
+          path: finalPath,
+          markers: markersRef.current,
+          pauseWindows: recordingPauseWindowsRef.current,
+        });
+      }
+    }
     setRecordingName(`Percorso ${formatLocalDate(new Date())}`);
     setRecordingNameError(null);
     setRecordingNameVisible(true);
+    updateRecordingActionBusy(false);
   };
 
   const confirmRecordingSave = async () => {
@@ -761,10 +1186,110 @@ export default function App() {
       await saveCurrentRoute(recordingName);
       setRecordingNameVisible(false);
     } catch {
-      setRecordingNameError('Impossibile salvare il percorso nel cloud o sul dispositivo.');
+      setRecordingNameError(fullIndexAccess
+        ? 'Impossibile salvare il percorso nel cloud o sul dispositivo.'
+        : 'Impossibile condividere il file GPX. Riprova.');
     } finally {
       setRecordingSaveBusy(false);
     }
+  };
+
+  const resumeRecoveredRecording = async () => {
+    if (!recoveryDraft || recoveryBusy) return;
+    setRecoveryBusy(true);
+    setRecoveryError(null);
+    try {
+      hydrateRecordingDraft(recoveryDraft);
+      pendingFinishedDraftRef.current = null;
+      updateRecordingStatus('paused');
+      await persistRecordingStatus('paused');
+      await checkpointRecordingDraft('paused', { force: true, path: recoveryDraft.path, markers: recoveryDraft.markers });
+      setRecoveryDraft(null);
+      await resumeRecording();
+    } catch (err) {
+      console.warn('[gps-recovery] Ripresa non riuscita:', err);
+      setRecoveryError('Impossibile riprendere la registrazione. Controlla i permessi GPS e riprova.');
+    } finally {
+      setRecoveryBusy(false);
+    }
+  };
+
+  const saveRecoveredRecording = () => {
+    if (!recoveryDraft || recoveryBusy) return;
+    if (recoveryDraft.path.length < 2) {
+      setRecoveryError('La registrazione contiene meno di 2 punti GPS. Riprendila prima di salvarla.');
+      return;
+    }
+    hydrateRecordingDraft(recoveryDraft);
+    pendingFinishedDraftRef.current = recoveryDraft;
+    updateRecordingStatus('idle');
+    setRecoveryDraft(null);
+    setRecordingName(`Percorso ${formatLocalDate(new Date(recoveryDraft.startedAt))}`);
+    setRecordingNameError(null);
+    setRecordingNameVisible(true);
+  };
+
+  const discardRecoveredRecording = () => {
+    if (!recoveryDraft || recoveryBusy) return;
+    Alert.alert(
+      'Elimina registrazione',
+      'La registrazione interrotta verrà eliminata definitivamente dal dispositivo.',
+      [
+        { text: 'Annulla', style: 'cancel' },
+        {
+          text: 'Elimina',
+          style: 'destructive',
+          onPress: () => {
+            setRecoveryBusy(true);
+            setRecoveryError(null);
+            void clearRecordingDraft()
+              .then(() => {
+                recordingSessionIdRef.current = null;
+                recordingStartedAtRef.current = null;
+                pendingFinishedDraftRef.current = null;
+                lastCheckpointPointCountRef.current = 0;
+                scheduledCheckpointPointCountRef.current = 0;
+                recordingPauseWindowsRef.current = [];
+                pathRef.current = [];
+                markersRef.current = [];
+                setPath([]);
+                setMarkers([]);
+                setRecoveryDraft(null);
+              })
+              .catch(() => setRecoveryError('Impossibile eliminare la registrazione. Riprova.'))
+              .finally(() => setRecoveryBusy(false));
+          },
+        },
+      ],
+    );
+  };
+
+  const cancelRecordingSave = () => {
+    if (recordingSaveBusy || recordingActionBusyRef.current) return;
+    setRecordingNameVisible(false);
+    setRecordingNameError(null);
+    updateRecordingActionBusy(true);
+    void clearRecordingDraft()
+      .then(() => {
+        recordingSessionIdRef.current = null;
+        recordingStartedAtRef.current = null;
+        pendingFinishedDraftRef.current = null;
+        recordingPauseWindowsRef.current = [];
+        lastCheckpointPointCountRef.current = 0;
+        scheduledCheckpointPointCountRef.current = 0;
+        pathRef.current = [];
+        markersRef.current = [];
+        setPath([]);
+        setMarkers([]);
+        setRecoveryDraft(null);
+        setRecoveryError(null);
+      })
+      .catch((err) => {
+        console.warn('[gps-recovery] Eliminazione della registrazione annullata non riuscita:', err);
+        setRecordingNameError('Impossibile eliminare la registrazione non salvata. Riprova.');
+        setRecordingNameVisible(true);
+      })
+      .finally(() => updateRecordingActionBusy(false));
   };
 
   const combinedRoutesOnMap = React.useMemo(
@@ -823,23 +1348,27 @@ export default function App() {
         const updated = await syncPathFromFile(false);
         const last = updated?.length
           ? updated[updated.length - 1]
-          : path.length
-            ? path[path.length - 1]
+          : pathRef.current.length
+            ? pathRef.current[pathRef.current.length - 1]
             : currentPosition ?? undefined;
         if (!last) { Alert.alert('Nessuna posizione disponibile'); return; }
-        setMarkers((prev) => [
-          ...prev,
+        const previous = markersRef.current;
+        const nextMarkers = [
+          ...previous,
           {
             latitude: last.latitude,
             longitude: last.longitude,
             timestamp: Date.now(),
             tipo,
-            name: `${tipo}_${prev.filter((m) => m.tipo === tipo).length + 1}`,
+            name: `${tipo}_${previous.filter((marker) => marker.tipo === tipo).length + 1}`,
           },
-        ]);
+        ];
+        markersRef.current = nextMarkers;
+        setMarkers(nextMarkers);
+        await checkpointRecordingDraft('recording', { force: true, markers: nextMarkers });
       } catch { Alert.alert('Errore', 'Impossibile aggiungere il segnaposto.'); }
     },
-    [syncPathFromFile, path, currentPosition]
+    [checkpointRecordingDraft, syncPathFromFile, currentPosition]
   );
 
   const generateGPX = (pathData: Coordinate[], markersData: MarkerData[]): string => {
@@ -902,7 +1431,11 @@ export default function App() {
   const renderMapScreen = React.useCallback(() => (
     <MainUI
       recording={recording}
+      recordingStatus={recordingStatus}
+      recordingActionBusy={recordingActionBusy}
       startRecording={startRecording}
+      pauseRecording={pauseRecording}
+      resumeRecording={resumeRecording}
       stopRecording={stopRecording}
       addMarker={addMarker}
       path={path}
@@ -937,36 +1470,42 @@ export default function App() {
       previewCloudTrackEdit={previewCloudTrackEdit}
       finishCloudTrackEdit={finishCloudTrackEdit}
       cloudEditRequest={cloudEditRequest}
+      allowPrivateAccountData={accountLifecycle.fullAccess}
+      fullIndexAccess={fullIndexAccess}
+      onShowIndexAccessNotice={() => setIndexAccessNoticeOpen(true)}
     />
   ), [
-    recording, path, currentPosition, markers, cameraCommand, initialCenter, showAll, visibleMarkers,
+    recording, recordingStatus, recordingActionBusy, path, currentPosition, markers, cameraCommand, initialCenter, showAll, visibleMarkers,
     addedRoutes, combinedRoutesOnMap, highlightedRoute, tileSets, tilesLoading, tilesError,
     activeLayer, tileDate, tileVersion, tileOpacity,
-    runCameraCommand, addMarker, removeRouteFromMap, stopRecording,
-    previewCloudTrackEdit, finishCloudTrackEdit, cloudEditRequest
+    runCameraCommand, addMarker, removeRouteFromMap, pauseRecording, resumeRecording, stopRecording,
+    previewCloudTrackEdit, finishCloudTrackEdit, cloudEditRequest, accountLifecycle.fullAccess, fullIndexAccess
   ]);
 
   const renderArchiveScreen = React.useCallback(() => (
     <AccountArchiveScreen
       sessionState={accountSession}
+      lifecycle={accountLifecycle}
       onShowTrackOnMap={showCloudTrackOnMap}
       onEditTrackOnMap={editCloudTrackOnMap}
       onLocalRouteArchived={handleLocalRouteArchived}
       onCloudRouteRenamed={handleCloudRouteRenamed}
       cloudEditRevision={cloudEditRevision}
     />
-  ), [accountSession, showCloudTrackOnMap, editCloudTrackOnMap, handleLocalRouteArchived, handleCloudRouteRenamed, cloudEditRevision]);
+  ), [accountLifecycle, accountSession, showCloudTrackOnMap, editCloudTrackOnMap, handleLocalRouteArchived, handleCloudRouteRenamed, cloudEditRevision]);
 
   const renderIndiceScreen = React.useCallback(() => (
     <IndiceScreen
       activeLayer={activeLayer}
       setActiveLayer={setActiveLayer}
+      fullIndexAccess={fullIndexAccess}
+      onRequestAccess={() => setIndexAccessNoticeOpen(true)}
     />
-  ), [activeLayer]);
+  ), [activeLayer, fullIndexAccess]);
 
   return (
     <SafeAreaProvider>
-      <NavigationContainer>
+      <NavigationContainer ref={rootNavigationRef}>
         <Tab.Navigator
           screenOptions={{
             headerShown: false,
@@ -993,19 +1532,43 @@ export default function App() {
           />
         </Tab.Navigator>
       </NavigationContainer>
+      <AuthCallbackModal
+        state={authDeepLink.state}
+        onAcquired={authDeepLink.dismiss}
+        onDismiss={authDeepLink.dismiss}
+        onComplete={completeAuthCallback}
+      />
+      <IndexAccessNoticeModal
+        visible={indexAccessNoticeOpen && indexAccessReady && !fullIndexAccess && authDeepLink.state === null}
+        authenticated={Boolean(accountSession.session)}
+        access={accountLifecycle.access}
+        onClose={() => setIndexAccessNoticeOpen(false)}
+        onAction={() => {
+          setIndexAccessNoticeOpen(false);
+          if (rootNavigationRef.isReady()) rootNavigationRef.navigate('Archivio');
+        }}
+      />
       <TrackNameModal
         visible={recordingNameVisible}
-        title="Salva percorso"
-        description={accountSession.session
+        title="Registrazione terminata"
+        description={fullIndexAccess
           ? 'Scegli il nome da usare nell’archivio.'
-          : 'Scegli il nome del percorso. Senza account verrà conservato sul dispositivo.'}
+          : 'Scegli il nome del percorso, poi salvalo o condividilo come file GPX.'}
         value={recordingName}
         error={recordingNameError}
         busy={recordingSaveBusy}
-        confirmLabel="Salva percorso"
+        confirmLabel={fullIndexAccess ? 'Salva percorso' : 'Condividi GPX'}
         onChange={(value) => { setRecordingName(value); setRecordingNameError(null); }}
-        onCancel={() => { if (!recordingSaveBusy) setRecordingNameVisible(false); }}
+        onCancel={cancelRecordingSave}
         onConfirm={() => void confirmRecordingSave()}
+      />
+      <RecordingRecoveryModal
+        draft={recoveryDraft}
+        busy={recoveryBusy}
+        error={recoveryError}
+        onResume={() => void resumeRecoveredRecording()}
+        onSave={saveRecoveredRecording}
+        onDiscard={discardRecoveredRecording}
       />
     </SafeAreaProvider>
   );
@@ -1016,7 +1579,7 @@ export default function App() {
 // ══════════════════════════════════════════════════════════════════════════════
 const CENTER_ZOOM_LEVEL = 16;
 const COORDINATE_POPUP_WIDTH = 272;
-const COORDINATE_POPUP_HEIGHT = 208;
+const COORDINATE_POPUP_HEIGHT = 220;
 const COORDINATE_POPUP_TAIL_HEIGHT = 9;
 const COORDINATE_POPUP_TAIL_INSET = 12;
 const COORDINATE_POPUP_SAFE_MARGIN = 12;
@@ -1028,8 +1591,9 @@ function MapCoordinatePopup(props: {
   onClose: () => void;
   onShowData: () => void;
   onShowAnalysis: () => void;
+  fullIndexAccess: boolean;
 }) {
-  const { point, copied, onCopy, onClose, onShowData, onShowAnalysis } = props;
+  const { point, copied, onCopy, onClose, onShowData, onShowAnalysis, fullIndexAccess } = props;
   return (
     <View style={mStyles.coordinatePopupBubble}>
       <View style={mStyles.coordinatePopupCard}>
@@ -1063,7 +1627,7 @@ function MapCoordinatePopup(props: {
             )}
           </TouchableOpacity>
         </View>
-        <IndexPopupSummary point={point} />
+        <IndexPopupSummary point={point} fullIndexAccess={fullIndexAccess} />
         <View style={mStyles.coordinatePopupActions}>
           <TouchableOpacity
             onPress={onShowData}
@@ -1078,10 +1642,10 @@ function MapCoordinatePopup(props: {
             onPress={onShowAnalysis}
             style={mStyles.coordinatePopupAnalysisButton}
             accessibilityRole="button"
-            accessibilityLabel="Apri analisi indice del punto"
+            accessibilityLabel={fullIndexAccess ? 'Apri analisi indice del punto' : 'Scopri l’accesso completo'}
           >
             <Activity size={15} color={UI.textPri} />
-            <Text style={mStyles.coordinatePopupWeatherText}>Analisi indice</Text>
+            <Text style={mStyles.coordinatePopupWeatherText}>{fullIndexAccess ? 'Analisi indice' : 'Accesso completo'}</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -1663,15 +2227,18 @@ const QuickIndexPanel = React.memo(function QuickIndexPanel(props: any) {
 
 function MainUI(props: any) {
   const {
-    recording, startRecording, stopRecording, addMarker,
+    recording, recordingStatus, recordingActionBusy,
+    startRecording, pauseRecording, resumeRecording, stopRecording, addMarker,
     path, currentPosition, markers, cameraCommand, runCameraCommand, followLocationRef, initialCenter,
     showAll, visibleMarkers, handleDeleteMarker, setShowAll,
     addedRoutes, setAddedRoutes, setRoutesOnMap, routesOnMap, removeRouteFromMap,
     highlightRoute, highlightedRoute, activeLayer, setActiveLayer,
     tileDate, setTileDate, tileVersion, setTileVersion, tileSets,
     tileOpacity, setTileOpacity, tilesLoading, tilesError,
-    previewCloudTrackEdit, finishCloudTrackEdit, cloudEditRequest,
+    previewCloudTrackEdit, finishCloudTrackEdit, cloudEditRequest, allowPrivateAccountData,
+    fullIndexAccess, onShowIndexAccessNotice,
   } = props;
+  const recordingPaused = recordingStatus === 'paused';
 
   // fetch percorsi salvati quando cambiano gli addedRoutes
   React.useEffect(() => {
@@ -1694,7 +2261,7 @@ function MainUI(props: any) {
   // REC pulse animation
   const recPulse = React.useRef(new Animated.Value(1)).current;
   React.useEffect(() => {
-    if (recording) {
+    if (recordingStatus === 'recording') {
       const anim = Animated.loop(
         Animated.sequence([
           Animated.timing(recPulse, { toValue: 0.3, duration: 600, useNativeDriver: true }),
@@ -1706,7 +2273,7 @@ function MainUI(props: any) {
     } else {
       recPulse.setValue(1);
     }
-  }, [recording]);
+  }, [recordingStatus, recPulse]);
 
   const porciniCount = markers.filter((m: MarkerData) => m.tipo === 'Porcino').length;
   const finferliCount = markers.filter((m: MarkerData) => m.tipo === 'Finferlo').length;
@@ -1717,6 +2284,13 @@ function MainUI(props: any) {
   const [editingCloudRoute, setEditingCloudRoute] = React.useState<ArchiveMapRoute | null>(null);
   const [selectedEditPointIndex, setSelectedEditPointIndex] = React.useState<number | null>(null);
   const lastCloudEditRequestId = React.useRef(0);
+
+  React.useEffect(() => {
+    if (allowPrivateAccountData) return;
+    setSelectedEditPointIndex(null);
+    setEditingCloudRoute(null);
+    setIndexAnalysisPoint(null);
+  }, [allowPrivateAccountData]);
 
   // GeoJSON memoizzati
   const currentPathGeoJSON = React.useMemo(() => coordsToGeoJSONLine(path), [path]);
@@ -1816,9 +2390,14 @@ function MainUI(props: any) {
 
   const openIndexAnalysis = React.useCallback(() => {
     if (!coordinateSelection) return;
+    if (!fullIndexAccess) {
+      closeCoordinatePopup();
+      onShowIndexAccessNotice();
+      return;
+    }
     setPointDetailsPoint(null);
     setIndexAnalysisPoint(coordinateSelection.point);
-  }, [coordinateSelection]);
+  }, [closeCoordinatePopup, coordinateSelection, fullIndexAccess, onShowIndexAccessNotice]);
 
   const closeIndexAnalysis = React.useCallback(() => {
     setIndexAnalysisPoint(null);
@@ -1859,7 +2438,15 @@ function MainUI(props: any) {
       <View style={mStyles.headerPill} pointerEvents="none">
         <Text style={mStyles.headerEmoji}>🍄</Text>
         <Text style={mStyles.headerTitle}>FUNGHI TRACKER</Text>
-        {recording && <Animated.View style={[mStyles.recDot, { opacity: recPulse }]} />}
+        {recording && (
+          <Animated.View
+            style={[
+              mStyles.recDot,
+              recordingPaused && mStyles.recDotPaused,
+              { opacity: recordingPaused ? 1 : recPulse },
+            ]}
+          />
+        )}
       </View>
 
       {tilesLoading && (
@@ -1980,19 +2567,27 @@ function MainUI(props: any) {
       {/* ── STATS BAR ─────────────────────────────────────────────────────── */}
       {recording && (
         <View style={mStyles.statsBar}>
-          <View style={mStyles.statItem}>
-            <Text style={mStyles.statValue}>{path.length}</Text>
-            <Text style={mStyles.statLabel}>GPS</Text>
+          <View style={mStyles.recordingStatusRow} accessibilityLiveRegion="polite">
+            <View style={[mStyles.recordingStatusDot, recordingPaused && mStyles.recordingStatusDotPaused]} />
+            <Text style={[mStyles.recordingStatusText, recordingPaused && mStyles.recordingStatusTextPaused]}>
+              {recordingPaused ? 'REGISTRAZIONE IN PAUSA' : 'REGISTRAZIONE ATTIVA'}
+            </Text>
           </View>
-          <View style={mStyles.statDivider} />
-          <View style={mStyles.statItem}>
-            <Text style={[mStyles.statValue, { color: UI.porcinoHi }]}>{porciniCount}</Text>
-            <Text style={mStyles.statLabel}>PORCINI</Text>
-          </View>
-          <View style={mStyles.statDivider} />
-          <View style={mStyles.statItem}>
-            <Text style={[mStyles.statValue, { color: UI.finferloHi }]}>{finferliCount}</Text>
-            <Text style={mStyles.statLabel}>FINFERLI</Text>
+          <View style={mStyles.statsMetrics}>
+            <View style={mStyles.statItem}>
+              <Text style={mStyles.statValue}>{path.length}</Text>
+              <Text style={mStyles.statLabel}>GPS</Text>
+            </View>
+            <View style={mStyles.statDivider} />
+            <View style={mStyles.statItem}>
+              <Text style={[mStyles.statValue, { color: UI.porcinoHi }]}>{porciniCount}</Text>
+              <Text style={mStyles.statLabel}>PORCINI</Text>
+            </View>
+            <View style={mStyles.statDivider} />
+            <View style={mStyles.statItem}>
+              <Text style={[mStyles.statValue, { color: UI.finferloHi }]}>{finferliCount}</Text>
+              <Text style={mStyles.statLabel}>FINFERLI</Text>
+            </View>
           </View>
         </View>
       )}
@@ -2032,41 +2627,72 @@ function MainUI(props: any) {
       <View style={mStyles.bottomControls}>
         <View style={mStyles.speciesRow}>
           <TouchableOpacity
-            style={[mStyles.speciesBtn, mStyles.speciesBtnFinferlo, (!recording || path.length < 1) && mStyles.speciesBtnDisabled]}
+            style={[mStyles.speciesBtn, mStyles.speciesBtnFinferlo, (!recording || recordingPaused || path.length < 1) && mStyles.speciesBtnDisabled]}
             onPress={() => addMarker('Finferlo')}
-            disabled={!recording || path.length < 1}
+            disabled={!recording || recordingPaused || path.length < 1}
             activeOpacity={0.75}
           >
             <Text style={mStyles.speciesEmoji}>🌼</Text>
             <Text style={[mStyles.speciesBtnText, { color: UI.finferloHi }]}>FINFERLO</Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={[mStyles.speciesBtn, mStyles.speciesBtnPorcino, (!recording || path.length < 1) && mStyles.speciesBtnDisabled]}
+            style={[mStyles.speciesBtn, mStyles.speciesBtnPorcino, (!recording || recordingPaused || path.length < 1) && mStyles.speciesBtnDisabled]}
             onPress={() => addMarker('Porcino')}
-            disabled={!recording || path.length < 1}
+            disabled={!recording || recordingPaused || path.length < 1}
             activeOpacity={0.75}
           >
             <Text style={mStyles.speciesEmoji}>🍄</Text>
             <Text style={[mStyles.speciesBtnText, { color: UI.porcinoHi }]}>PORCINO</Text>
           </TouchableOpacity>
         </View>
-        <TouchableOpacity
-          style={[mStyles.mainBtn, recording ? mStyles.mainBtnStop : mStyles.mainBtnStart]}
-          onPress={() => {
-            if (recording) {
-              Alert.alert('Conferma', 'Sei sicuro di voler terminare la registrazione?', [
-                { text: 'Annulla', style: 'cancel' },
-                { text: 'OK', onPress: stopRecording },
-              ]);
-            } else {
-              startRecording();
-            }
-          }}
-          activeOpacity={0.85}
-        >
-          <Text style={mStyles.mainBtnIcon}>{recording ? '⏹' : '▶'}</Text>
-          <Text style={mStyles.mainBtnText}>{recording ? 'FERMA REGISTRAZIONE' : 'AVVIA REGISTRAZIONE'}</Text>
-        </TouchableOpacity>
+        {recording ? (
+          <View style={mStyles.recordingActionsRow}>
+            <TouchableOpacity
+              style={[
+                mStyles.mainBtn,
+                mStyles.recordingActionButton,
+                recordingPaused ? mStyles.mainBtnResume : mStyles.mainBtnPause,
+                recordingActionBusy && mStyles.mainBtnDisabled,
+              ]}
+              onPress={recordingPaused ? resumeRecording : pauseRecording}
+              disabled={recordingActionBusy}
+              accessibilityRole="button"
+              accessibilityLabel={recordingPaused ? 'Riprendi registrazione' : 'Metti in pausa la registrazione'}
+              activeOpacity={0.85}
+            >
+              <Text style={mStyles.mainBtnIcon}>{recordingPaused ? '▶' : 'Ⅱ'}</Text>
+              <Text style={mStyles.mainBtnTextCompact}>{recordingPaused ? 'RIPRENDI' : 'PAUSA'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[mStyles.mainBtn, mStyles.recordingActionButton, mStyles.mainBtnStop, recordingActionBusy && mStyles.mainBtnDisabled]}
+              onPress={() => {
+                Alert.alert('Termina registrazione', 'Vuoi terminare e salvare questo percorso?', [
+                  { text: 'Annulla', style: 'cancel' },
+                  { text: 'Termina', onPress: stopRecording },
+                ]);
+              }}
+              disabled={recordingActionBusy}
+              accessibilityRole="button"
+              accessibilityLabel="Termina registrazione"
+              activeOpacity={0.85}
+            >
+              <Text style={mStyles.mainBtnIcon}>⏹</Text>
+              <Text style={mStyles.mainBtnTextCompact}>TERMINA</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <TouchableOpacity
+            style={[mStyles.mainBtn, mStyles.mainBtnStart, recordingActionBusy && mStyles.mainBtnDisabled]}
+            onPress={startRecording}
+            disabled={recordingActionBusy}
+            accessibilityRole="button"
+            accessibilityLabel="Avvia registrazione"
+            activeOpacity={0.85}
+          >
+            <Text style={mStyles.mainBtnIcon}>▶</Text>
+            <Text style={mStyles.mainBtnText}>AVVIA REGISTRAZIONE</Text>
+          </TouchableOpacity>
+        )}
       </View>
       </>}
 
@@ -2111,6 +2737,7 @@ function MainUI(props: any) {
               onClose={closeCoordinatePopup}
               onShowData={openPointDetails}
               onShowAnalysis={openIndexAnalysis}
+              fullIndexAccess={fullIndexAccess}
             />
           </View>
         </View>
@@ -2286,6 +2913,7 @@ const mStyles = StyleSheet.create({
   headerEmoji: { fontSize: 16 },
   headerTitle: { color: UI.textPri, fontSize: 13, fontWeight: '800', letterSpacing: 2.5 },
   recDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: UI.redBri, marginLeft: 4 },
+  recDotPaused: { backgroundColor: UI.amberBri },
   tileStatusPill: { position: 'absolute', top: 86, alignSelf: 'center', backgroundColor: 'rgba(10,17,11,0.88)', borderWidth: 1, borderColor: UI.border, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 6 },
   tileStatusPillError: { position: 'absolute', top: 86, alignSelf: 'center', backgroundColor: 'rgba(140,48,48,0.92)', borderWidth: 1, borderColor: UI.redBri, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 6 },
   tileStatusText: { color: UI.textPri, fontSize: 11, fontWeight: '700' },
@@ -2366,7 +2994,13 @@ const mStyles = StyleSheet.create({
   coordinatePopupWeatherButton: { flex: 1, minHeight: 36, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, borderRadius: 7, borderWidth: 1, borderColor: UI.borderHi, backgroundColor: UI.greenDim },
   coordinatePopupAnalysisButton: { flex: 1, minHeight: 36, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, borderRadius: 7, borderWidth: 1, borderColor: '#495541', backgroundColor: '#263028' },
   coordinatePopupWeatherText: { color: UI.textPri, fontSize: 11, fontWeight: '800' },
-  statsBar: { position: 'absolute', bottom: 138, left: 12, right: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(10,17,11,0.50)', borderWidth: 1, borderColor: UI.border, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 8 },
+  statsBar: { position: 'absolute', bottom: 138, left: 12, right: 12, alignItems: 'stretch', justifyContent: 'center', backgroundColor: 'rgba(10,17,11,0.70)', borderWidth: 1, borderColor: UI.border, borderRadius: 12, paddingVertical: 7, paddingHorizontal: 8, gap: 4 },
+  recordingStatusRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
+  recordingStatusDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: UI.redBri },
+  recordingStatusDotPaused: { backgroundColor: UI.amberBri },
+  recordingStatusText: { color: UI.redBri, fontSize: 9, fontWeight: '900', letterSpacing: 1.2 },
+  recordingStatusTextPaused: { color: UI.amberBri },
+  statsMetrics: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
   statItem: { flex: 1, alignItems: 'center' },
   statValue: { color: UI.textPri, fontSize: 20, fontWeight: '800', lineHeight: 24 },
   statLabel: { color: UI.textMut, fontSize: 9, fontWeight: '700', letterSpacing: 1.5, marginTop: 1 },
@@ -2387,9 +3021,15 @@ const mStyles = StyleSheet.create({
   speciesBtnText: { fontSize: 12, fontWeight: '800', letterSpacing: 1 },
   mainBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, paddingVertical: 16, borderRadius: 12, borderWidth: 1.5 },
   mainBtnStart: { backgroundColor: UI.greenDim, borderColor: UI.greenBri },
+  mainBtnPause: { backgroundColor: '#302408', borderColor: UI.amberBri },
+  mainBtnResume: { backgroundColor: UI.greenDim, borderColor: UI.greenBri },
   mainBtnStop: { backgroundColor: '#2a0a0a', borderColor: UI.redBri },
+  mainBtnDisabled: { opacity: 0.55 },
+  recordingActionsRow: { flexDirection: 'row', gap: 8 },
+  recordingActionButton: { flex: 1 },
   mainBtnIcon: { fontSize: 16, color: '#fff' },
   mainBtnText: { color: '#fff', fontSize: 14, fontWeight: '800', letterSpacing: 2 },
+  mainBtnTextCompact: { color: '#fff', fontSize: 12, fontWeight: '800', letterSpacing: 1.4 },
 });
 
 const aStyles = StyleSheet.create({

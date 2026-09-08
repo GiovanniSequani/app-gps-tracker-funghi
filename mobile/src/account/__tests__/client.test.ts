@@ -9,10 +9,13 @@ import {
   listTrackMushroomMarkers,
   loadArchiveData,
   renameTrack,
+  requestPasswordRecovery,
   saveTrackMushroomMarker,
   setTrackTrim,
   signUp,
+  updateRecoveredPassword,
   uploadPreparedTrack,
+  verifyAuthCallback,
 } from '../client';
 import type { GpxTrack, PreparedGpxUpload } from '../types';
 
@@ -47,19 +50,65 @@ const readyTrack: GpxTrack = {
 };
 
 describe('account archive client', () => {
-  it('invia username lowercase e tutti i consensi obbligatori', async () => {
+  it('blocca la registrazione se il contratto lifecycle non è verificabile', async () => {
+    await expect(signUp({
+      email: 'mario@example.test', password: 'password', username: 'Mario_Rossi',
+      lifecycleConfig: { api_available: false, lifecycle_enabled: false, current_terms_version: null, current_privacy_version: null, reaccept_days: 365 },
+    }, { auth: { signUp: vi.fn() } } as never)).rejects.toMatchObject({ code: 'lifecycle_unavailable' });
+  });
+
+  it('registra le versioni lifecycle correnti con source mobile', async () => {
     const signUpMock = vi.fn().mockResolvedValue({ data: { session: null }, error: null });
-    await signUp({ email: 'mario@example.test', password: 'password', username: 'Mario_Rossi' }, {
-      auth: { signUp: signUpMock },
+    await signUp({
+      email: 'mario@example.test', password: 'password', username: 'Mario_Rossi',
+      lifecycleConfig: { api_available: true, lifecycle_enabled: true, current_terms_version: '1.0', current_privacy_version: '1.0', reaccept_days: 365 },
+    }, { auth: { signUp: signUpMock } } as never);
+    expect(signUpMock).toHaveBeenCalledWith(expect.objectContaining({ options: expect.objectContaining({ data: {
+      username: 'mario_rossi', terms_accepted: true, privacy_acknowledged: true,
+      terms_version: '1.0', privacy_version: '1.0', terms_acceptance_source: 'mobile',
+    } }) }));
+  });
+
+  it('usa il redirect esplicito e non enumerativo per il recupero password', async () => {
+    const resetPasswordForEmail = vi.fn().mockResolvedValue({ data: {}, error: null });
+    await requestPasswordRecovery('  mario@example.test  ', {
+      auth: { resetPasswordForEmail },
     } as never);
-    expect(signUpMock).toHaveBeenCalledWith(expect.objectContaining({
-      options: { data: {
-        username: 'mario_rossi',
-        terms_accepted: true,
-        privacy_accepted: true,
-        raw_gpx_research_consent: true,
-      } },
-    }));
+    expect(resetPasswordForEmail).toHaveBeenCalledWith('mario@example.test', {
+      redirectTo: 'funghitracker://auth/recovery',
+    });
+
+    await expect(requestPasswordRecovery('mario@example.test', {
+      auth: { resetPasswordForEmail: vi.fn().mockResolvedValue({ data: {}, error: new Error('User not found: mario@example.test') }) },
+    } as never)).rejects.toMatchObject({
+      message: 'Non è stato possibile inviare il messaggio. Attendi e riprova.',
+    });
+  });
+
+  it('verifica il token solo con type validato e conclude il recovery con updateUser', async () => {
+    const verifyOtp = vi.fn().mockResolvedValue({ data: {}, error: null });
+    const updateUser = vi.fn().mockResolvedValue({ data: {}, error: null });
+    const supabase = { auth: { verifyOtp, updateUser } } as never;
+    await verifyAuthCallback({ kind: 'recovery', type: 'recovery', tokenHash: 'a'.repeat(32) }, supabase);
+    await updateRecoveredPassword('nuova-password-sicura', supabase);
+    expect(verifyOtp).toHaveBeenCalledWith({ token_hash: 'a'.repeat(32), type: 'recovery' });
+    expect(updateUser).toHaveBeenCalledWith({ password: 'nuova-password-sicura' });
+  });
+
+  it('inoltra type signup e gestisce token scaduto, invalido o già usato senza esporlo', async () => {
+    const verifyOtp = vi.fn()
+      .mockResolvedValueOnce({ data: {}, error: null })
+      .mockResolvedValueOnce({ data: null, error: new Error('otp_expired: token already used') });
+    const supabase = { auth: { verifyOtp } } as never;
+    await verifyAuthCallback({ kind: 'confirm', type: 'signup', tokenHash: 'token-signup' }, supabase);
+    expect(verifyOtp).toHaveBeenNthCalledWith(1, {
+      token_hash: 'token-signup',
+      type: 'signup',
+    });
+    await expect(verifyAuthCallback({ kind: 'confirm', type: 'email', tokenHash: 'token-da-non-mostrare' }, supabase))
+      .rejects.toMatchObject({
+        message: 'Il link non è valido, è scaduto o è già stato usato. Richiedine uno nuovo.',
+      });
   });
 
   it('rispetta reserve, upload non-upsert e finalize in ordine', async () => {

@@ -4,6 +4,7 @@ import {
   Alert,
   Animated,
   KeyboardAvoidingView,
+  Linking,
   Modal,
   Platform,
   Pressable,
@@ -40,20 +41,30 @@ import {
 } from 'lucide-react-native';
 import { deleteRoute, getAllRoutes, getRouteById, insertRoute } from '../../db';
 import { AccountAuthForm, type AuthView } from './AccountAuthForm';
+import { AccountLifecyclePanel } from './AccountLifecyclePanel';
+import { AccountRightsPanel } from './AccountRightsPanel';
 import {
   createTrackDownloadUrl,
   deleteTrack,
-  getArchiveConfig,
   listTrackMushroomMarkers,
   loadArchiveData,
+  requestPasswordRecovery,
   signIn,
   signOut,
   signUp,
   renameTrack,
 } from './client';
+import {
+  acceptCurrentContributorTerms,
+  recordMyLegalNoticeSeen,
+  recordMyMeaningfulActivity,
+  refuseCurrentContributorTerms,
+} from './lifecycleClient';
+import type { AccountLifecycleState } from './useAccountLifecycle';
 import { parseGpxBytes } from './gpxParser';
 import { routeSummary, uploadRouteToCloud } from './routeUpload';
 import { TrackNameModal } from './TrackNameModal';
+import { getCloudTrackDate } from './trackDates';
 import type {
   AccountSessionState,
   ArchiveConfig,
@@ -152,6 +163,7 @@ function TrackRow(props: {
 
 export default function AccountArchiveScreen(props: {
   sessionState: AccountSessionState;
+  lifecycle: AccountLifecycleState;
   onShowTrackOnMap: (route: ArchiveMapRoute) => void;
   onEditTrackOnMap: (route: ArchiveMapRoute) => void;
   onLocalRouteArchived: (routeId: string) => void;
@@ -171,6 +183,7 @@ export default function AccountArchiveScreen(props: {
   const [error, setError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
   const [authBusy, setAuthBusy] = React.useState(false);
+  const [lifecycleBusy, setLifecycleBusy] = React.useState(false);
   const [authError, setAuthError] = React.useState<string | null>(null);
   const [authNotice, setAuthNotice] = React.useState<string | null>(null);
   const [actions, setActions] = React.useState<Record<string, 'upload' | 'download' | 'delete' | 'map' | 'edit' | 'import'>>({});
@@ -213,13 +226,6 @@ export default function AccountArchiveScreen(props: {
     });
   }, []);
 
-  React.useEffect(() => {
-    let active = true;
-    void getArchiveConfig().then((value) => { if (active) setConfig(value); })
-      .catch((reason) => { if (active) setError(toAccountError(reason).message); });
-    return () => { active = false; };
-  }, []);
-
   const loadLocalRoutes = React.useCallback(async (): Promise<ArchiveMapRoute[]> => {
     const rows = await getAllRoutes().catch(() => []) as LocalRoute[];
     const fullRoutes = await Promise.all(rows.map((row) => getRouteById(row.route_id).catch(() => null)));
@@ -240,15 +246,13 @@ export default function AccountArchiveScreen(props: {
     const sequence = ++loadSequence.current;
     setLoading(true);
     setError(null);
-    if (!sessionState.session) {
-      try {
-        const local = await loadLocalRoutes();
-        if (sequence === loadSequence.current) setLocalRoutes(local);
-      } catch {
-        if (sequence === loadSequence.current) setError('Impossibile leggere i percorsi conservati sul dispositivo.');
-      } finally {
-        if (sequence === loadSequence.current) setLoading(false);
-      }
+    if (!sessionState.session || !props.lifecycle.fullAccess) {
+      setArchive(null);
+      setConfig(null);
+      setLocalRoutes([]);
+      setCloudDetails({});
+      cloudDetailsRef.current = {};
+      setLoading(false);
       return;
     }
     const [cloudResult, localResult] = await Promise.allSettled([loadArchiveData(), loadLocalRoutes()]);
@@ -258,6 +262,8 @@ export default function AccountArchiveScreen(props: {
       setConfig(cloudResult.value.config);
     } else {
       setArchive(null);
+      setConfig(null);
+      setLocalRoutes([]);
       setError(toAccountError(cloudResult.reason).message);
     }
     if (localResult.status === 'fulfilled') {
@@ -266,7 +272,7 @@ export default function AccountArchiveScreen(props: {
       setError('Impossibile leggere i percorsi conservati sul dispositivo.');
     }
     setLoading(false);
-  }, [loadLocalRoutes, sessionState.session]);
+  }, [loadLocalRoutes, props.lifecycle.fullAccess, sessionState.session]);
 
   const downloadTrackBytes = React.useCallback(async (track: GpxTrack): Promise<Uint8Array> => {
     const signedUrl = await createTrackDownloadUrl(track);
@@ -296,7 +302,7 @@ export default function AccountArchiveScreen(props: {
       const routeBase = routeSummary({
         routeId: track.id,
         name: track.display_name,
-        date: track.ready_at ?? track.created_at,
+        date: getCloudTrackDate(track),
         path: pathSegments.flat(),
         markers: parsed.markers,
       });
@@ -344,7 +350,7 @@ export default function AccountArchiveScreen(props: {
   }, [archive?.tracks, config, loadCloudDetail]);
 
   React.useEffect(() => {
-    if (!sessionState.session) {
+    if (!sessionState.session || !props.lifecycle.fullAccess) {
       loadSequence.current += 1;
       detailSequence.current += 1;
       setArchive(null);
@@ -358,8 +364,8 @@ export default function AccountArchiveScreen(props: {
       setLoading(false);
       return;
     }
-    setAuthVisible(false);
-  }, [sessionState.session]);
+    if (sessionState.session) setAuthVisible(false);
+  }, [props.lifecycle.fullAccess, sessionState.session]);
 
   React.useEffect(() => {
     if (props.cloudEditRevision === 0) return;
@@ -370,13 +376,27 @@ export default function AccountArchiveScreen(props: {
   }, [props.cloudEditRevision, refresh]);
 
   useFocusEffect(React.useCallback(() => {
-    void refresh();
-  }, [refresh]));
+    void props.lifecycle.refresh();
+  }, [props.lifecycle.refresh]));
+
+  React.useEffect(() => { void refresh(); }, [refresh]);
 
   const runAuth = async (action: () => Promise<void>) => {
     setAuthBusy(true); setAuthError(null); setAuthNotice(null);
     try { await action(); } catch (reason) { setAuthError(toAccountError(reason).message); }
     finally { setAuthBusy(false); }
+  };
+
+  const runLifecycle = async (action: () => Promise<void>) => {
+    setLifecycleBusy(true);
+    try { await action(); } finally { setLifecycleBusy(false); }
+  };
+
+  const currentLegalVersions = () => {
+    const terms = props.lifecycle.config?.current_terms_version;
+    const privacy = props.lifecycle.config?.current_privacy_version;
+    if (!terms || !privacy) throw new Error('Le versioni correnti dei documenti non sono disponibili.');
+    return { terms, privacy };
   };
 
   const openNameAction = (action: NameAction, initialName: string) => {
@@ -577,10 +597,10 @@ export default function AccountArchiveScreen(props: {
           <Text style={styles.noticeToastText}>{notice}</Text>
         </Animated.View>
       )}
-      <ScrollView contentContainerStyle={[styles.content, { paddingTop: safeAreaInsets.top + 16 }]} keyboardShouldPersistTaps="handled" refreshControl={<RefreshControl refreshing={loading} onRefresh={() => void refresh()} enabled={Boolean(sessionState.session)} tintColor={COLORS.green} />}>
+      <ScrollView contentContainerStyle={[styles.content, { paddingTop: safeAreaInsets.top + 16 }]} keyboardShouldPersistTaps="handled" refreshControl={<RefreshControl refreshing={loading} onRefresh={() => void refresh()} enabled={Boolean(sessionState.session && props.lifecycle.fullAccess)} tintColor={COLORS.green} />}>
         <View style={styles.header}>
           <View><Text style={styles.eyebrow}>FUNGHI TRACKER</Text><Text style={styles.title}>Archivio</Text></View>
-          {sessionState.session && <TouchableOpacity style={styles.iconButton} onPress={() => void refresh()} accessibilityLabel="Aggiorna archivio"><RefreshCw size={19} color={COLORS.text} /></TouchableOpacity>}
+          {sessionState.session && props.lifecycle.fullAccess && <TouchableOpacity style={styles.iconButton} onPress={() => void refresh()} accessibilityLabel="Aggiorna archivio"><RefreshCw size={19} color={COLORS.text} /></TouchableOpacity>}
         </View>
         {sessionState.loading && <View style={styles.stateRow}><ActivityIndicator color={COLORS.green} /><Text style={styles.muted}>Ripristino sessione…</Text></View>}
         {sessionState.error && <Text style={styles.errorText}>{sessionState.error}</Text>}
@@ -595,11 +615,73 @@ export default function AccountArchiveScreen(props: {
               <TouchableOpacity style={styles.primaryButton} onPress={() => { setAuthView('login'); setAuthVisible(true); }}><LogIn size={17} color={COLORS.bg} /><Text style={styles.primaryButtonText}>Accedi</Text></TouchableOpacity>
               <TouchableOpacity style={styles.secondaryButton} onPress={() => { setAuthView('register'); setAuthVisible(true); }}><UserPlus size={17} color={COLORS.text} /><Text style={styles.secondaryButtonText}>Registrati</Text></TouchableOpacity>
             </View>}
-            {authVisible && <AccountAuthForm view={authView} config={config} busy={authBusy} error={authError} notice={authNotice} onViewChange={(view) => { setAuthView(view); setAuthError(null); setAuthNotice(null); }} onLogin={(email, password) => runAuth(() => signIn(email, password).then(() => undefined))} onRegister={(email, password, username) => runAuth(async () => { const result = await signUp({ email, password, username }); if (!result.session) { setAuthView('login'); setAuthNotice('Account creato. Controlla l’email e confermala prima di accedere.'); } })} />}
+            {authVisible && <AccountAuthForm
+              view={authView}
+              lifecycleConfig={props.lifecycle.config}
+              busy={authBusy}
+              error={authError}
+              notice={authNotice}
+              onViewChange={(view) => { setAuthView(view); setAuthError(null); setAuthNotice(null); }}
+              onLogin={(email, password) => runAuth(async () => {
+                await signIn(email, password);
+                props.lifecycle.applyAccess(await recordMyMeaningfulActivity('interactive_login'));
+              })}
+              onRegister={(email, password, username) => runAuth(async () => {
+                if (!props.lifecycle.config) throw new Error('Configurazione account non disponibile. Riprova.');
+                const result = await signUp({ email, password, username, lifecycleConfig: props.lifecycle.config });
+                if (!result.session) {
+                  setAuthView('login');
+                  setAuthNotice('Account creato. Controlla l’email e confermala prima di accedere.');
+                }
+              })}
+              onForgotPassword={(email) => runAuth(async () => {
+                await requestPasswordRecovery(email);
+                setAuthNotice('Se esiste un account associato, riceverai un link per reimpostare la password.');
+              })}
+            />}
+            <View style={styles.publicLinks}>
+              <TouchableOpacity onPress={() => void Linking.openURL('https://web-funghi-index.pages.dev/termini/')} accessibilityRole="link"><Text style={styles.publicLink}>Termini</Text></TouchableOpacity>
+              <TouchableOpacity onPress={() => void Linking.openURL('https://web-funghi-index.pages.dev/privacy/')} accessibilityRole="link"><Text style={styles.publicLink}>Privacy</Text></TouchableOpacity>
+              <TouchableOpacity onPress={() => void Linking.openURL('https://web-funghi-index.pages.dev/account-e-dati/')} accessibilityRole="link"><Text style={styles.publicLink}>Account e dati</Text></TouchableOpacity>
+              <TouchableOpacity onPress={() => void Linking.openURL('https://web-funghi-index.pages.dev/elimina-account/')} accessibilityRole="link"><Text style={styles.publicLink}>Elimina account</Text></TouchableOpacity>
+            </View>
           </View>
         )}
 
-        {sessionState.session && <>
+        {sessionState.session && !props.lifecycle.fullAccess && <>
+          <View style={styles.profileRow}>
+            <View style={styles.avatar}><UserRound size={25} color={COLORS.green} /></View>
+            <View style={styles.profileCopy}><Text style={styles.sectionTitle}>{sessionState.username ?? 'Utente'}</Text><Text style={styles.muted}>Stato account verificato dal server</Text></View>
+          </View>
+          {props.lifecycle.loading && !props.lifecycle.config
+            ? <View style={styles.stateRow}><ActivityIndicator color={COLORS.green} /><Text style={styles.muted}>Verifica accesso…</Text></View>
+            : <AccountLifecyclePanel
+              config={props.lifecycle.config}
+              access={props.lifecycle.access}
+              loading={props.lifecycle.loading}
+              error={props.lifecycle.error}
+              busy={lifecycleBusy}
+              onNoticeSeen={async () => {
+                const { terms, privacy } = currentLegalVersions();
+                const access = await recordMyLegalNoticeSeen(terms, privacy);
+                props.lifecycle.applyAccess(access);
+              }}
+              onAccept={() => runLifecycle(async () => {
+                const { terms, privacy } = currentLegalVersions();
+                const access = await acceptCurrentContributorTerms(terms, privacy);
+                props.lifecycle.applyAccess(access);
+              })}
+              onRefuse={() => runLifecycle(async () => {
+                const { terms, privacy } = currentLegalVersions();
+                const access = await refuseCurrentContributorTerms(terms, privacy);
+                props.lifecycle.applyAccess(access);
+              })}
+              onRefresh={() => runLifecycle(async () => { await props.lifecycle.refresh('account_action'); })}
+              onSignOut={() => runLifecycle(signOut)}
+            />}
+        </>}
+
+        {sessionState.session && props.lifecycle.fullAccess && <>
           <View style={styles.profileRow}>
             <View style={styles.avatar}><UserRound size={25} color={COLORS.green} /></View>
             <View style={styles.profileCopy}><Text style={styles.sectionTitle}>{archive?.profile.username ?? sessionState.username ?? 'Utente'}</Text><Text style={styles.muted}>{sessionState.session.user.email}</Text></View>
@@ -610,6 +692,7 @@ export default function AccountArchiveScreen(props: {
             <View><Text style={styles.metric}>{formatBytes(archive.config.max_compressed_bytes)}</Text><Text style={styles.muted}>massimo per file</Text></View>
             <ShieldCheck size={23} color={COLORS.green} />
           </View>}
+          <AccountRightsPanel accountState={props.lifecycle.access?.account_state ?? 'active'} />
           <View style={styles.sectionHeaderRow}>
             <View><Text style={styles.sectionTitle}>Archivio</Text><Text style={styles.muted}>Percorsi salvati</Text></View>
             <TouchableOpacity style={styles.importButton} onPress={() => void handleImport()} disabled={actions.import === 'import'} accessibilityLabel="Importa un file GPX dal dispositivo">
@@ -621,7 +704,7 @@ export default function AccountArchiveScreen(props: {
           {archive && archive.tracks.length === 0 && <Text style={styles.empty}>Nessun percorso salvato.</Text>}
           {archive?.tracks.map((track) => {
             const detail = cloudDetails[track.id];
-            return <TrackRow key={track.id} source="cloud" title={track.display_name} subtitle={`${formatDate(track.ready_at ?? track.created_at)} · ${formatBytes(track.compressed_size_bytes)}`} stats={<TrackStats distanceM={track.distance_m} pointCount={track.point_count} porciniCount={detail?.route?.porciniCount} finferliCount={detail?.route?.finferliCount} loadingSpecies={detail?.loading} />} warning={partialDeletes.has(track.id) ? 'File eliminato; completa la cancellazione dei metadati.' : detail?.error ? 'Dettagli GPX temporaneamente non disponibili.' : undefined}>
+            return <TrackRow key={track.id} source="cloud" title={track.display_name} subtitle={`${formatDate(getCloudTrackDate(track))} · ${formatBytes(track.compressed_size_bytes)}`} stats={<TrackStats distanceM={track.distance_m} pointCount={track.point_count} porciniCount={detail?.route?.porciniCount} finferliCount={detail?.route?.finferliCount} loadingSpecies={detail?.loading} />} warning={partialDeletes.has(track.id) ? 'File eliminato; completa la cancellazione dei metadati.' : detail?.error ? 'Dettagli GPX temporaneamente non disponibili.' : undefined}>
               <TouchableOpacity style={styles.iconButton} onPress={() => void handleShowOnMap(track)} disabled={Boolean(actions[track.id])} accessibilityLabel={`Mostra ${track.display_name} sulla mappa`}>{actions[track.id] === 'map' ? <ActivityIndicator size="small" color={COLORS.green} /> : <MapPinned size={19} color={COLORS.green} />}</TouchableOpacity>
               <TouchableOpacity style={styles.iconButton} onPress={() => setTrackMenu(track)} disabled={Boolean(actions[track.id])} accessibilityLabel={`Altre azioni per ${track.display_name}`}>
                 {actions[track.id] ? <ActivityIndicator size="small" color={COLORS.text} /> : <MoreHorizontal size={21} color={COLORS.text} />}
@@ -631,7 +714,7 @@ export default function AccountArchiveScreen(props: {
 
         </>}
 
-        {localRoutes.length > 0 && <View style={styles.localWarningSection}>
+        {localRoutes.length > 0 && props.lifecycle.fullAccess && <View style={styles.localWarningSection}>
           <View style={styles.localWarningHeader}><AlertTriangle size={22} color={COLORS.amber} /><View style={styles.profileCopy}><Text style={styles.sectionTitle}>Percorsi non salvati nell’archivio</Text><Text style={styles.warning}>{sessionState.session ? 'Salvare i percorsi nell’archivio' : 'Accedi per salvarli nell’archivio'}</Text></View></View>
           {localRoutes.map((route) => <TrackRow key={route.routeId} source="local" title={route.name} subtitle={formatDate(route.date)} stats={<TrackStats distanceM={route.distanceM} pointCount={route.pointCount} porciniCount={route.porciniCount} finferliCount={route.finferliCount} />}>
             {sessionState.session && <TouchableOpacity style={styles.uploadButton} onPress={() => openNameAction({ kind: 'localUpload', route }, route.name)} disabled={Boolean(actions[route.routeId])} accessibilityLabel={`Salva ${route.name} nell'archivio`}>
@@ -729,6 +812,8 @@ const styles = StyleSheet.create({
   errorText: { color: '#ffaaaa', fontSize: 12, lineHeight: 18 },
   noticeToast: { position: 'absolute', zIndex: 20, left: 16, right: 16, minHeight: 46, borderRadius: 10, borderWidth: 1, borderColor: '#477d52', backgroundColor: '#17351d', paddingHorizontal: 14, paddingVertical: 11, justifyContent: 'center', elevation: 8 },
   noticeToastText: { color: '#c7f4cf', fontSize: 13, lineHeight: 18, fontWeight: '700', textAlign: 'center' },
+  publicLinks: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 14, marginTop: 8 },
+  publicLink: { color: COLORS.green, fontSize: 11, fontWeight: '800' },
   menuBackdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.58)' },
   trackMenu: { backgroundColor: COLORS.panel, borderTopLeftRadius: 16, borderTopRightRadius: 16, borderTopWidth: 1, borderColor: COLORS.border, paddingHorizontal: 16, paddingTop: 13, gap: 4 },
   trackMenuHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingBottom: 8 },

@@ -59,7 +59,7 @@ export function useAccountLifecycle(session: Session | null, sessionLoading: boo
     // Only an already-open session at process startup is meaningful activity.
     // Later auth changes (including deep links/token refresh) only revalidate.
     void refresh(first && session ? 'foreground_session' : undefined);
-  }, [refresh, session?.user.id, sessionLoading]);
+  }, [refresh, session?.expires_at, session?.user.id, sessionLoading]);
 
   React.useEffect(() => {
     const subscription = AppState.addEventListener('change', (next) => {

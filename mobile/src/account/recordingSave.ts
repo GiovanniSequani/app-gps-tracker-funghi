@@ -16,7 +16,7 @@ export type RecordingSaveResult = {
 
 export async function saveRecordingCloudFirst(
   route: RecordedRoute,
-  authenticated: boolean,
+  access: { cloudAllowed: boolean; localAllowed: boolean },
   dependencies: {
     upload: (route: Pick<RecordedRoute, 'name' | 'path' | 'markers'>) => Promise<GpxTrack>;
     saveLocal: (route: RecordedRoute) => Promise<void>;
@@ -24,7 +24,7 @@ export async function saveRecordingCloudFirst(
   },
 ): Promise<RecordingSaveResult> {
   let cloudError: unknown;
-  if (authenticated) {
+  if (access.cloudAllowed) {
     try {
       const track = await dependencies.upload(route);
       return { location: 'cloud', track };
@@ -33,7 +33,7 @@ export async function saveRecordingCloudFirst(
     }
   }
 
-  if (!authenticated) {
+  if (!access.localAllowed) {
     await dependencies.shareGuest(route);
     return { location: 'shared' };
   }

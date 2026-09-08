@@ -43,6 +43,8 @@ In registrazione vengono inviati username, accettazione Termini, presa visione P
 - il valore puntuale usa la stessa finestra e i giorni mancanti non vengono interpolati;
 - l’analisi indice, l’archivio, import, editing e visualizzazione di percorsi salvati richiedono `full_access=true`;
 - senza account la registrazione resta temporanea: al termine viene aperto lo share sheet con un GPX e il file temporaneo viene eliminato;
+- con una sessione già persistita ma rete non disponibile, l’identità locale consente soltanto di conservare nuove registrazioni sul dispositivo: non concede accesso alle API private né sostituisce `full_access=true`;
+- quando la verifica server torna disponibile, i percorsi locali sono proposti tra quelli non sincronizzati e possono essere caricati con il normale flusso cloud; uno stato `restricted` o `deletion_pending` confermato non abilita questa modalità offline;
 - l’avviso iniziale riprende gerarchia e testi della webapp mobile, con accesso/registrazione oppure prosecuzione con l’indice pubblico.
 
 ## Limiti intenzionali

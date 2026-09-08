@@ -16,9 +16,11 @@ describe('integrazione lifecycle mobile', () => {
     expect(hookSource).not.toContain('camera');
   });
 
-  it('non carica né mostra archivio privato senza full access', () => {
+  it('non chiama il cloud senza full access e limita il locale alla sessione offline non verificabile', () => {
     expect(archiveSource).toContain('!props.lifecycle.fullAccess');
     expect(archiveSource).toContain('sessionState.session && props.lifecycle.fullAccess');
+    expect(archiveSource).toContain('canUseOfflineLocalArchive');
+    expect(archiveSource).toContain('props.lifecycle.access === null');
     expect(archiveSource).toContain('<AccountLifecyclePanel');
   });
 

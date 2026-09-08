@@ -455,6 +455,16 @@ export default function App() {
   const accountLifecycle = useAccountLifecycle(accountSession.session, accountSession.loading);
   const indexAccessReady = !accountSession.loading && !accountLifecycle.loading;
   const fullIndexAccess = Boolean(accountSession.session && accountLifecycle.fullAccess);
+  const canQueueRecordingLocally = Boolean(
+    accountSession.session
+    && (
+      fullIndexAccess
+      || (
+        accountLifecycle.access === null
+        && (accountSession.offline || Boolean(accountLifecycle.error))
+      )
+    ),
+  );
   const [indexAccessNoticeOpen, setIndexAccessNoticeOpen] = React.useState(false);
   const indexAccessNoticeKeyRef = React.useRef<string | null>(null);
   const authDeepLink = useAuthDeepLinks();
@@ -775,7 +785,7 @@ export default function App() {
       }
     })();
     return () => { mounted = false; };
-  }, []);
+  }, [fullIndexAccess, indexAccessReady]);
 
   // posizione iniziale: struttura ripresa dal bundle recuperato
   React.useEffect(() => {
@@ -1100,7 +1110,10 @@ export default function App() {
     const name = normalizeTrackName(chosenName);
     const finalPath = await syncPathFromFile(true);
     const route = { routeId: route_id, name, date, path: finalPath, markers: markersRef.current };
-    const result = await saveRecordingCloudFirst(route, Boolean(accountSession.session && accountLifecycle.fullAccess), {
+    const result = await saveRecordingCloudFirst(route, {
+      cloudAllowed: fullIndexAccess,
+      localAllowed: canQueueRecordingLocally,
+    }, {
       upload: uploadRouteToCloud,
       saveLocal: async (localRoute) => {
         await insertRoute(
@@ -1126,10 +1139,12 @@ export default function App() {
       Alert.alert('Percorso salvato', 'Il percorso è stato salvato nell’archivio.');
     } else if (result.location === 'shared') {
       Alert.alert('Percorso condiviso', 'Il GPX non è stato conservato nell’app. Salvalo con l’app scelta se vuoi mantenerne una copia.');
-    } else if (result.cloudError) {
+    } else {
       Alert.alert(
         'Salvato sul dispositivo',
-        'Il caricamento nell’archivio non è riuscito. Il percorso è stato conservato tra quelli non salvati e potrai riprovare dall’Archivio.',
+        result.cloudError
+          ? 'Il caricamento nell’archivio non è riuscito. Il percorso è stato conservato tra quelli non salvati e potrai riprovare dall’Archivio.'
+          : 'Sei offline. Il percorso è stato conservato sul dispositivo e potrai salvarlo nell’archivio quando tornerà la connessione.',
       );
     }
   };
@@ -1186,8 +1201,8 @@ export default function App() {
       await saveCurrentRoute(recordingName);
       setRecordingNameVisible(false);
     } catch {
-      setRecordingNameError(fullIndexAccess
-        ? 'Impossibile salvare il percorso nel cloud o sul dispositivo.'
+      setRecordingNameError(fullIndexAccess || canQueueRecordingLocally
+        ? 'Impossibile salvare il percorso sul dispositivo.'
         : 'Impossibile condividere il file GPX. Riprova.');
     } finally {
       setRecordingSaveBusy(false);
@@ -1553,11 +1568,13 @@ export default function App() {
         title="Registrazione terminata"
         description={fullIndexAccess
           ? 'Scegli il nome da usare nell’archivio.'
-          : 'Scegli il nome del percorso, poi salvalo o condividilo come file GPX.'}
+          : canQueueRecordingLocally
+            ? 'Scegli un nome. Il percorso resterà sul dispositivo finché non potrai salvarlo nell’archivio.'
+            : 'Scegli il nome del percorso, poi salvalo o condividilo come file GPX.'}
         value={recordingName}
         error={recordingNameError}
         busy={recordingSaveBusy}
-        confirmLabel={fullIndexAccess ? 'Salva percorso' : 'Condividi GPX'}
+        confirmLabel={fullIndexAccess || canQueueRecordingLocally ? 'Salva percorso' : 'Condividi GPX'}
         onChange={(value) => { setRecordingName(value); setRecordingNameError(null); }}
         onCancel={cancelRecordingSave}
         onConfirm={() => void confirmRecordingSave()}

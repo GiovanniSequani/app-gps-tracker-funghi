@@ -16,7 +16,9 @@ describe('integrazione accesso indice e mappa', () => {
   it('non apre analisi e non mostra archivio locale al guest', () => {
     expect(app).toContain('if (!fullIndexAccess)');
     expect(app).toContain('onShowIndexAccessNotice()');
-    expect(archive).toContain('localRoutes.length > 0 && props.lifecycle.fullAccess');
+    expect(archive).toContain('localRoutes.length > 0 && canReadLocalArchive');
+    expect(archive).toContain('sessionState.session\n    && !props.lifecycle.fullAccess');
+    expect(archive).toContain('props.lifecycle.access === null');
   });
 
   it('mantiene MapLibre montato mentre mostra l’avviso accesso', () => {
@@ -27,6 +29,7 @@ describe('integrazione accesso indice e mappa', () => {
   it('non ricarica la selezione tile durante una semplice rivalidazione e rimuove il livello recente alla perdita di accesso', () => {
     expect(app).toContain('loadedTileAccessLevelRef.current === fullIndexAccess');
     expect(app).toContain("loadedTileAccessLevelRef.current === true && !fullIndexAccess");
+    expect(app).toContain('}, [fullIndexAccess, indexAccessReady]);');
     expect(app).toContain("setTileDate('')");
     expect(app).toContain("setTileVersion('')");
   });

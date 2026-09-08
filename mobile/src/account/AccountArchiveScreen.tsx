@@ -171,6 +171,13 @@ export default function AccountArchiveScreen(props: {
   cloudEditRevision: number;
 }) {
   const { sessionState } = props;
+  const canUseOfflineLocalArchive = Boolean(
+    sessionState.session
+    && !props.lifecycle.fullAccess
+    && props.lifecycle.access === null
+    && (sessionState.offline || Boolean(props.lifecycle.error)),
+  );
+  const canReadLocalArchive = props.lifecycle.fullAccess || canUseOfflineLocalArchive;
   const navigation = useNavigation<any>();
   const safeAreaInsets = useSafeAreaInsets();
   const [authVisible, setAuthVisible] = React.useState(false);
@@ -246,12 +253,27 @@ export default function AccountArchiveScreen(props: {
     const sequence = ++loadSequence.current;
     setLoading(true);
     setError(null);
-    if (!sessionState.session || !props.lifecycle.fullAccess) {
+    if (!sessionState.session || !canReadLocalArchive) {
       setArchive(null);
       setConfig(null);
       setLocalRoutes([]);
       setCloudDetails({});
       cloudDetailsRef.current = {};
+      setLoading(false);
+      return;
+    }
+    if (!props.lifecycle.fullAccess) {
+      setArchive(null);
+      setConfig(null);
+      setCloudDetails({});
+      cloudDetailsRef.current = {};
+      const localResult = await loadLocalRoutes().then(
+        (routes) => ({ routes, error: null as string | null }),
+        () => ({ routes: [] as ArchiveMapRoute[], error: 'Impossibile leggere i percorsi conservati sul dispositivo.' }),
+      );
+      if (sequence !== loadSequence.current) return;
+      setLocalRoutes(localResult.routes);
+      setError(localResult.error);
       setLoading(false);
       return;
     }
@@ -272,7 +294,7 @@ export default function AccountArchiveScreen(props: {
       setError('Impossibile leggere i percorsi conservati sul dispositivo.');
     }
     setLoading(false);
-  }, [loadLocalRoutes, props.lifecycle.fullAccess, sessionState.session]);
+  }, [canReadLocalArchive, loadLocalRoutes, props.lifecycle.fullAccess, sessionState.session]);
 
   const downloadTrackBytes = React.useCallback(async (track: GpxTrack): Promise<Uint8Array> => {
     const signedUrl = await createTrackDownloadUrl(track);
@@ -604,6 +626,10 @@ export default function AccountArchiveScreen(props: {
         </View>
         {sessionState.loading && <View style={styles.stateRow}><ActivityIndicator color={COLORS.green} /><Text style={styles.muted}>Ripristino sessione…</Text></View>}
         {sessionState.error && <Text style={styles.errorText}>{sessionState.error}</Text>}
+        {canUseOfflineLocalArchive && <View style={styles.offlineBox} accessibilityLiveRegion="polite">
+          <Text style={styles.warning}>Modalità offline</Text>
+          <Text style={styles.muted}>Puoi registrare e conservare percorsi su questo dispositivo. Il cloud tornerà disponibile dopo la verifica dell’account.</Text>
+        </View>}
         {error && <View style={styles.errorBox}><Text style={styles.errorText}>{error}</Text><TouchableOpacity onPress={() => void refresh()}><Text style={styles.retry}>Riprova</Text></TouchableOpacity></View>}
 
         {!sessionState.loading && !sessionState.session && (
@@ -714,10 +740,10 @@ export default function AccountArchiveScreen(props: {
 
         </>}
 
-        {localRoutes.length > 0 && props.lifecycle.fullAccess && <View style={styles.localWarningSection}>
+        {localRoutes.length > 0 && canReadLocalArchive && <View style={styles.localWarningSection}>
           <View style={styles.localWarningHeader}><AlertTriangle size={22} color={COLORS.amber} /><View style={styles.profileCopy}><Text style={styles.sectionTitle}>Percorsi non salvati nell’archivio</Text><Text style={styles.warning}>{sessionState.session ? 'Salvare i percorsi nell’archivio' : 'Accedi per salvarli nell’archivio'}</Text></View></View>
           {localRoutes.map((route) => <TrackRow key={route.routeId} source="local" title={route.name} subtitle={formatDate(route.date)} stats={<TrackStats distanceM={route.distanceM} pointCount={route.pointCount} porciniCount={route.porciniCount} finferliCount={route.finferliCount} />}>
-            {sessionState.session && <TouchableOpacity style={styles.uploadButton} onPress={() => openNameAction({ kind: 'localUpload', route }, route.name)} disabled={Boolean(actions[route.routeId])} accessibilityLabel={`Salva ${route.name} nell'archivio`}>
+            {props.lifecycle.fullAccess && <TouchableOpacity style={styles.uploadButton} onPress={() => openNameAction({ kind: 'localUpload', route }, route.name)} disabled={Boolean(actions[route.routeId])} accessibilityLabel={`Salva ${route.name} nell'archivio`}>
               {actions[route.routeId] === 'upload' ? <ActivityIndicator size="small" color={COLORS.bg} /> : <UploadCloud size={17} color={COLORS.bg} />}
               <Text style={styles.uploadButtonText}>Salva</Text>
             </TouchableOpacity>}
@@ -806,6 +832,7 @@ const styles = StyleSheet.create({
   importButton: { minHeight: 40, paddingHorizontal: 12, borderRadius: 8, backgroundColor: COLORS.green, flexDirection: 'row', gap: 6, alignItems: 'center' },
   uploadButtonText: { color: COLORS.bg, fontWeight: '800', fontSize: 12 },
   localWarningSection: { gap: 10, borderWidth: 1, borderColor: '#735f30', backgroundColor: '#211d12', borderRadius: 11, padding: 12 },
+  offlineBox: { gap: 4, borderWidth: 1, borderColor: '#735f30', backgroundColor: '#211d12', borderRadius: 9, padding: 11 },
   localWarningHeader: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   empty: { color: COLORS.muted, fontSize: 13, paddingVertical: 12, textAlign: 'center' },
   errorBox: { backgroundColor: '#351d1d', borderRadius: 8, padding: 12, gap: 7 },

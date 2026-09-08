@@ -1,7 +1,7 @@
 import React from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 import { getMyProfile } from './client';
-import { getAccountSupabaseClient } from './supabase';
+import { getAccountSupabaseClient, getPersistedAccountSession } from './supabase';
 import type { AccountSessionState } from './types';
 import { toAccountError } from './validation';
 
@@ -9,6 +9,7 @@ export function useAccountSession(): AccountSessionState {
   const [state, setState] = React.useState<AccountSessionState>({
     session: null,
     username: null,
+    offline: false,
     loading: true,
     error: null,
   });
@@ -18,10 +19,10 @@ export function useAccountSession(): AccountSessionState {
     let identitySequence = 0;
     let appStateSubscription: { remove: () => void } | null = null;
 
-    const applySession = (session: AccountSessionState['session']) => {
+    const applySession = (session: AccountSessionState['session'], offline = false) => {
       const sequence = ++identitySequence;
-      setState({ session, username: null, loading: false, error: null });
-      if (!session) return;
+      setState({ session, username: null, offline, loading: false, error: null });
+      if (!session || offline) return;
       void getMyProfile()
         .then((profile) => {
           if (active && sequence === identitySequence) {
@@ -40,10 +41,16 @@ export function useAccountSession(): AccountSessionState {
       updateRefresh(AppState.currentState);
       appStateSubscription = AppState.addEventListener('change', updateRefresh);
 
-      void supabase.auth.getSession().then(({ data, error }) => {
+      void supabase.auth.getSession().then(async ({ data, error }) => {
         if (!active) return;
         if (error) {
-          setState({ session: null, username: null, loading: false, error: toAccountError(error).message });
+          const persistedSession = await getPersistedAccountSession().catch(() => null);
+          if (!active) return;
+          if (persistedSession) {
+            applySession(persistedSession, true);
+            return;
+          }
+          setState({ session: null, username: null, offline: false, loading: false, error: toAccountError(error).message });
           return;
         }
         applySession(data.session);
@@ -59,7 +66,7 @@ export function useAccountSession(): AccountSessionState {
         supabase.auth.stopAutoRefresh();
       };
     } catch (error) {
-      setState({ session: null, username: null, loading: false, error: toAccountError(error).message });
+      setState({ session: null, username: null, offline: false, loading: false, error: toAccountError(error).message });
       return () => {
         active = false;
         appStateSubscription?.remove();

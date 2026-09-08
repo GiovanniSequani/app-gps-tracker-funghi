@@ -47,6 +47,8 @@ export type ArchiveData = {
 export type AccountSessionState = {
   session: Session | null;
   username: string | null;
+  /** Sessione recuperata dal dispositivo mentre Auth non era raggiungibile. */
+  offline: boolean;
   loading: boolean;
   error: string | null;
 };

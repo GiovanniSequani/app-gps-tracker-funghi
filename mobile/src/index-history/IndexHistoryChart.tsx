@@ -84,6 +84,7 @@ export function IndexHistoryChart({
   const [selectedIndex, setSelectedIndex] = React.useState(currentIndex);
   const selectedIndexRef = React.useRef(currentIndex);
   const gestureDirectionRef = React.useRef<'pending' | 'horizontal' | 'vertical'>('pending');
+  const gestureLeftRef = React.useRef(0);
   const selectionX = React.useRef(new Animated.Value(currentX)).current;
   const frameRef = React.useRef<number | null>(null);
   const pendingIndexRef = React.useRef<number | null>(null);
@@ -192,19 +193,23 @@ export function IndexHistoryChart({
     onMoveShouldSetPanResponderCapture: () => true,
     onPanResponderGrant: (event) => {
       gestureDirectionRef.current = 'pending';
+      gestureLeftRef.current = event.nativeEvent.pageX - event.nativeEvent.locationX;
       selectAtX(event.nativeEvent.locationX);
     },
-    onPanResponderMove: (event, gesture) => {
-      if (gestureDirectionRef.current === 'pending' && Math.max(Math.abs(gesture.dx), Math.abs(gesture.dy)) >= 3) {
-        gestureDirectionRef.current = Math.abs(gesture.dx) >= Math.abs(gesture.dy)
-          ? 'horizontal'
-          : 'vertical';
+    onPanResponderMove: (_event, gesture) => {
+      const absX = Math.abs(gesture.dx);
+      const absY = Math.abs(gesture.dy);
+      if (gestureDirectionRef.current === 'pending') {
+        if (absX >= 4) gestureDirectionRef.current = 'horizontal';
+        else if (absY >= 12 && absY > absX * 1.5) gestureDirectionRef.current = 'vertical';
       }
-      if (gestureDirectionRef.current !== 'vertical') selectAtX(event.nativeEvent.locationX);
+      if (gestureDirectionRef.current !== 'vertical') {
+        selectAtX(gesture.moveX - gestureLeftRef.current);
+      }
     },
     onPanResponderRelease: finishGesture,
     onPanResponderTerminate: finishGesture,
-    onPanResponderTerminationRequest: () => gestureDirectionRef.current !== 'horizontal',
+    onPanResponderTerminationRequest: () => gestureDirectionRef.current === 'vertical',
     onShouldBlockNativeResponder: () => gestureDirectionRef.current !== 'vertical',
   }), [finishGesture, selectAtX]);
   const forecastProps = React.useMemo(() => futureDays.length > 0 ? {
@@ -368,20 +373,20 @@ const styles = StyleSheet.create({
   },
   headingRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 },
   title: { color: COLORS.text, fontSize: 16, fontWeight: '800' },
-  period: { marginTop: 2, color: COLORS.muted, fontSize: 11 },
+  period: { marginTop: 2, color: COLORS.muted, fontSize: 13 },
   unit: { color: COLORS.muted, fontSize: 11, fontWeight: '700' },
   legend: { marginTop: 10, marginBottom: 4, flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 14 },
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   legendLine: { width: 18, height: 3, borderRadius: 2 },
   currentLegendMark: { width: 7, height: 7, borderRadius: 1, backgroundColor: COLORS.current },
-  legendText: { color: COLORS.muted, fontSize: 10, fontWeight: '700' },
+  legendText: { color: COLORS.muted, fontSize: 12, fontWeight: '700' },
   selectionSummary: { marginTop: 6, marginBottom: 8, minHeight: 54, paddingHorizontal: 10, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 10, borderWidth: 1, borderColor: COLORS.border, borderRadius: 8, backgroundColor: COLORS.selectionSurface },
   selectionDateBlock: { flex: 1, minWidth: 0 },
-  selectionLabel: { color: COLORS.muted, fontSize: 8, fontWeight: '800', letterSpacing: 0.6 },
-  selectionDate: { marginTop: 2, color: COLORS.text, fontSize: 12, fontWeight: '800' },
+  selectionLabel: { color: COLORS.muted, fontSize: 11, fontWeight: '700' },
+  selectionDate: { marginTop: 2, color: COLORS.text, fontSize: 14, fontWeight: '700' },
   selectionScore: { minWidth: 58, alignItems: 'flex-end' },
-  selectionSpecies: { fontSize: 9, fontWeight: '800' },
-  selectionValue: { marginTop: 1, color: COLORS.text, fontSize: 15, fontWeight: '900', fontVariant: ['tabular-nums'] },
+  selectionSpecies: { fontSize: 11, fontWeight: '700' },
+  selectionValue: { marginTop: 1, color: COLORS.text, fontSize: 17, fontWeight: '800', fontVariant: ['tabular-nums'] },
   axisText: { color: COLORS.muted, fontSize: 9 },
   selectionPlot: { position: 'absolute', top: GIFTED_CHART_TOP_INSET, height: CHART_HEIGHT, overflow: 'visible', zIndex: 30 },
   selectionLine: { width: 1.5, height: CHART_HEIGHT, backgroundColor: COLORS.selection },

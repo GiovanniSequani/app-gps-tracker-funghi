@@ -235,7 +235,7 @@ export default function IndexAnalysisScreen({
         {historyState.status === 'outside' && (
           <View style={styles.historyStateBlock}>
             <Text style={styles.stateTitle}>Storico fuori copertura</Text>
-            <Text style={styles.stateText}>Lo storico dell’indice non copre questa coordinata.</Text>
+            <Text style={styles.stateText}>Lo storico dell’indice non è disponibile in questa zona.</Text>
           </View>
         )}
         {(historyState.status === 'error' || historyState.status === 'unavailable') && (
@@ -266,7 +266,7 @@ export default function IndexAnalysisScreen({
         {state.status === 'outside' && (
           <View style={styles.stateBlock}>
             <Text style={styles.stateTitle}>Punto fuori copertura</Text>
-            <Text style={styles.stateText}>La griglia dell’indice non copre questa coordinata.</Text>
+            <Text style={styles.stateText}>L’indice non è disponibile in questa zona.</Text>
           </View>
         )}
         {(state.status === 'error' || state.status === 'unavailable') && (
@@ -352,8 +352,8 @@ const styles = StyleSheet.create({
     borderBottomColor: COLORS.border,
   },
   backButton: {
-    width: 40,
-    height: 40,
+    width: 44,
+    height: 44,
     marginRight: 9,
     alignItems: 'center',
     justifyContent: 'center',
@@ -363,15 +363,15 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.surfaceRaised,
   },
   headerText: { flex: 1, minWidth: 0 },
-  title: { color: COLORS.text, fontSize: 20, lineHeight: 25, fontWeight: '900' },
-  coordinates: { marginTop: 2, color: COLORS.secondary, fontSize: 13, fontVariant: ['tabular-nums'] },
-  date: { marginTop: 2, color: COLORS.muted, fontSize: 12 },
+  title: { color: COLORS.text, fontSize: 22, lineHeight: 27, fontWeight: '800' },
+  coordinates: { marginTop: 2, color: COLORS.secondary, fontSize: 14, fontVariant: ['tabular-nums'] },
+  date: { marginTop: 2, color: COLORS.muted, fontSize: 13 },
   scroll: { flex: 1 },
   content: { maxWidth: 720, alignSelf: 'center', paddingBottom: 24 },
   stateBlock: { minHeight: 160, padding: 24, alignItems: 'center', justifyContent: 'center', gap: 10 },
   historyStateBlock: { minHeight: 190, padding: 24, alignItems: 'center', justifyContent: 'center', gap: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: COLORS.border },
   stateTitle: { color: COLORS.text, fontSize: 16, fontWeight: '800', textAlign: 'center' },
-  stateText: { color: COLORS.muted, fontSize: 13, lineHeight: 19, textAlign: 'center' },
+  stateText: { color: COLORS.muted, fontSize: 14, lineHeight: 21, textAlign: 'center' },
   stateError: { color: COLORS.coral },
   retryButton: {
     minHeight: 40,
@@ -394,30 +394,30 @@ const styles = StyleSheet.create({
   scoreValue: { flexShrink: 1, color: COLORS.text, fontSize: 27, fontWeight: '900', fontVariant: ['tabular-nums'] },
   scoreUnit: { marginLeft: 3, color: COLORS.muted, fontSize: 11 },
   switch: { marginHorizontal: 16, marginTop: 16, padding: 3, flexDirection: 'row', gap: 3, borderWidth: 1, borderColor: COLORS.borderStrong, borderRadius: 8, backgroundColor: COLORS.background },
-  switchButton: { flex: 1, minWidth: 0, minHeight: 40, alignItems: 'center', justifyContent: 'center', borderRadius: 5 },
+  switchButton: { flex: 1, minWidth: 0, minHeight: 48, alignItems: 'center', justifyContent: 'center', borderRadius: 5 },
   switchButtonSelected: { backgroundColor: '#26372A' },
-  switchText: { color: COLORS.muted, fontSize: 13, fontWeight: '800' },
+  switchText: { color: COLORS.muted, fontSize: 15, fontWeight: '700' },
   switchTextSelected: { color: COLORS.text },
   finferliNotice: { marginTop: 16, padding: 18, borderBottomWidth: 1, borderBottomColor: COLORS.border },
   noticeTitle: { color: COLORS.text, fontSize: 16, fontWeight: '800' },
-  noticeText: { minWidth: 0, marginTop: 8, color: COLORS.secondary, fontSize: 13, lineHeight: 20 },
+  noticeText: { minWidth: 0, marginTop: 8, color: COLORS.secondary, fontSize: 15, lineHeight: 22 },
   factorSection: { marginTop: 16, borderBottomWidth: 1, borderBottomColor: COLORS.border },
   factorSectionHeader: { minHeight: 48, paddingHorizontal: 14, paddingVertical: 11, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderLeftWidth: 4, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: COLORS.border },
   factorSectionTitle: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  factorSectionTitleText: { fontSize: 14, fontWeight: '900' },
+  factorSectionTitleText: { fontSize: 16, fontWeight: '800' },
   factorCount: { minWidth: 26, paddingHorizontal: 7, paddingVertical: 2, borderWidth: 1, borderRadius: 999, fontSize: 11, fontWeight: '800', textAlign: 'center' },
   factor: { marginHorizontal: 16, paddingVertical: 14, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: COLORS.border },
-  factorHeading: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 },
+  factorHeading: { alignItems: 'stretch', gap: 8 },
   factorTitleRow: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 7 },
-  factorTitle: { flexShrink: 1, color: COLORS.text, fontSize: 13, fontWeight: '800' },
-  helpButton: { width: 28, height: 28, alignItems: 'center', justifyContent: 'center' },
-  rating: { maxWidth: '47%', paddingHorizontal: 7, paddingVertical: 4, borderWidth: 1, borderRadius: 999 },
-  ratingText: { fontSize: 10, lineHeight: 13, fontWeight: '800', textAlign: 'center' },
+  factorTitle: { flexShrink: 1, color: COLORS.text, fontSize: 16, fontWeight: '700' },
+  helpButton: { width: 44, height: 44, marginVertical: -9, alignItems: 'center', justifyContent: 'center' },
+  rating: { alignSelf: 'flex-start', paddingHorizontal: 9, paddingVertical: 5, borderWidth: 1, borderRadius: 999 },
+  ratingText: { fontSize: 13, lineHeight: 17, fontWeight: '700' },
   helpDisclosure: { marginTop: 8, padding: 11, borderWidth: 1, borderColor: COLORS.borderStrong, borderRadius: 7, backgroundColor: COLORS.background },
-  helpText: { color: COLORS.secondary, fontSize: 12, lineHeight: 18 },
+  helpText: { color: COLORS.secondary, fontSize: 14, lineHeight: 21 },
   detailList: { marginTop: 9, gap: 7 },
   detailRow: { flexDirection: 'row', alignItems: 'flex-start' },
   detailBullet: { width: 5, height: 5, marginTop: 7, marginRight: 8, borderRadius: 3 },
-  detailText: { flex: 1, minWidth: 0, color: COLORS.secondary, fontSize: 12, lineHeight: 18 },
-  emptyText: { padding: 16, color: COLORS.muted, fontSize: 12 },
+  detailText: { flex: 1, minWidth: 0, color: COLORS.secondary, fontSize: 14, lineHeight: 21 },
+  emptyText: { padding: 16, color: COLORS.muted, fontSize: 14 },
 });

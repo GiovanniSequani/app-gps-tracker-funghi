@@ -6,11 +6,10 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
-import { Check, RotateCcw, Trash2, X } from 'lucide-react-native';
+import { Check, Minus, Plus, RotateCcw, Trash2, X } from 'lucide-react-native';
 import {
   deleteTrackMushroomMarker,
   listTrackMushroomMarkers,
@@ -73,10 +72,12 @@ export default function CloudTrackEditor(props: {
   const [start, setStart] = React.useState(initialTrim.start);
   const [end, setEnd] = React.useState(initialTrim.end);
   const [markers, setMarkers] = React.useState(edit.mushroomMarkers);
+  const [section, setSection] = React.useState<'trim' | 'mushrooms'>('trim');
   const [selectedSpecies, setSelectedSpecies] = React.useState<MushroomSpecies>('porcini');
-  const [countText, setCountText] = React.useState('1');
+  const [count, setCount] = React.useState(1);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [markerNotice, setMarkerNotice] = React.useState<string | null>(null);
 
   const selectedPoint = props.selectedPointIndex === null
     || props.selectedPointIndex < start
@@ -92,11 +93,24 @@ export default function CloudTrackEditor(props: {
     ...totals,
     [marker.species]: totals[marker.species] + marker.count,
   }), { porcini: 0, finferli: 0 }), [markers]);
+  const originalCloudTotals = React.useMemo(() => initialMarkers.current.reduce((totals, marker) => ({
+    ...totals,
+    [marker.species]: totals[marker.species] + marker.count,
+  }), { porcini: 0, finferli: 0 }), []);
+  const gpxTotals = React.useMemo(() => ({
+    porcini: Math.max(0, props.route.porciniCount - originalCloudTotals.porcini),
+    finferli: Math.max(0, props.route.finferliCount - originalCloudTotals.finferli),
+  }), [originalCloudTotals.finferli, originalCloudTotals.porcini, props.route.finferliCount, props.route.porciniCount]);
 
   React.useEffect(() => {
-    setCountText(selectedMarker ? String(selectedMarker.count) : '1');
+    setCount(selectedMarker?.count ?? 1);
     setError(null);
+    setMarkerNotice(null);
   }, [props.selectedPointIndex, selectedMarker?.count, selectedSpecies]);
+
+  React.useEffect(() => {
+    if (props.selectedPointIndex !== null) setSection('mushrooms');
+  }, [props.selectedPointIndex]);
 
   React.useEffect(() => {
     props.onDraftChange(applyCloudTrackEdit(props.route, start, end, markers));
@@ -109,7 +123,6 @@ export default function CloudTrackEditor(props: {
 
   const setSelectedMarker = () => {
     if (!selectedPoint) return;
-    const count = Number(countText);
     if (!Number.isInteger(count) || count < 1 || count > 10000) {
       setError('Inserisci un numero intero da 1 a 10000.');
       return;
@@ -128,6 +141,7 @@ export default function CloudTrackEditor(props: {
       a.track_point_index - b.track_point_index || a.species.localeCompare(b.species)
     )));
     setError(null);
+    setMarkerNotice('Ritrovamento pronto. Salva tutte le modifiche per conservarlo.');
   };
 
   const removeSelectedMarker = () => {
@@ -136,6 +150,7 @@ export default function CloudTrackEditor(props: {
       marker.track_point_index === selectedPoint.pointIndex && marker.species === selectedSpecies
     )));
     setError(null);
+    setMarkerNotice('Rimozione pronta. Salva tutte le modifiche per confermarla.');
   };
 
   const resetTrim = () => updateRange(0, edit.rawPointCount - 1);
@@ -188,64 +203,88 @@ export default function CloudTrackEditor(props: {
           <TouchableOpacity style={styles.iconButton} disabled={busy} onPress={() => props.onCancel(props.route)} accessibilityLabel="Annulla modifiche"><X size={19} color={COLORS.text} /></TouchableOpacity>
         </View>
 
-        <ScrollView style={styles.body} contentContainerStyle={styles.bodyContent} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-          <View style={styles.sectionHeader}>
-            <View><Text style={styles.sectionTitle}>Taglio</Text><Text style={styles.hint}>Verde: parte mantenuta · Grigio: parte esclusa</Text></View>
-            <TouchableOpacity style={styles.resetButton} onPress={resetTrim} disabled={busy}><RotateCcw size={14} color={COLORS.muted} /><Text style={styles.resetText}>Tutta</Text></TouchableOpacity>
-          </View>
-          <TrimRangeControl pointCount={edit.rawPointCount} start={start} end={end} onChange={updateRange} />
+        <View style={styles.sectionTabs} accessibilityRole="tablist">
+          <TouchableOpacity
+            style={[styles.sectionTab, section === 'trim' && styles.sectionTabActive]}
+            onPress={() => setSection('trim')}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: section === 'trim' }}
+          >
+            <Text style={[styles.sectionTabText, section === 'trim' && styles.sectionTabTextActive]}>Accorcia</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.sectionTab, section === 'mushrooms' && styles.sectionTabActive]}
+            onPress={() => setSection('mushrooms')}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: section === 'mushrooms' }}
+          >
+            <Text style={[styles.sectionTabText, section === 'mushrooms' && styles.sectionTabTextActive]}>Ritrovamenti</Text>
+          </TouchableOpacity>
+        </View>
 
-          <View style={styles.divider} />
-          <Text style={styles.sectionTitle}>Marker funghi</Text>
-          <Text style={styles.hint}>Tocca la traccia verde sulla mappa, poi imposta quanti funghi hai trovato in quel punto.</Text>
-          {selectedPoint ? (
-            <View style={styles.selectedPointEditor}>
-              <View style={styles.speciesSelector} accessibilityRole="radiogroup" accessibilityLabel="Specie del marker">
-                {(['porcini', 'finferli'] as const).map((species) => {
-                  const active = selectedSpecies === species;
-                  return (
-                    <TouchableOpacity
-                      key={species}
-                      style={[
-                        styles.speciesButton,
-                        active && (species === 'porcini' ? styles.speciesButtonPorcini : styles.speciesButtonFinferli),
-                      ]}
-                      onPress={() => setSelectedSpecies(species)}
-                      disabled={busy}
-                      accessibilityRole="radio"
-                      accessibilityState={{ selected: active }}
-                      accessibilityLabel={species === 'porcini' ? 'Porcini' : 'Finferli'}
-                    >
-                      <Text style={[
-                        styles.speciesButtonText,
-                        active && (species === 'porcini' ? styles.speciesButtonTextPorcini : styles.speciesButtonTextFinferli),
-                      ]}>
-                        {species === 'porcini' ? 'Porcini' : 'Finferli'}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
+        <ScrollView style={styles.body} contentContainerStyle={styles.bodyContent} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+          {section === 'trim' ? (
+            <>
+              <View style={styles.sectionHeader}>
+                <Text style={styles.hint}>Verde: parte mantenuta · Grigio: parte esclusa</Text>
+                <TouchableOpacity style={styles.resetButton} onPress={resetTrim} disabled={busy} accessibilityLabel="Ripristina tutta la traccia"><RotateCcw size={14} color={COLORS.muted} /><Text style={styles.resetText}>Tutta</Text></TouchableOpacity>
               </View>
-              <View style={styles.markerEditor}>
-                <View style={styles.pointCopy}>
-                  <Text style={styles.pointTitle}>Punto {selectedPoint.pointIndex + 1}</Text>
-                  <Text style={styles.pointCoords}>{selectedPoint.latitude.toFixed(5)}, {selectedPoint.longitude.toFixed(5)}</Text>
+              <TrimRangeControl pointCount={edit.rawPointCount} start={start} end={end} onChange={updateRange} />
+            </>
+          ) : (
+            <>
+              <View style={styles.markerGuide}>
+                <Text style={styles.markerGuideTitle}>{selectedPoint ? 'Punto selezionato' : 'Scegli un punto'}</Text>
+                <Text style={styles.hint}>{selectedPoint ? 'Scegli specie e quantità, poi conferma il ritrovamento.' : 'Tocca un punto della traccia verde sulla mappa.'}</Text>
+                {selectedPoint && <Text style={styles.pointCoords}>{selectedPoint.latitude.toFixed(5)}, {selectedPoint.longitude.toFixed(5)}</Text>}
+              </View>
+              {selectedPoint ? (
+                <View style={styles.selectedPointEditor}>
+                  <View style={styles.speciesSelector} accessibilityRole="radiogroup" accessibilityLabel="Specie del ritrovamento">
+                    {(['porcini', 'finferli'] as const).map((species) => {
+                      const active = selectedSpecies === species;
+                      return (
+                        <TouchableOpacity
+                          key={species}
+                          style={[
+                            styles.speciesButton,
+                            active && (species === 'porcini' ? styles.speciesButtonPorcini : styles.speciesButtonFinferli),
+                          ]}
+                          onPress={() => setSelectedSpecies(species)}
+                          disabled={busy}
+                          accessibilityRole="radio"
+                          accessibilityState={{ selected: active }}
+                          accessibilityLabel={species === 'porcini' ? 'Porcini' : 'Finferli'}
+                        >
+                          <Text style={[
+                            styles.speciesButtonText,
+                            active && (species === 'porcini' ? styles.speciesButtonTextPorcini : styles.speciesButtonTextFinferli),
+                          ]}>
+                            {species === 'porcini' ? 'Porcini' : 'Finferli'}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                  <View style={styles.quantityRow}>
+                    <Text style={styles.quantityTitle}>Quantità</Text>
+                    <View style={styles.quantityControl} accessibilityRole="adjustable" accessibilityLabel={`Quantità di ${selectedSpecies}`} accessibilityValue={{ now: count, min: 1, max: 10000 }}>
+                      <TouchableOpacity style={styles.quantityButton} onPress={() => setCount((value) => Math.max(1, value - 1))} disabled={busy || count <= 1} accessibilityLabel="Diminuisci quantità"><Minus size={18} color={COLORS.text} /></TouchableOpacity>
+                      <View style={styles.quantityValue}><Text style={styles.quantityText}>{count}</Text></View>
+                      <TouchableOpacity style={styles.quantityButton} onPress={() => setCount((value) => Math.min(10000, value + 1))} disabled={busy || count >= 10000} accessibilityLabel="Aumenta quantità"><Plus size={18} color={COLORS.text} /></TouchableOpacity>
+                    </View>
+                  </View>
+                  <View style={styles.markerActions}>
+                    {selectedMarker && <TouchableOpacity style={styles.markerDelete} onPress={removeSelectedMarker} disabled={busy} accessibilityLabel={`Rimuovi ritrovamento ${selectedSpecies}`}><Trash2 size={17} color={COLORS.red} /><Text style={styles.markerDeleteText}>Rimuovi</Text></TouchableOpacity>}
+                    <TouchableOpacity style={styles.markerApply} onPress={setSelectedMarker} disabled={busy} accessibilityLabel={selectedMarker ? `Aggiorna ritrovamento ${selectedSpecies}` : `Aggiungi ritrovamento ${selectedSpecies}`}><Text style={styles.markerApplyText}>Conferma ritrovamento</Text></TouchableOpacity>
+                  </View>
                 </View>
-                <TextInput
-                  style={styles.countInput}
-                  value={countText}
-                  onChangeText={setCountText}
-                  keyboardType="number-pad"
-                  selectTextOnFocus
-                  maxLength={5}
-                  accessibilityLabel={`Numero di ${selectedSpecies}`}
-                />
-                <TouchableOpacity style={styles.markerSave} onPress={setSelectedMarker} disabled={busy} accessibilityLabel={selectedMarker ? `Aggiorna marker ${selectedSpecies}` : `Aggiungi marker ${selectedSpecies}`}><Check size={17} color={COLORS.bg} /></TouchableOpacity>
-                {selectedMarker && <TouchableOpacity style={styles.markerDelete} onPress={removeSelectedMarker} disabled={busy} accessibilityLabel={`Rimuovi marker ${selectedSpecies}`}><Trash2 size={17} color={COLORS.red} /></TouchableOpacity>}
-              </View>
-            </View>
-          ) : <Text style={styles.emptySelection}>Nessun punto selezionato.</Text>}
-          <Text style={styles.markerSummary}>{markerTotals.porcini} porcini · {markerTotals.finferli} finferli · quelli fuori dal taglio restano conservati ma nascosti</Text>
+              ) : null}
+              {markerNotice && <Text style={styles.markerNotice} accessibilityLiveRegion="polite">{markerNotice}</Text>}
+              <Text style={styles.markerSummary}>Nel percorso: {gpxTotals.porcini + markerTotals.porcini} porcini · {gpxTotals.finferli + markerTotals.finferli} finferli</Text>
+              <Text style={styles.markerNote}>I ritrovamenti esclusi dal taglio restano conservati ma nascosti.</Text>
+            </>
+          )}
           {error && <Text style={styles.error}>{error}</Text>}
         </ScrollView>
 
@@ -253,7 +292,7 @@ export default function CloudTrackEditor(props: {
           <TouchableOpacity style={styles.cancelButton} onPress={() => props.onCancel(props.route)} disabled={busy}><Text style={styles.cancelText}>Annulla</Text></TouchableOpacity>
           <TouchableOpacity style={styles.saveButton} onPress={() => void save()} disabled={busy}>
             {busy ? <ActivityIndicator size="small" color={COLORS.bg} /> : <Check size={17} color={COLORS.bg} />}
-            <Text style={styles.saveText}>{busy ? 'Salvataggio…' : 'Salva modifiche'}</Text>
+            <Text style={styles.saveText}>{busy ? 'Salvataggio…' : 'Salva tutte le modifiche'}</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -263,21 +302,28 @@ export default function CloudTrackEditor(props: {
 
 const styles = StyleSheet.create({
   overlay: { ...StyleSheet.absoluteFillObject, justifyContent: 'flex-end', zIndex: 150, elevation: 150 },
-  panel: { height: '58%', maxHeight: 520, backgroundColor: 'rgba(10,17,11,0.98)', borderTopWidth: 1, borderColor: COLORS.border, borderTopLeftRadius: 16, borderTopRightRadius: 16, paddingTop: 12 },
+  panel: { height: '46%', minHeight: 330, maxHeight: 410, backgroundColor: 'rgba(10,17,11,0.98)', borderTopWidth: 1, borderColor: COLORS.border, borderTopLeftRadius: 16, borderTopRightRadius: 16, paddingTop: 10 },
   header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingBottom: 10, gap: 10 },
   headerCopy: { flex: 1, minWidth: 0 },
   eyebrow: { color: COLORS.green, fontSize: 9, fontWeight: '900', letterSpacing: 1.6 },
   title: { color: COLORS.text, fontSize: 17, fontWeight: '800', marginTop: 2 },
   iconButton: { width: 38, height: 38, borderRadius: 8, borderWidth: 1, borderColor: COLORS.border, alignItems: 'center', justifyContent: 'center' },
   body: { flex: 1 },
-  bodyContent: { paddingHorizontal: 16, paddingBottom: 12, gap: 8 },
+  bodyContent: { paddingHorizontal: 16, paddingTop: 10, paddingBottom: 12, gap: 8 },
+  sectionTabs: { flexDirection: 'row', marginHorizontal: 16, padding: 3, borderRadius: 9, backgroundColor: COLORS.panel2, borderWidth: 1, borderColor: COLORS.border },
+  sectionTab: { flex: 1, minHeight: 38, borderRadius: 7, alignItems: 'center', justifyContent: 'center' },
+  sectionTabActive: { backgroundColor: '#29452e' },
+  sectionTabText: { color: COLORS.muted, fontSize: 13, fontWeight: '800' },
+  sectionTabTextActive: { color: COLORS.text },
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
   sectionTitle: { color: COLORS.text, fontSize: 13, fontWeight: '800' },
   hint: { color: COLORS.muted, fontSize: 10, lineHeight: 15, marginTop: 2 },
   resetButton: { minHeight: 32, paddingHorizontal: 9, flexDirection: 'row', alignItems: 'center', gap: 5, borderWidth: 1, borderColor: COLORS.border, borderRadius: 7 },
   resetText: { color: COLORS.muted, fontSize: 10, fontWeight: '700' },
   divider: { height: StyleSheet.hairlineWidth, backgroundColor: COLORS.border, marginVertical: 2 },
-  selectedPointEditor: { gap: 7 },
+  markerGuide: { backgroundColor: COLORS.panel2, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8 },
+  markerGuideTitle: { color: COLORS.text, fontSize: 12, fontWeight: '800' },
+  selectedPointEditor: { gap: 8 },
   speciesSelector: { flexDirection: 'row', gap: 7 },
   speciesButton: { flex: 1, minHeight: 36, borderRadius: 8, borderWidth: 1, borderColor: COLORS.border, backgroundColor: COLORS.panel2, alignItems: 'center', justifyContent: 'center' },
   speciesButtonPorcini: { backgroundColor: COLORS.porcini, borderColor: '#c57a43' },
@@ -285,15 +331,21 @@ const styles = StyleSheet.create({
   speciesButtonText: { color: COLORS.muted, fontSize: 11, fontWeight: '800' },
   speciesButtonTextPorcini: { color: '#fff' },
   speciesButtonTextFinferli: { color: '#111' },
-  markerEditor: { flexDirection: 'row', alignItems: 'center', gap: 7, backgroundColor: COLORS.panel2, borderRadius: 8, padding: 8 },
-  pointCopy: { flex: 1, minWidth: 0 },
-  pointTitle: { color: COLORS.text, fontSize: 12, fontWeight: '800' },
   pointCoords: { color: COLORS.muted, fontSize: 9, marginTop: 2 },
-  countInput: { width: 58, height: 38, borderWidth: 1, borderColor: COLORS.border, borderRadius: 7, color: COLORS.text, backgroundColor: COLORS.bg, paddingHorizontal: 8, textAlign: 'center', fontWeight: '800' },
-  markerSave: { width: 38, height: 38, borderRadius: 7, backgroundColor: COLORS.green, alignItems: 'center', justifyContent: 'center' },
-  markerDelete: { width: 38, height: 38, borderRadius: 7, borderWidth: 1, borderColor: '#6c3c3c', alignItems: 'center', justifyContent: 'center' },
-  emptySelection: { color: COLORS.amber, fontSize: 11, paddingVertical: 8 },
-  markerSummary: { color: COLORS.muted, fontSize: 9, lineHeight: 14 },
+  quantityRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
+  quantityTitle: { color: COLORS.text, fontSize: 12, fontWeight: '800' },
+  quantityControl: { flexDirection: 'row', alignItems: 'stretch', minHeight: 46 },
+  quantityButton: { width: 42, borderWidth: 1, borderColor: COLORS.border, backgroundColor: COLORS.bg, alignItems: 'center', justifyContent: 'center' },
+  quantityValue: { minWidth: 54, paddingHorizontal: 6, borderTopWidth: 1, borderBottomWidth: 1, borderColor: COLORS.border, alignItems: 'center', justifyContent: 'center' },
+  quantityText: { color: COLORS.text, fontSize: 16, fontWeight: '900', lineHeight: 19 },
+  markerActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8 },
+  markerApply: { minHeight: 42, paddingHorizontal: 16, borderRadius: 8, borderWidth: 1, borderColor: COLORS.amber, backgroundColor: '#302912', alignItems: 'center', justifyContent: 'center' },
+  markerApplyText: { color: '#f2d693', fontSize: 12, fontWeight: '800' },
+  markerDelete: { minHeight: 42, paddingHorizontal: 12, borderRadius: 8, borderWidth: 1, borderColor: '#6c3c3c', flexDirection: 'row', gap: 6, alignItems: 'center', justifyContent: 'center' },
+  markerDeleteText: { color: COLORS.red, fontSize: 12, fontWeight: '800' },
+  markerNotice: { color: COLORS.amber, fontSize: 10, lineHeight: 15, fontWeight: '700' },
+  markerSummary: { color: COLORS.text, fontSize: 11, lineHeight: 16, fontWeight: '700' },
+  markerNote: { color: COLORS.muted, fontSize: 9, lineHeight: 14 },
   error: { color: '#ffaaaa', backgroundColor: '#351d1d', borderRadius: 7, padding: 9, fontSize: 10, lineHeight: 15 },
   actions: { flexDirection: 'row', gap: 8, paddingHorizontal: 16, paddingTop: 9, paddingBottom: 14, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: COLORS.border },
   cancelButton: { flex: 1, minHeight: 42, borderRadius: 8, borderWidth: 1, borderColor: COLORS.border, alignItems: 'center', justifyContent: 'center' },

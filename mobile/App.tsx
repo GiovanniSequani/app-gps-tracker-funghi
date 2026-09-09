@@ -13,7 +13,7 @@ import MapLibreGL, {
   PointAnnotation,
 } from '@maplibre/maplibre-react-native';
 import type { CameraStop, MapViewRef } from '@maplibre/maplibre-react-native';
-import { Activity, PanelRightOpen, Pencil, Trash2 } from 'lucide-react-native';
+import { Activity, Archive, CalendarDays, Map, Sprout, PanelRightOpen, Pencil, Trash2, Pause, Play, Square } from 'lucide-react-native';
 import * as Location from 'expo-location';
 import * as Clipboard from 'expo-clipboard';
 import * as TaskManager from 'expo-task-manager';
@@ -47,6 +47,9 @@ import { normalizeTrackName, validateTrackName } from './src/account/validation'
 import { buildGpxXml } from './src/account/gpx';
 import { filterTileSetsForIndexAccess } from './src/index-access';
 import { buildRouteEndpointMarkers } from './src/map/routeEndpoints';
+import { MushroomMarkerBadge } from './src/map/MushroomMarkerBadge';
+import { clusterMushroomFeatures, mushroomMarkersToGeoJSON, type MushroomMapMarker } from './src/map/mushroomMarkers';
+import { IndexDateCalendarModal } from './src/map/IndexDateCalendarModal';
 import {
   canAppendRecordingPoint,
   isRecordingSession,
@@ -357,22 +360,6 @@ function locationToCoordinate(location: Location.LocationObject): Coordinate {
   };
 }
 
-function markersToGeoJSON(
-  markers: MarkerData[],
-  tipo: 'Porcino' | 'Finferlo'
-): GeoJSON.FeatureCollection {
-  return {
-    type: 'FeatureCollection',
-    features: markers
-      .filter((m) => m.tipo === tipo)
-      .map((m) => ({
-        type: 'Feature',
-        geometry: { type: 'Point', coordinates: [m.longitude, m.latitude] },
-        properties: { name: m.name },
-      })),
-  };
-}
-
 function archiveRouteToMapRoute(route: ArchiveMapRoute): RouteData {
   const coordinate = (point: { latitude: number; longitude: number; timestamp?: number | null }): Coordinate => ({
     latitude: point.latitude,
@@ -460,8 +447,12 @@ export default function App() {
     && (
       fullIndexAccess
       || (
-        accountLifecycle.access === null
-        && (accountSession.offline || Boolean(accountLifecycle.error))
+        !accountLifecycle.authoritativeRestriction
+        && (
+          accountSession.offline
+          || Boolean(accountLifecycle.error)
+          || accountLifecycle.cachedFullAccessExpired
+        )
       )
     ),
   );
@@ -499,17 +490,19 @@ export default function App() {
   const cloudEditRequestSequence = React.useRef(0);
 
   React.useEffect(() => {
-    if (!indexAccessReady || fullIndexAccess) return;
+    const mustClearPrivateMapData = !accountSession.session || accountLifecycle.authoritativeRestriction;
+    if (!indexAccessReady || !mustClearPrivateMapData) return;
     setCloudRoutesOnMap([]);
     setCloudEditRequest(null);
     setAddedRoutes([]);
     setRoutesOnMap([]);
-  }, [fullIndexAccess, indexAccessReady]);
+  }, [accountLifecycle.authoritativeRestriction, accountSession.session, indexAccessReady]);
   const [highlightedRoute, setHighlightedRoute] = React.useState<string | null>(null);
   const [activeLayer, setActiveLayer] = React.useState<ActiveLayer>('off');
   const [tileDate, setTileDate] = React.useState(() => getDefaultTileSet().date);
   const [tileVersion, setTileVersion] = React.useState(() => getDefaultTileSet().version);
   const [tileSets, setTileSets] = React.useState<TileSet[]>([]);
+  const [allTileSets, setAllTileSets] = React.useState<TileSet[]>([]);
   const [tileOpacity, setTileOpacity] = React.useState(0.85);
   const [tilesLoading, setTilesLoading] = React.useState(true);
   const [tilesError, setTilesError] = React.useState<string | null>(null);
@@ -537,13 +530,31 @@ export default function App() {
       setIndexAccessNoticeOpen(false);
       return;
     }
+    const unavailableOffline = Boolean(
+      accountSession.session
+      && !accountLifecycle.authoritativeRestriction
+      && (accountLifecycle.error || accountLifecycle.cachedFullAccessExpired),
+    );
+    if (unavailableOffline) {
+      indexAccessNoticeKeyRef.current = null;
+      setIndexAccessNoticeOpen(false);
+      return;
+    }
     const key = accountSession.session
       ? `${accountSession.session.user.id}:${accountLifecycle.access?.account_state ?? 'unknown'}:${accountLifecycle.access?.restriction_reason ?? 'unknown'}`
       : 'guest';
     if (indexAccessNoticeKeyRef.current === key) return;
     indexAccessNoticeKeyRef.current = key;
     setIndexAccessNoticeOpen(true);
-  }, [accountLifecycle.access, accountSession.session, fullIndexAccess, indexAccessReady]);
+  }, [
+    accountLifecycle.access,
+    accountLifecycle.authoritativeRestriction,
+    accountLifecycle.cachedFullAccessExpired,
+    accountLifecycle.error,
+    accountSession.session,
+    fullIndexAccess,
+    indexAccessReady,
+  ]);
 
   const visibleMarkers = showAll ? markers : markers.slice(0, 5);
 
@@ -771,6 +782,7 @@ export default function App() {
         const latest = allowed[0];
         if (!mounted) return;
         console.log('[tiles] Bootstrap selected latest tile set', latest);
+        setAllTileSets(available);
         setTileSets(allowed);
         setTileDate(latest.date);
         setTileVersion(latest.version);
@@ -1346,6 +1358,17 @@ export default function App() {
     setAddedRoutes((current) => current.filter((id) => id !== routeId));
   }, []);
 
+  const visibleCloudTrackIds = React.useMemo(
+    () => new Set(cloudRoutesOnMap.flatMap((route) => (
+      route.cloudRoute?.routeId ? [route.cloudRoute.routeId] : []
+    ))),
+    [cloudRoutesOnMap],
+  );
+
+  const removeCloudTrackFromMap = React.useCallback((trackId: string) => {
+    removeRouteFromMap(`cloud:${trackId}`);
+  }, [removeRouteFromMap]);
+
   const handleLocalRouteArchived = React.useCallback((routeId: string) => {
     setAddedRoutes((current) => current.filter((id) => id !== routeId));
     setRoutesOnMap((current) => current.filter((route) => route.route_id !== routeId));
@@ -1478,6 +1501,7 @@ export default function App() {
       tileVersion={tileVersion}
       setTileVersion={setTileVersion}
       tileSets={tileSets}
+      allTileSets={allTileSets}
       tileOpacity={tileOpacity}
       setTileOpacity={setTileOpacity}
       tilesLoading={tilesLoading}
@@ -1491,7 +1515,7 @@ export default function App() {
     />
   ), [
     recording, recordingStatus, recordingActionBusy, path, currentPosition, markers, cameraCommand, initialCenter, showAll, visibleMarkers,
-    addedRoutes, combinedRoutesOnMap, highlightedRoute, tileSets, tilesLoading, tilesError,
+    addedRoutes, combinedRoutesOnMap, highlightedRoute, tileSets, allTileSets, tilesLoading, tilesError,
     activeLayer, tileDate, tileVersion, tileOpacity,
     runCameraCommand, addMarker, removeRouteFromMap, pauseRecording, resumeRecording, stopRecording,
     previewCloudTrackEdit, finishCloudTrackEdit, cloudEditRequest, accountLifecycle.fullAccess, fullIndexAccess
@@ -1502,12 +1526,14 @@ export default function App() {
       sessionState={accountSession}
       lifecycle={accountLifecycle}
       onShowTrackOnMap={showCloudTrackOnMap}
+      onRemoveTrackFromMap={removeCloudTrackFromMap}
+      visibleCloudTrackIds={visibleCloudTrackIds}
       onEditTrackOnMap={editCloudTrackOnMap}
       onLocalRouteArchived={handleLocalRouteArchived}
       onCloudRouteRenamed={handleCloudRouteRenamed}
       cloudEditRevision={cloudEditRevision}
     />
-  ), [accountLifecycle, accountSession, showCloudTrackOnMap, editCloudTrackOnMap, handleLocalRouteArchived, handleCloudRouteRenamed, cloudEditRevision]);
+  ), [accountLifecycle, accountSession, showCloudTrackOnMap, removeCloudTrackFromMap, visibleCloudTrackIds, editCloudTrackOnMap, handleLocalRouteArchived, handleCloudRouteRenamed, cloudEditRevision]);
 
   const renderIndiceScreen = React.useCallback(() => (
     <IndiceScreen
@@ -1526,24 +1552,24 @@ export default function App() {
             headerShown: false,
             tabBarStyle: { backgroundColor: UI.bg1, borderTopWidth: 1, borderTopColor: UI.border, paddingTop: 4, paddingBottom: 8, minHeight: 62 },
             tabBarActiveTintColor: UI.greenBri,
-            tabBarInactiveTintColor: UI.textMut,
-            tabBarLabelStyle: { fontSize: 10, fontWeight: '700', letterSpacing: 1.5, textTransform: 'uppercase' },
+            tabBarInactiveTintColor: UI.textSec,
+            tabBarLabelStyle: { fontSize: 13, fontWeight: '600' },
           }}
         >
           <Tab.Screen
             name="Mappa"
             children={renderMapScreen}
-            options={{ tabBarIcon: ({ color }) => <Text style={{ fontSize: 20, color }}>🗺️</Text>, tabBarLabel: 'Mappa' }}
+            options={{ tabBarIcon: ({ color }) => <Map size={23} color={color} />, tabBarLabel: 'Mappa' }}
           />
           <Tab.Screen
             name="Archivio"
             children={renderArchiveScreen}
-            options={{ tabBarIcon: ({ color }) => <Text style={{ fontSize: 20, color }}>📂</Text>, tabBarLabel: 'Archivio' }}
+            options={{ tabBarIcon: ({ color }) => <Archive size={23} color={color} />, tabBarLabel: 'Archivio' }}
           />
           <Tab.Screen
             name="Indice"
             children={renderIndiceScreen}
-            options={{ tabBarIcon: ({ color }) => <Text style={{ fontSize: 20, color }}>🍄</Text>, tabBarLabel: 'Indice' }}
+            options={{ tabBarIcon: ({ color }) => <Sprout size={23} color={color} />, tabBarLabel: 'Indice' }}
           />
         </Tab.Navigator>
       </NavigationContainer>
@@ -1556,7 +1582,7 @@ export default function App() {
       <IndexAccessNoticeModal
         visible={indexAccessNoticeOpen && indexAccessReady && !fullIndexAccess && authDeepLink.state === null}
         authenticated={Boolean(accountSession.session)}
-        access={accountLifecycle.access}
+        access={accountLifecycle.cachedFullAccessExpired ? null : accountLifecycle.access}
         onClose={() => setIndexAccessNoticeOpen(false)}
         onAction={() => {
           setIndexAccessNoticeOpen(false);
@@ -1619,6 +1645,7 @@ function MapCoordinatePopup(props: {
           <TouchableOpacity
             onPress={onClose}
             style={mStyles.coordinatePopupIconButton}
+            hitSlop={8}
             accessibilityRole="button"
             accessibilityLabel="Chiudi pannello coordinate"
           >
@@ -1632,6 +1659,7 @@ function MapCoordinatePopup(props: {
           <TouchableOpacity
             onPress={onCopy}
             style={mStyles.coordinatePopupIconButton}
+            hitSlop={8}
             accessibilityLabel={copied ? 'Coordinate copiate' : 'Copia coordinate'}
           >
             {copied ? (
@@ -1649,6 +1677,7 @@ function MapCoordinatePopup(props: {
           <TouchableOpacity
             onPress={onShowData}
             style={mStyles.coordinatePopupWeatherButton}
+            hitSlop={4}
             accessibilityRole="button"
             accessibilityLabel="Mostra dati meteo e terreno del punto"
           >
@@ -1658,6 +1687,7 @@ function MapCoordinatePopup(props: {
           <TouchableOpacity
             onPress={onShowAnalysis}
             style={mStyles.coordinatePopupAnalysisButton}
+            hitSlop={4}
             accessibilityRole="button"
             accessibilityLabel={fullIndexAccess ? 'Apri analisi indice del punto' : 'Scopri l’accesso completo'}
           >
@@ -1708,10 +1738,7 @@ const MemoMapCanvas = React.memo(function MemoMapCanvas(props: any) {
     currentPosGeoJSON,
     recording,
     currentPathGeoJSON,
-    porciniCount,
-    porciniGeoJSON,
-    finferliCount,
-    finferliGeoJSON,
+    mushroomMarkersGeoJSON,
     routesOnMap,
     routeEndpointMarkers,
     highlightedRoute,
@@ -1723,6 +1750,7 @@ const MemoMapCanvas = React.memo(function MemoMapCanvas(props: any) {
   } = props;
 
   const mapRef = React.useRef<MapViewRef>(null);
+  const [mapZoom, setMapZoom] = React.useState(CENTER_ZOOM_LEVEL);
   const mapViewportRef = React.useRef({ width: 0, height: 0 });
   const coordinateRequestIdRef = React.useRef(0);
   const selectedPointGeoJSON = React.useMemo(
@@ -1731,6 +1759,10 @@ const MemoMapCanvas = React.memo(function MemoMapCanvas(props: any) {
         ? coordsToGeoJSONPoint(selectedMapPoint.latitude, selectedMapPoint.longitude)
         : null,
     [selectedMapPoint?.latitude, selectedMapPoint?.longitude],
+  );
+  const visibleMushroomFeatures = React.useMemo(
+    () => clusterMushroomFeatures(mushroomMarkersGeoJSON.features, mapZoom),
+    [mapZoom, mushroomMarkersGeoJSON.features],
   );
 
   const handleMapLongPress = React.useCallback(async (feature: GeoJSON.Feature) => {
@@ -1842,6 +1874,12 @@ const MemoMapCanvas = React.memo(function MemoMapCanvas(props: any) {
         onLongPress={editingCloudTrack ? undefined : handleMapLongPress}
         onPress={editingCloudTrack ? handleMapPress : undefined}
         onRegionWillChange={() => { followLocationRef.current = false; }}
+        onRegionDidChange={(feature) => {
+          const nextZoom = feature.properties.zoomLevel;
+          if (Number.isFinite(nextZoom)) {
+            setMapZoom((current) => Math.abs(current - nextZoom) < 0.05 ? current : nextZoom);
+          }
+        }}
       >
       <Camera
         followUserLocation={false}
@@ -1898,24 +1936,6 @@ const MemoMapCanvas = React.memo(function MemoMapCanvas(props: any) {
         </ShapeSource>
       )}
 
-      {recording && porciniCount > 0 && (
-        <ShapeSource id="porcini-session-source" shape={porciniGeoJSON}>
-          <CircleLayer
-            id="porcini-session-layer"
-            style={{ circleRadius: 10, circleColor: UI.porcino, circleStrokeWidth: 1.5, circleStrokeColor: '#000' }}
-          />
-        </ShapeSource>
-      )}
-
-      {recording && finferliCount > 0 && (
-        <ShapeSource id="finferli-session-source" shape={finferliGeoJSON}>
-          <CircleLayer
-            id="finferli-session-layer"
-            style={{ circleRadius: 10, circleColor: UI.finferlo, circleStrokeWidth: 1.5, circleStrokeColor: '#000' }}
-          />
-        </ShapeSource>
-      )}
-
       {editingCloudTrack?.cloudEdit && (() => {
         const edit = editingCloudTrack.cloudEdit;
         const trim = effectiveTrim(edit.rawPointCount, edit.trimStartPointIndex, edit.trimEndPointIndex);
@@ -1944,8 +1964,6 @@ const MemoMapCanvas = React.memo(function MemoMapCanvas(props: any) {
         const isHighlighted = highlightedRoute === route.route_id;
         const isEditing = editingCloudTrack?.routeId === route.cloudRoute?.routeId;
         const pathSegments = route.pathSegments?.length ? route.pathSegments : [route.path];
-        const rPorcini = markersToGeoJSON(route.markers, 'Porcino');
-        const rFinferli = markersToGeoJSON(route.markers, 'Finferlo');
         return (
           <React.Fragment key={route.route_id ?? idx}>
             {pathSegments.map((segment, segmentIndex) => (
@@ -1966,54 +1984,26 @@ const MemoMapCanvas = React.memo(function MemoMapCanvas(props: any) {
                 />
               </ShapeSource>
             ))}
-            {rPorcini.features.length > 0 && (
-              <ShapeSource id={`saved-porcini-source-${idx}`} shape={rPorcini}>
-                <CircleLayer
-                  id={`saved-porcini-layer-${idx}`}
-                  style={{ circleRadius: isHighlighted ? 12 : 8, circleColor: '#965123', circleStrokeWidth: 1, circleStrokeColor: '#000', circleOpacity: 0.73 }}
-                />
-              </ShapeSource>
-            )}
-            {rFinferli.features.length > 0 && (
-              <ShapeSource id={`saved-finferli-source-${idx}`} shape={rFinferli}>
-                <CircleLayer
-                  id={`saved-finferli-layer-${idx}`}
-                  style={{ circleRadius: isHighlighted ? 12 : 8, circleColor: '#ffd900', circleStrokeWidth: 1, circleStrokeColor: '#000', circleOpacity: 0.73 }}
-                />
-              </ShapeSource>
-            )}
           </React.Fragment>
         );
       })}
-      {routesOnMap.flatMap((route: RouteData) => {
-        const edit = route.cloudRoute?.cloudEdit;
-        if (!edit) return [];
-        const trim = effectiveTrim(edit.rawPointCount, edit.trimStartPointIndex, edit.trimEndPointIndex);
-        return visibleMushroomMarkers(edit.mushroomMarkers, trim.start, trim.end).map((marker) => (
-          <PointAnnotation
-            key={`cloud-marker-${route.cloudRoute!.routeId}-${marker.track_point_index}-${marker.species}`}
-            id={`cloud-marker-${route.cloudRoute!.routeId}-${marker.track_point_index}-${marker.species}`}
-            coordinate={[marker.longitude, marker.latitude]}
-            anchor={{ x: marker.species === 'porcini' ? 1 : 0, y: 0.5 }}
-          >
-            <View
-              collapsable={false}
-              accessible
-              accessibilityRole="image"
-              accessibilityLabel={`${marker.count} ${marker.species} al punto ${marker.track_point_index + 1}`}
-              style={[
-                mStyles.cloudMushroomMarker,
-                marker.species === 'porcini' ? mStyles.cloudMushroomMarkerPorcini : mStyles.cloudMushroomMarkerFinferli,
-              ]}
-            >
-              <Text style={[
-                mStyles.cloudMushroomMarkerText,
-                marker.species === 'porcini' ? mStyles.cloudMushroomMarkerTextPorcini : mStyles.cloudMushroomMarkerTextFinferli,
-              ]}>{marker.species === 'porcini' ? 'P' : 'F'} {marker.count}</Text>
-            </View>
-          </PointAnnotation>
-        ));
-      })}
+      {visibleMushroomFeatures.length > 0 && (
+        <>
+          {visibleMushroomFeatures.map((feature, index: number) => {
+            const { species, count } = feature.properties;
+            return (
+              <PointAnnotation
+                key={`mushroom-${feature.id ?? index}-${species}-${count}`}
+                id={`mushroom-${index}-${species}-${count}`}
+                coordinate={[feature.geometry.coordinates[0], feature.geometry.coordinates[1]]}
+                anchor={{ x: 0.5, y: 0.5 }}
+              >
+                <MushroomMarkerBadge {...feature.properties} />
+              </PointAnnotation>
+            );
+          })}
+        </>
+      )}
       {selectedEditPoint && (
         <PointAnnotation
           id="cloud-edit-selected-point"
@@ -2080,14 +2070,15 @@ const QuickIndexPanel = React.memo(function QuickIndexPanel(props: any) {
     activeLayer, setActiveLayer,
     tileDate, setTileDate,
     tileVersion, setTileVersion,
-    tileSets, tileOpacity, setTileOpacity,
-    tilesLoading,
+    tileSets, allTileSets, tileOpacity, setTileOpacity,
+    tilesLoading, onShowIndexAccessNotice,
   } = props;
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
   const [indexPanelCollapsed, setIndexPanelCollapsed] = React.useState(false);
+  const [calendarOpen, setCalendarOpen] = React.useState(false);
   const [panelSide, setPanelSide] = React.useState<'left' | 'right'>('right');
-  const panelWidth = indexPanelCollapsed ? 112 : 196;
-  const panelHeight = indexPanelCollapsed ? 56 : 230;
+  const panelWidth = indexPanelCollapsed ? 144 : 190;
+  const panelHeight = indexPanelCollapsed ? 50 : 228;
   const [panelPos, setPanelPos] = React.useState(() => ({
     x: Math.max(8, screenWidth - panelWidth - 8),
     y: 96,
@@ -2097,7 +2088,13 @@ const QuickIndexPanel = React.memo(function QuickIndexPanel(props: any) {
   const activeTileIndex = tileSets.findIndex((tile: TileSet) => tile.date === tileDate && tile.version === tileVersion);
   const canSelectOlderTile = activeTileIndex >= 0 && activeTileIndex < tileSets.length - 1;
   const canSelectNewerTile = activeTileIndex > 0;
-  const selectedTileLabel = tileDate && tileVersion ? `${tileDate.replace(/_/g, '/')}  v${tileVersion}` : 'Nessun dataset';
+  const selectedTileLabel = React.useMemo(() => {
+    if (!tileDate) return 'Data non disponibile';
+    const parsed = new Date(`${tileDate.replace(/_/g, '-')}T12:00:00`);
+    return Number.isNaN(parsed.getTime())
+      ? tileDate.replace(/_/g, '/')
+      : parsed.toLocaleDateString('it-IT', { day: 'numeric', month: 'short', year: 'numeric' });
+  }, [tileDate]);
   const opacitySteps = [0.25, 0.5, 0.75, 1];
   const panelBounds = React.useMemo(() => {
     const minX = 8;
@@ -2154,6 +2151,7 @@ const QuickIndexPanel = React.memo(function QuickIndexPanel(props: any) {
   if (activeLayer === 'off' || tilesLoading || !tileDate || !tileVersion) return null;
 
   return (
+    <>
     <View
       style={[
         mStyles.indexPanel,
@@ -2162,12 +2160,12 @@ const QuickIndexPanel = React.memo(function QuickIndexPanel(props: any) {
       ]}
     >
       <View style={mStyles.indexPanelHeader} {...panelPanResponder.panHandlers}>
-        <Text style={mStyles.indexPanelTitle}>INDICE</Text>
+        <Text style={mStyles.indexPanelTitle}>Indice</Text>
         <View style={mStyles.indexPanelActions}>
-          <TouchableOpacity onPress={() => setIndexPanelCollapsed((value: boolean) => !value)} style={mStyles.indexCloseBtn}>
+          <TouchableOpacity onPress={() => setIndexPanelCollapsed((value: boolean) => !value)} style={mStyles.indexCloseBtn} hitSlop={{ top: 5, bottom: 5, left: 5, right: 5 }} accessibilityLabel={indexPanelCollapsed ? 'Espandi controlli indice' : 'Riduci controlli indice'}>
             <Text style={mStyles.indexCloseText}>{indexPanelCollapsed ? '+' : '-'}</Text>
           </TouchableOpacity>
-          <TouchableOpacity onPress={() => setActiveLayer('off')} style={mStyles.indexCloseBtn}>
+          <TouchableOpacity onPress={() => setActiveLayer('off')} style={mStyles.indexCloseBtn} hitSlop={{ top: 5, bottom: 5, left: 5, right: 5 }} accessibilityLabel="Nascondi indice">
             <Text style={mStyles.indexCloseText}>x</Text>
           </TouchableOpacity>
         </View>
@@ -2184,9 +2182,12 @@ const QuickIndexPanel = React.memo(function QuickIndexPanel(props: any) {
                   key={layer}
                   onPress={() => setActiveLayer(layer)}
                   style={[mStyles.indexSpeciesBtn, active && { borderColor: color, backgroundColor: `${color}33` }]}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: active }}
+                  accessibilityLabel={layer === 'porcini' ? 'Mostra indice porcini' : 'Mostra indice finferli'}
                 >
                   <Text style={[mStyles.indexSpeciesText, active && { color }]}>
-                    {layer === 'porcini' ? 'P' : 'F'}
+                    {layer === 'porcini' ? 'Porcini' : 'Finferli'}
                   </Text>
                 </TouchableOpacity>
               );
@@ -2201,13 +2202,21 @@ const QuickIndexPanel = React.memo(function QuickIndexPanel(props: any) {
             >
               <Text style={mStyles.indexArrowText}>{"<"}</Text>
             </TouchableOpacity>
-            <View style={mStyles.indexDatasetInfo}>
-              <Text style={mStyles.indexDatasetLabel}>DATA / VERSIONE</Text>
-              <Text style={mStyles.indexDatasetValue}>{selectedTileLabel}</Text>
+            <TouchableOpacity
+              style={mStyles.indexDatasetInfo}
+              onPress={() => setCalendarOpen(true)}
+              accessibilityRole="button"
+              accessibilityLabel={`Apri calendario indice, data selezionata ${selectedTileLabel}`}
+            >
+              <Text style={mStyles.indexDatasetLabel}>Data</Text>
+              <View style={mStyles.indexDatasetValueRow}>
+                <Text style={mStyles.indexDatasetValue} numberOfLines={1}>{selectedTileLabel}</Text>
+                <CalendarDays size={14} color={UI.textSec} />
+              </View>
               {tileSets.length === 0 && (
                 <Text style={mStyles.indexDatasetHint}>Lista automatica non disponibile</Text>
               )}
-            </View>
+            </TouchableOpacity>
             <TouchableOpacity
               onPress={() => selectTileAt(activeTileIndex - 1)}
               style={[mStyles.indexArrowBtn, !canSelectNewerTile && mStyles.indexArrowBtnDisabled]}
@@ -2218,7 +2227,7 @@ const QuickIndexPanel = React.memo(function QuickIndexPanel(props: any) {
           </View>
 
           <View style={mStyles.indexOpacityRow}>
-            <Text style={mStyles.indexDatasetLabel}>OPACITA'</Text>
+            <Text style={mStyles.indexDatasetLabel}>Intensità</Text>
             <View style={mStyles.indexOpacitySteps}>
               {opacitySteps.map((value) => {
                 const active = Math.abs(tileOpacity - value) < 0.01;
@@ -2229,7 +2238,7 @@ const QuickIndexPanel = React.memo(function QuickIndexPanel(props: any) {
                     style={[mStyles.indexOpacityBtn, active && mStyles.indexOpacityBtnActive]}
                   >
                     <Text style={[mStyles.indexOpacityText, active && mStyles.indexOpacityTextActive]}>
-                      {Math.round(value * 100)}
+                      {Math.round(value * 100)}%
                     </Text>
                   </TouchableOpacity>
                 );
@@ -2239,6 +2248,19 @@ const QuickIndexPanel = React.memo(function QuickIndexPanel(props: any) {
         </>
       )}
     </View>
+    <IndexDateCalendarModal
+      visible={calendarOpen}
+      selectedDate={tileDate}
+      allowedTileSets={tileSets}
+      allTileSets={allTileSets}
+      onSelect={(tile) => {
+        setTileDate(tile.date);
+        setTileVersion(tile.version);
+      }}
+      onRestrictedDate={onShowIndexAccessNotice}
+      onClose={() => setCalendarOpen(false)}
+    />
+    </>
   );
 });
 
@@ -2250,12 +2272,13 @@ function MainUI(props: any) {
     showAll, visibleMarkers, handleDeleteMarker, setShowAll,
     addedRoutes, setAddedRoutes, setRoutesOnMap, routesOnMap, removeRouteFromMap,
     highlightRoute, highlightedRoute, activeLayer, setActiveLayer,
-    tileDate, setTileDate, tileVersion, setTileVersion, tileSets,
+    tileDate, setTileDate, tileVersion, setTileVersion, tileSets, allTileSets,
     tileOpacity, setTileOpacity, tilesLoading, tilesError,
     previewCloudTrackEdit, finishCloudTrackEdit, cloudEditRequest, allowPrivateAccountData,
     fullIndexAccess, onShowIndexAccessNotice,
   } = props;
   const recordingPaused = recordingStatus === 'paused';
+  const { height: screenHeight } = useWindowDimensions();
 
   // fetch percorsi salvati quando cambiano gli addedRoutes
   React.useEffect(() => {
@@ -2311,8 +2334,34 @@ function MainUI(props: any) {
 
   // GeoJSON memoizzati
   const currentPathGeoJSON = React.useMemo(() => coordsToGeoJSONLine(path), [path]);
-  const porciniGeoJSON = React.useMemo(() => markersToGeoJSON(markers, 'Porcino'), [markers]);
-  const finferliGeoJSON = React.useMemo(() => markersToGeoJSON(markers, 'Finferlo'), [markers]);
+  const mushroomMarkersGeoJSON = React.useMemo(() => {
+    const mapMarkers: MushroomMapMarker[] = recording
+      ? markers.map((marker: MarkerData) => ({
+          latitude: marker.latitude,
+          longitude: marker.longitude,
+          species: marker.tipo === 'Porcino' ? 'porcini' : 'finferli',
+          count: 1,
+        }))
+      : [];
+    for (const route of routesOnMap as RouteData[]) {
+      mapMarkers.push(...route.markers.map((marker) => ({
+        latitude: marker.latitude,
+        longitude: marker.longitude,
+        species: marker.tipo === 'Porcino' ? 'porcini' as const : 'finferli' as const,
+        count: 1,
+      })));
+      const edit = route.cloudRoute?.cloudEdit;
+      if (!edit) continue;
+      const trim = effectiveTrim(edit.rawPointCount, edit.trimStartPointIndex, edit.trimEndPointIndex);
+      mapMarkers.push(...visibleMushroomMarkers(edit.mushroomMarkers, trim.start, trim.end).map((marker) => ({
+        latitude: marker.latitude,
+        longitude: marker.longitude,
+        species: marker.species,
+        count: marker.count,
+      })));
+    }
+    return mushroomMarkersToGeoJSON(mapMarkers);
+  }, [markers, recording, routesOnMap]);
   const routeEndpointMarkers = React.useMemo(
     () => buildRouteEndpointMarkers(routesOnMap, path, recording),
     [routesOnMap, path, recording],
@@ -2376,7 +2425,30 @@ function MainUI(props: any) {
     closeCoordinatePopup();
     setSelectedEditPointIndex(null);
     setEditingCloudRoute(route.cloudRoute);
-  }, [closeCoordinatePopup, recording]);
+    const coordinates = route.path.filter((point) => (
+      Number.isFinite(point.latitude) && Number.isFinite(point.longitude)
+    ));
+    if (coordinates.length >= 2) {
+      const latitudes = coordinates.map((point) => point.latitude);
+      const longitudes = coordinates.map((point) => point.longitude);
+      // "Modifica" è un'azione esplicita sulla traccia salvata: l'inquadratura
+      // avviene una sola volta e riserva spazio al pannello, mai durante l'editing.
+      runCameraCommand({
+        bounds: {
+          ne: [Math.max(...longitudes), Math.max(...latitudes)],
+          sw: [Math.min(...longitudes), Math.min(...latitudes)],
+        },
+        padding: {
+          paddingTop: 72,
+          paddingRight: 28,
+          paddingBottom: Math.round(Math.min(420, Math.max(280, screenHeight * 0.46))),
+          paddingLeft: 28,
+        },
+        animationDuration: 650,
+        animationMode: 'easeTo',
+      });
+    }
+  }, [closeCoordinatePopup, recording, runCameraCommand, screenHeight]);
 
   React.useEffect(() => {
     if (!cloudEditRequest || cloudEditRequest.id === lastCloudEditRequestId.current) return;
@@ -2437,10 +2509,7 @@ function MainUI(props: any) {
         currentPosGeoJSON={currentPosGeoJSON}
         recording={recording}
         currentPathGeoJSON={currentPathGeoJSON}
-        porciniCount={porciniCount}
-        porciniGeoJSON={porciniGeoJSON}
-        finferliCount={finferliCount}
-        finferliGeoJSON={finferliGeoJSON}
+        mushroomMarkersGeoJSON={mushroomMarkersGeoJSON}
         routesOnMap={routesOnMap}
         routeEndpointMarkers={routeEndpointMarkers}
         highlightedRoute={highlightedRoute}
@@ -2485,9 +2554,11 @@ function MainUI(props: any) {
         tileVersion={tileVersion}
         setTileVersion={setTileVersion}
         tileSets={tileSets}
+        allTileSets={allTileSets}
         tileOpacity={tileOpacity}
         setTileOpacity={setTileOpacity}
         tilesLoading={tilesLoading}
+        onShowIndexAccessNotice={onShowIndexAccessNotice}
       />}
 
       {/* ── OVERLAY LISTA FUNGHI (destra) ────────────────────────────────── */}
@@ -2495,14 +2566,30 @@ function MainUI(props: any) {
         <View style={mStyles.overlayRight}>
           <View style={mStyles.overlayHeader}>
             <Text style={mStyles.overlayLabel}>TROVATI</Text>
-            <View style={mStyles.overlayCount}><Text style={mStyles.overlayCountText}>{markers.length}</Text></View>
+            <View
+              style={mStyles.markerTotals}
+              accessible
+              accessibilityLabel={`${porciniCount} porcini e ${finferliCount} finferli trovati`}
+            >
+              <View style={[mStyles.markerSpeciesTotal, mStyles.markerSpeciesTotalPorcini]}>
+                <Text style={mStyles.markerSpeciesTotalText}>P {porciniCount}</Text>
+              </View>
+              <View style={[mStyles.markerSpeciesTotal, mStyles.markerSpeciesTotalFinferli]}>
+                <Text style={[mStyles.markerSpeciesTotalText, mStyles.markerSpeciesTotalTextDark]}>F {finferliCount}</Text>
+              </View>
+            </View>
           </View>
           <ScrollView style={{ maxHeight: showAll ? 280 : 130 }} showsVerticalScrollIndicator={false}>
             {visibleMarkers.map((m: MarkerData) => (
               <View key={m.name} style={mStyles.markerRow}>
-                <View style={[mStyles.markerBadge, { backgroundColor: m.tipo === 'Porcino' ? UI.porcino : UI.finferlo }]}>
-                  <Text style={mStyles.markerBadgeLetter}>{m.tipo === 'Porcino' ? 'P' : 'F'}</Text>
-                </View>
+                <MushroomMarkerBadge
+                  species={m.tipo === 'Porcino' ? 'porcini' : 'finferli'}
+                  count={1}
+                  label={m.tipo === 'Porcino' ? 'P' : 'F'}
+                  porciniCount={m.tipo === 'Porcino' ? 1 : 0}
+                  finferliCount={m.tipo === 'Finferlo' ? 1 : 0}
+                  accessibilityLabel={m.tipo}
+                />
                 <Text style={mStyles.markerName} numberOfLines={1}>{m.name}</Text>
                 <TouchableOpacity onPress={() => handleDeleteMarker(m)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                   <Trash2 size={14} color={UI.redBri} />
@@ -2582,37 +2669,12 @@ function MainUI(props: any) {
       )}
 
       {/* ── STATS BAR ─────────────────────────────────────────────────────── */}
-      {recording && (
-        <View style={mStyles.statsBar}>
-          <View style={mStyles.recordingStatusRow} accessibilityLiveRegion="polite">
-            <View style={[mStyles.recordingStatusDot, recordingPaused && mStyles.recordingStatusDotPaused]} />
-            <Text style={[mStyles.recordingStatusText, recordingPaused && mStyles.recordingStatusTextPaused]}>
-              {recordingPaused ? 'REGISTRAZIONE IN PAUSA' : 'REGISTRAZIONE ATTIVA'}
-            </Text>
-          </View>
-          <View style={mStyles.statsMetrics}>
-            <View style={mStyles.statItem}>
-              <Text style={mStyles.statValue}>{path.length}</Text>
-              <Text style={mStyles.statLabel}>GPS</Text>
-            </View>
-            <View style={mStyles.statDivider} />
-            <View style={mStyles.statItem}>
-              <Text style={[mStyles.statValue, { color: UI.porcinoHi }]}>{porciniCount}</Text>
-              <Text style={mStyles.statLabel}>PORCINI</Text>
-            </View>
-            <View style={mStyles.statDivider} />
-            <View style={mStyles.statItem}>
-              <Text style={[mStyles.statValue, { color: UI.finferloHi }]}>{finferliCount}</Text>
-              <Text style={mStyles.statLabel}>FINFERLI</Text>
-            </View>
-          </View>
-        </View>
-      )}
-
       {/* ── PULSANTE CENTRA ───────────────────────────────────────────────── */}
       {!editingCloudRoute && <>
       <TouchableOpacity
         style={recording ? mStyles.centerBtnRecording : mStyles.centerBtn}
+        accessibilityRole="button"
+        accessibilityLabel="Centra la mappa sulla mia posizione"
         onPress={() => {
           followLocationRef.current = true;
           if (currentPos) {
@@ -2628,6 +2690,8 @@ function MainUI(props: any) {
       {/* ── CONTROLLI INFERIORI ───────────────────────────────────────────── */}
       <TouchableOpacity
         style={recording ? mStyles.compassBtnRecording : mStyles.compassBtn}
+        accessibilityRole="button"
+        accessibilityLabel="Orienta la mappa verso nord"
         onPress={() => {
           runCameraCommand({
             heading: 0,
@@ -2642,60 +2706,71 @@ function MainUI(props: any) {
       </TouchableOpacity>
 
       <View style={mStyles.bottomControls}>
-        <View style={mStyles.speciesRow}>
-          <TouchableOpacity
-            style={[mStyles.speciesBtn, mStyles.speciesBtnFinferlo, (!recording || recordingPaused || path.length < 1) && mStyles.speciesBtnDisabled]}
-            onPress={() => addMarker('Finferlo')}
-            disabled={!recording || recordingPaused || path.length < 1}
-            activeOpacity={0.75}
-          >
-            <Text style={mStyles.speciesEmoji}>🌼</Text>
-            <Text style={[mStyles.speciesBtnText, { color: UI.finferloHi }]}>FINFERLO</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[mStyles.speciesBtn, mStyles.speciesBtnPorcino, (!recording || recordingPaused || path.length < 1) && mStyles.speciesBtnDisabled]}
-            onPress={() => addMarker('Porcino')}
-            disabled={!recording || recordingPaused || path.length < 1}
-            activeOpacity={0.75}
-          >
-            <Text style={mStyles.speciesEmoji}>🍄</Text>
-            <Text style={[mStyles.speciesBtnText, { color: UI.porcinoHi }]}>PORCINO</Text>
-          </TouchableOpacity>
-        </View>
         {recording ? (
-          <View style={mStyles.recordingActionsRow}>
-            <TouchableOpacity
-              style={[
-                mStyles.mainBtn,
-                mStyles.recordingActionButton,
-                recordingPaused ? mStyles.mainBtnResume : mStyles.mainBtnPause,
-                recordingActionBusy && mStyles.mainBtnDisabled,
-              ]}
-              onPress={recordingPaused ? resumeRecording : pauseRecording}
-              disabled={recordingActionBusy}
-              accessibilityRole="button"
-              accessibilityLabel={recordingPaused ? 'Riprendi registrazione' : 'Metti in pausa la registrazione'}
-              activeOpacity={0.85}
-            >
-              <Text style={mStyles.mainBtnIcon}>{recordingPaused ? '▶' : 'Ⅱ'}</Text>
-              <Text style={mStyles.mainBtnTextCompact}>{recordingPaused ? 'RIPRENDI' : 'PAUSA'}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[mStyles.mainBtn, mStyles.recordingActionButton, mStyles.mainBtnStop, recordingActionBusy && mStyles.mainBtnDisabled]}
-              onPress={() => {
-                Alert.alert('Termina registrazione', 'Vuoi terminare e salvare questo percorso?', [
-                  { text: 'Annulla', style: 'cancel' },
-                  { text: 'Termina', onPress: stopRecording },
-                ]);
-              }}
-              disabled={recordingActionBusy}
-              accessibilityRole="button"
-              accessibilityLabel="Termina registrazione"
-              activeOpacity={0.85}
-            >
-              <Text style={mStyles.mainBtnIcon}>⏹</Text>
-              <Text style={mStyles.mainBtnTextCompact}>TERMINA</Text>
-            </TouchableOpacity>
+          <View style={mStyles.recordingPanel}>
+            <View style={mStyles.recordingSummaryRow} accessibilityLiveRegion="polite">
+              <View style={mStyles.recordingStatusCompact}>
+                <View style={[mStyles.recordingStatusDot, recordingPaused && mStyles.recordingStatusDotPaused]} />
+                <Text style={[mStyles.recordingStatusText, recordingPaused && mStyles.recordingStatusTextPaused]}>
+                  {recordingPaused ? 'In pausa' : 'Registrazione attiva'}
+                </Text>
+              </View>
+              <Text style={mStyles.gpsCount}>GPS {path.length}</Text>
+            </View>
+            <View style={mStyles.speciesRow}>
+              <TouchableOpacity
+                style={[mStyles.speciesBtn, mStyles.speciesBtnPorcino, (recordingPaused || path.length < 1) && mStyles.speciesBtnDisabled]}
+                onPress={() => addMarker('Porcino')}
+                disabled={recordingPaused || path.length < 1}
+                activeOpacity={0.75}
+                accessibilityLabel={`Aggiungi porcino. Trovati finora: ${porciniCount}`}
+              >
+                <Text style={[mStyles.speciesBtnText, { color: UI.porcinoHi }]}>+ Porcino</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[mStyles.speciesBtn, mStyles.speciesBtnFinferlo, (recordingPaused || path.length < 1) && mStyles.speciesBtnDisabled]}
+                onPress={() => addMarker('Finferlo')}
+                disabled={recordingPaused || path.length < 1}
+                activeOpacity={0.75}
+                accessibilityLabel={`Aggiungi finferlo. Trovati finora: ${finferliCount}`}
+              >
+                <Text style={[mStyles.speciesBtnText, { color: UI.finferloHi }]}>+ Finferlo</Text>
+              </TouchableOpacity>
+            </View>
+            <View style={mStyles.recordingActionsRow}>
+              <TouchableOpacity
+                style={[
+                  mStyles.mainBtn,
+                  mStyles.recordingActionButton,
+                  recordingPaused ? mStyles.mainBtnResume : mStyles.mainBtnPause,
+                  recordingActionBusy && mStyles.mainBtnDisabled,
+                ]}
+                onPress={recordingPaused ? resumeRecording : pauseRecording}
+                disabled={recordingActionBusy}
+                accessibilityRole="button"
+                accessibilityLabel={recordingPaused ? 'Riprendi registrazione' : 'Metti in pausa la registrazione'}
+                activeOpacity={0.85}
+              >
+                {recordingPaused ? <Play size={17} color="#fff" /> : <Pause size={17} color="#fff" />}
+                <Text style={mStyles.mainBtnTextCompact}>{recordingPaused ? 'Riprendi' : 'Pausa'}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[mStyles.mainBtn, mStyles.recordingActionButton, mStyles.mainBtnStop, recordingActionBusy && mStyles.mainBtnDisabled]}
+                onPress={() => {
+                  Alert.alert('Termina registrazione', 'Vuoi terminare e salvare questo percorso?', [
+                    { text: 'Annulla', style: 'cancel' },
+                    { text: 'Termina', onPress: stopRecording },
+                  ]);
+                }}
+                disabled={recordingActionBusy}
+                accessibilityRole="button"
+                accessibilityLabel="Termina registrazione"
+                activeOpacity={0.85}
+              >
+                <Square size={16} color="#fff" fill="#fff" />
+                <Text style={mStyles.mainBtnTextCompact}>Termina</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         ) : (
           <TouchableOpacity
@@ -2706,8 +2781,8 @@ function MainUI(props: any) {
             accessibilityLabel="Avvia registrazione"
             activeOpacity={0.85}
           >
-            <Text style={mStyles.mainBtnIcon}>▶</Text>
-            <Text style={mStyles.mainBtnText}>AVVIA REGISTRAZIONE</Text>
+            <Play size={18} color="#fff" fill="#fff" />
+            <Text style={mStyles.mainBtnText}>Avvia registrazione</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -2935,26 +3010,27 @@ const mStyles = StyleSheet.create({
   tileStatusPillError: { position: 'absolute', top: 86, alignSelf: 'center', backgroundColor: 'rgba(140,48,48,0.92)', borderWidth: 1, borderColor: UI.redBri, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 6 },
   tileStatusText: { color: UI.textPri, fontSize: 11, fontWeight: '700' },
   indexPanel: { position: 'absolute', backgroundColor: 'rgba(10,17,11,0.94)', borderWidth: 1, borderColor: UI.borderHi, borderRadius: 10, padding: 10, gap: 9 },
-  indexPanelCollapsed: { width: 112 },
+  indexPanelCollapsed: { padding: 8, gap: 0 },
   indexPanelHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  indexPanelTitle: { color: UI.textPri, fontSize: 11, fontWeight: '900', letterSpacing: 2 },
+  indexPanelTitle: { color: UI.textPri, fontSize: 15, fontWeight: '700' },
   indexPanelActions: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  indexCloseBtn: { width: 26, height: 26, borderRadius: 6, backgroundColor: UI.bg3, alignItems: 'center', justifyContent: 'center' },
+  indexCloseBtn: { width: 34, height: 34, borderRadius: 7, backgroundColor: UI.bg3, alignItems: 'center', justifyContent: 'center' },
   indexCloseText: { color: UI.textSec, fontSize: 18, fontWeight: '800', lineHeight: 22 },
   indexSpeciesRow: { flexDirection: 'row', gap: 6 },
-  indexSpeciesBtn: { flex: 1, height: 34, borderRadius: 7, borderWidth: 1, borderColor: UI.border, backgroundColor: UI.bg2, alignItems: 'center', justifyContent: 'center' },
-  indexSpeciesText: { color: UI.textMut, fontSize: 13, fontWeight: '900' },
+  indexSpeciesBtn: { flex: 1, height: 36, borderRadius: 7, borderWidth: 1, borderColor: UI.border, backgroundColor: UI.bg2, alignItems: 'center', justifyContent: 'center' },
+  indexSpeciesText: { color: UI.textSec, fontSize: 13, fontWeight: '700' },
   indexDatasetRow: { flexDirection: 'row', alignItems: 'center', gap: 7 },
   indexArrowBtn: { width: 30, height: 38, borderRadius: 7, backgroundColor: UI.bg3, borderWidth: 1, borderColor: UI.border, alignItems: 'center', justifyContent: 'center' },
   indexArrowBtnDisabled: { opacity: 0.35 },
   indexArrowText: { color: UI.textPri, fontSize: 24, fontWeight: '700', lineHeight: 28 },
-  indexDatasetInfo: { flex: 1, minWidth: 0 },
-  indexDatasetLabel: { color: UI.textMut, fontSize: 8, fontWeight: '900', letterSpacing: 1.2 },
-  indexDatasetValue: { color: UI.textPri, fontSize: 12, fontWeight: '800', marginTop: 2 },
+  indexDatasetInfo: { flex: 1, minWidth: 0, minHeight: 38, justifyContent: 'center' },
+  indexDatasetValueRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  indexDatasetLabel: { color: UI.textSec, fontSize: 11, fontWeight: '700' },
+  indexDatasetValue: { flexShrink: 1, color: UI.textPri, fontSize: 12, fontWeight: '700', marginTop: 2 },
   indexDatasetHint: { color: UI.amberBri, fontSize: 9, fontWeight: '700', marginTop: 3 },
   indexOpacityRow: { gap: 5 },
   indexOpacitySteps: { flexDirection: 'row', gap: 5 },
-  indexOpacityBtn: { flex: 1, height: 28, borderRadius: 6, backgroundColor: UI.bg2, borderWidth: 1, borderColor: UI.border, alignItems: 'center', justifyContent: 'center' },
+  indexOpacityBtn: { flex: 1, height: 30, borderRadius: 6, backgroundColor: UI.bg2, borderWidth: 1, borderColor: UI.border, alignItems: 'center', justifyContent: 'center' },
   indexOpacityBtnActive: { backgroundColor: UI.greenDim, borderColor: UI.greenBri },
   indexOpacityText: { color: UI.textMut, fontSize: 10, fontWeight: '800' },
   indexOpacityTextActive: { color: UI.greenBri },
@@ -2964,9 +3040,13 @@ const mStyles = StyleSheet.create({
   overlayLabel: { color: UI.textMut, fontSize: 9, fontWeight: '800', letterSpacing: 2 },
   overlayCount: { backgroundColor: UI.greenDim, borderRadius: 8, paddingHorizontal: 6, paddingVertical: 1 },
   overlayCountText: { color: UI.greenBri, fontSize: 10, fontWeight: '700' },
+  markerTotals: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  markerSpeciesTotal: { minWidth: 31, borderRadius: 8, paddingHorizontal: 5, paddingVertical: 2, alignItems: 'center' },
+  markerSpeciesTotalPorcini: { backgroundColor: UI.porcino },
+  markerSpeciesTotalFinferli: { backgroundColor: UI.finferlo },
+  markerSpeciesTotalText: { color: '#fff', fontSize: 10, fontWeight: '900', fontVariant: ['tabular-nums'] },
+  markerSpeciesTotalTextDark: { color: '#17120a' },
   markerRow: { flexDirection: 'row', alignItems: 'center', gap: 7, marginBottom: 6 },
-  markerBadge: { width: 20, height: 20, borderRadius: 4, justifyContent: 'center', alignItems: 'center' },
-  markerBadgeLetter: { color: '#fff', fontSize: 10, fontWeight: '900' },
   markerName: { flex: 1, color: UI.textPri, fontSize: 11, fontWeight: '500' },
   routeEndpointMarker: {
     width: 13,
@@ -2977,12 +3057,6 @@ const mStyles = StyleSheet.create({
   },
   routeEndpointMarkerStart: { backgroundColor: '#43b552' },
   routeEndpointMarkerEnd: { backgroundColor: '#df4a43' },
-  cloudMushroomMarker: { minWidth: 30, height: 24, paddingHorizontal: 5, borderRadius: 12, borderWidth: 1.5, borderColor: '#000', alignItems: 'center', justifyContent: 'center' },
-  cloudMushroomMarkerPorcini: { backgroundColor: '#965123' },
-  cloudMushroomMarkerFinferli: { backgroundColor: '#ffd900' },
-  cloudMushroomMarkerText: { fontSize: 9, lineHeight: 11, fontWeight: '900' },
-  cloudMushroomMarkerTextPorcini: { color: '#fff' },
-  cloudMushroomMarkerTextFinferli: { color: '#111' },
   cloudEditSelectedPoint: { width: 18, height: 18, borderRadius: 9, borderWidth: 3, borderColor: '#fff', backgroundColor: 'rgba(99,199,121,0.65)' },
   showMoreBtn: { marginTop: 6, paddingTop: 6, borderTopWidth: 1, borderTopColor: UI.border, alignItems: 'center' },
   showMoreText: { color: UI.greenBri, fontSize: 10, fontWeight: '700', letterSpacing: 1 },
@@ -3011,32 +3085,28 @@ const mStyles = StyleSheet.create({
   coordinatePopupWeatherButton: { flex: 1, minHeight: 36, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, borderRadius: 7, borderWidth: 1, borderColor: UI.borderHi, backgroundColor: UI.greenDim },
   coordinatePopupAnalysisButton: { flex: 1, minHeight: 36, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, borderRadius: 7, borderWidth: 1, borderColor: '#495541', backgroundColor: '#263028' },
   coordinatePopupWeatherText: { color: UI.textPri, fontSize: 11, fontWeight: '800' },
-  statsBar: { position: 'absolute', bottom: 138, left: 12, right: 12, alignItems: 'stretch', justifyContent: 'center', backgroundColor: 'rgba(10,17,11,0.70)', borderWidth: 1, borderColor: UI.border, borderRadius: 12, paddingVertical: 7, paddingHorizontal: 8, gap: 4 },
-  recordingStatusRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
   recordingStatusDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: UI.redBri },
   recordingStatusDotPaused: { backgroundColor: UI.amberBri },
-  recordingStatusText: { color: UI.redBri, fontSize: 9, fontWeight: '900', letterSpacing: 1.2 },
+  recordingStatusText: { color: UI.redBri, fontSize: 12, fontWeight: '800' },
   recordingStatusTextPaused: { color: UI.amberBri },
-  statsMetrics: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
-  statItem: { flex: 1, alignItems: 'center' },
-  statValue: { color: UI.textPri, fontSize: 20, fontWeight: '800', lineHeight: 24 },
-  statLabel: { color: UI.textMut, fontSize: 9, fontWeight: '700', letterSpacing: 1.5, marginTop: 1 },
-  statDivider: { width: 1, height: 28, backgroundColor: UI.border },
   centerBtn: { position: 'absolute', bottom: 146, left: 16, width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(10,17,11,0.90)', borderWidth: 1, borderColor: UI.border, justifyContent: 'center', alignItems: 'center' },
-  centerBtnRecording: { position: 'absolute', bottom: 206, left: 16, width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(10,17,11,0.90)', borderWidth: 1, borderColor: UI.border, justifyContent: 'center', alignItems: 'center' },
+  centerBtnRecording: { position: 'absolute', bottom: 190, left: 16, width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(10,17,11,0.90)', borderWidth: 1, borderColor: UI.border, justifyContent: 'center', alignItems: 'center' },
   compassBtn: { position: 'absolute', bottom: 200, left: 16, width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(10,17,11,0.90)', borderWidth: 1, borderColor: UI.border, justifyContent: 'center', alignItems: 'center' },
-  compassBtnRecording: { position: 'absolute', bottom: 260, left: 16, width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(10,17,11,0.90)', borderWidth: 1, borderColor: UI.border, justifyContent: 'center', alignItems: 'center' },
+  compassBtnRecording: { position: 'absolute', bottom: 244, left: 16, width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(10,17,11,0.90)', borderWidth: 1, borderColor: UI.border, justifyContent: 'center', alignItems: 'center' },
   compassNorth: { color: UI.textPri, fontSize: 11, fontWeight: '900', lineHeight: 13 },
   compassArrow: { color: UI.greenBri, fontSize: 15, fontWeight: '900', lineHeight: 15 },
-  bottomControls: { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: 12, paddingBottom: 16, paddingTop: 8, gap: 8 },
+  bottomControls: { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: 12, paddingBottom: 14, paddingTop: 6 },
+  recordingPanel: { padding: 8, gap: 7, borderRadius: 12, borderWidth: 1, borderColor: UI.border, backgroundColor: 'rgba(10,17,11,0.88)' },
+  recordingSummaryRow: { minHeight: 22, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 3 },
+  recordingStatusCompact: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  gpsCount: { color: UI.textSec, fontSize: 12, fontWeight: '800', fontVariant: ['tabular-nums'] },
   speciesRow: { flexDirection: 'row', gap: 8 },
-  speciesBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 11, borderRadius: 10, borderWidth: 1.5, backgroundColor: 'rgba(10,17,11,0.92)' },
+  speciesBtn: { flex: 1, minHeight: 42, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 14, borderRadius: 9, borderWidth: 1.5, backgroundColor: 'rgba(10,17,11,0.96)' },
   speciesBtnFinferlo: { borderColor: UI.finferlo },
   speciesBtnPorcino: { borderColor: UI.porcino },
   speciesBtnDisabled: { opacity: 0.35 },
-  speciesEmoji: { fontSize: 15 },
-  speciesBtnText: { fontSize: 12, fontWeight: '800', letterSpacing: 1 },
-  mainBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, paddingVertical: 16, borderRadius: 12, borderWidth: 1.5 },
+  speciesBtnText: { fontSize: 14, fontWeight: '700' },
+  mainBtn: { minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9, paddingVertical: 12, borderRadius: 9, borderWidth: 1.5 },
   mainBtnStart: { backgroundColor: UI.greenDim, borderColor: UI.greenBri },
   mainBtnPause: { backgroundColor: '#302408', borderColor: UI.amberBri },
   mainBtnResume: { backgroundColor: UI.greenDim, borderColor: UI.greenBri },
@@ -3045,8 +3115,8 @@ const mStyles = StyleSheet.create({
   recordingActionsRow: { flexDirection: 'row', gap: 8 },
   recordingActionButton: { flex: 1 },
   mainBtnIcon: { fontSize: 16, color: '#fff' },
-  mainBtnText: { color: '#fff', fontSize: 14, fontWeight: '800', letterSpacing: 2 },
-  mainBtnTextCompact: { color: '#fff', fontSize: 12, fontWeight: '800', letterSpacing: 1.4 },
+  mainBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  mainBtnTextCompact: { color: '#fff', fontSize: 15, fontWeight: '700' },
 });
 
 const aStyles = StyleSheet.create({

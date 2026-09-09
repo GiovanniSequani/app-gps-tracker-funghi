@@ -1,5 +1,7 @@
 import React from 'react';
 import {
+  Animated,
+  PanResponder,
   StyleSheet,
   Text,
   View,
@@ -10,7 +12,7 @@ import {
   type barDataItem,
   type lineDataItem,
 } from 'react-native-gifted-charts';
-import Svg, { Line as SvgLine, Polygon } from 'react-native-svg';
+import Svg, { Line as SvgLine, Polygon, Polyline } from 'react-native-svg';
 import {
   barChartX,
   GIFTED_CHART_TOP_INSET,
@@ -55,6 +57,9 @@ type AccessibleChartProps = {
   onSelectDateIndex: (index: number) => void;
   selectedSummary: string;
   cursorX: number;
+  plotWidth: number;
+  onGestureX: (x: number) => void;
+  onGestureEnd: () => void;
   children: React.ReactNode;
 };
 
@@ -64,8 +69,14 @@ function shortDate(date: string): string {
     .toLocaleLowerCase('it-IT');
 }
 
-function axisLabel(day: WeatherDay, index: number, dayCount: number): string {
-  return index % 4 === 0 || index === dayCount - 1 ? shortDate(day.date) : '';
+function tickIndices(dayCount: number): number[] {
+  if (dayCount <= 0) return [];
+  const tickCount = Math.min(5, dayCount);
+  if (tickCount === 1) return [0];
+  return [...new Set(Array.from(
+    { length: tickCount },
+    (_, index) => Math.round((index * (dayCount - 1)) / (tickCount - 1)),
+  ))];
 }
 
 function valueLabel(value: number | null, unit: string): string {
@@ -111,9 +122,61 @@ function AccessibleChart({
   onSelectDateIndex,
   selectedSummary,
   cursorX,
+  plotWidth,
+  onGestureX,
+  onGestureEnd,
   children,
 }: AccessibleChartProps) {
   const selectedDay = days[selectedDateIndex];
+  const selectionX = React.useRef(new Animated.Value(cursorX)).current;
+  const gestureLeftRef = React.useRef(0);
+  const gestureDirectionRef = React.useRef<'pending' | 'horizontal' | 'vertical'>('pending');
+  const onGestureXRef = React.useRef(onGestureX);
+  const onGestureEndRef = React.useRef(onGestureEnd);
+  onGestureXRef.current = onGestureX;
+  onGestureEndRef.current = onGestureEnd;
+  const clampX = React.useCallback((x: number) => Math.min(Math.max(x, 0), plotWidth), [plotWidth]);
+
+  React.useEffect(() => {
+    selectionX.setValue(cursorX);
+  }, [cursorX, selectionX]);
+
+  const selectAtX = React.useCallback((x: number) => {
+    const clamped = clampX(x);
+    selectionX.setValue(clamped);
+    onGestureXRef.current(clamped);
+  }, [clampX, selectionX]);
+
+  const finishGesture = React.useCallback(() => {
+    onGestureEndRef.current();
+  }, []);
+
+  const panResponder = React.useMemo(() => PanResponder.create({
+    onStartShouldSetPanResponder: () => true,
+    onStartShouldSetPanResponderCapture: () => true,
+    onMoveShouldSetPanResponder: () => true,
+    onMoveShouldSetPanResponderCapture: () => true,
+    onPanResponderGrant: (event) => {
+      gestureDirectionRef.current = 'pending';
+      gestureLeftRef.current = event.nativeEvent.pageX - event.nativeEvent.locationX;
+      selectAtX(event.nativeEvent.locationX);
+    },
+    onPanResponderMove: (_event, gesture) => {
+      const absX = Math.abs(gesture.dx);
+      const absY = Math.abs(gesture.dy);
+      if (gestureDirectionRef.current === 'pending') {
+        if (absX >= 4) gestureDirectionRef.current = 'horizontal';
+        else if (absY >= 12 && absY > absX * 1.5) gestureDirectionRef.current = 'vertical';
+      }
+      if (gestureDirectionRef.current !== 'vertical') {
+        selectAtX(gesture.moveX - gestureLeftRef.current);
+      }
+    },
+    onPanResponderRelease: finishGesture,
+    onPanResponderTerminate: finishGesture,
+    onPanResponderTerminationRequest: () => gestureDirectionRef.current === 'vertical',
+    onShouldBlockNativeResponder: () => gestureDirectionRef.current !== 'vertical',
+  }), [finishGesture, selectAtX]);
   const moveSelection = React.useCallback(
     (delta: number) => {
       onSelectDateIndex(
@@ -134,6 +197,7 @@ function AccessibleChart({
         <Text style={styles.unit}>{unit}</Text>
       </View>
       <View
+        style={styles.chartFrame}
         accessible
         accessibilityRole="adjustable"
         accessibilityLabel={`Grafico ${title.toLocaleLowerCase('it-IT')}, ${days.length} giorni`}
@@ -158,25 +222,25 @@ function AccessibleChart({
           importantForAccessibility="no-hide-descendants"
         >
           {children}
-          <Svg
-            pointerEvents="none"
-            width={1}
-            height={CHART_HEIGHT}
-            style={[
-              styles.selectedCursor,
-              { left: Y_AXIS_LABEL_WIDTH + cursorX },
-            ]}
-          >
-            <SvgLine
-              x1={0.5}
-              y1={0}
-              x2={0.5}
-              y2={CHART_HEIGHT}
-              stroke={COLORS.cursor}
-              strokeWidth={1}
-              strokeDasharray="4 3"
-            />
-          </Svg>
+          <Animated.View pointerEvents="none" style={[styles.selectedCursor, { left: Y_AXIS_LABEL_WIDTH, transform: [{ translateX: selectionX }] }]}>
+            <Svg width={1} height={CHART_HEIGHT}>
+              <SvgLine x1={0.5} y1={0} x2={0.5} y2={CHART_HEIGHT} stroke={COLORS.cursor} strokeWidth={1} strokeDasharray="4 3" />
+            </Svg>
+          </Animated.View>
+          <View pointerEvents="none" style={[styles.timeTicks, { left: Y_AXIS_LABEL_WIDTH, width: plotWidth }]}>
+            {tickIndices(days.length).map((index) => {
+              const x = lineChartX(index, days.length, plotWidth);
+              const labelWidth = 50;
+              const labelLeft = Math.min(Math.max(x - labelWidth / 2, 0), plotWidth - labelWidth);
+              return (
+                <View key={days[index].date} style={[styles.timeTick, { left: labelLeft, width: labelWidth }]}>
+                  <View style={[styles.timeTickMark, { left: x - labelLeft }]} />
+                  <Text numberOfLines={1} style={styles.timeTickLabel}>{shortDate(days[index].date)}</Text>
+                </View>
+              );
+            })}
+          </View>
+          <View testID={`weather-${title.toLocaleLowerCase('it-IT')}-gesture-surface`} style={[styles.gestureSurface, { left: Y_AXIS_LABEL_WIDTH, width: plotWidth }]} {...panResponder.panHandlers} />
         </View>
       </View>
     </View>
@@ -190,7 +254,7 @@ type TemperatureRangeAreaProps = {
   upper: number;
 };
 
-function TemperatureRangeArea({
+function TemperatureRangePlot({
   days,
   width,
   lower,
@@ -232,12 +296,11 @@ function TemperatureRangeArea({
               (point) => `${xForIndex(point.index)},${yForValue(point.min)}`,
             );
           return (
-            <Polygon
-              key={`${segment[0].index}-${segment[segment.length - 1].index}`}
-              points={[...upperPoints, ...lowerPoints].join(' ')}
-              fill={COLORS.temperatureBand}
-              opacity={0.16}
-            />
+            <React.Fragment key={`${segment[0].index}-${segment[segment.length - 1].index}`}>
+              <Polygon points={[...upperPoints, ...lowerPoints].join(' ')} fill={COLORS.temperatureBand} opacity={0.16} />
+              <Polyline points={upperPoints.join(' ')} fill="none" stroke={COLORS.temperatureMax} strokeWidth={2} />
+              <Polyline points={[...segment].map((point) => `${xForIndex(point.index)},${yForValue(point.min)}`).join(' ')} fill="none" stroke={COLORS.temperatureMin} strokeWidth={2} />
+            </React.Fragment>
           );
         })}
     </Svg>
@@ -336,24 +399,6 @@ export function WeatherCharts({
       xAxisLabelTextStyle: styles.axisText,
       xAxisTextNumberOfLines: 1,
       labelsExtraHeight: 4,
-      pointerConfig: {
-        showPointerStrip: true,
-        pointerStripColor: COLORS.cursor,
-        pointerStripWidth: 1,
-        pointerStripHeight: CHART_HEIGHT,
-        strokeDashArray: [4, 3],
-        hidePointers: true,
-        hidePointerForMissingValues: false,
-        hidePointerDataPointForMissingValues: true,
-        activatePointersInstantlyOnTouch: true,
-        activatePointersOnLongPress: false,
-        pointerVanishDelay: 0,
-        persistPointer: false,
-        resetPointerIndexOnRelease: true,
-        onResponderEnd: flushSelection,
-      },
-      getPointerProps: ({ pointerIndex }: { pointerIndex: number }) =>
-        scheduleSelection(pointerIndex),
     }),
     [days.length, flushSelection, plotWidth, scheduleSelection],
   );
@@ -367,7 +412,7 @@ export function WeatherCharts({
           day.temperatureMin === null
             ? undefined
             : day.temperatureMin - temperature.lower,
-        label: axisLabel(day, index, days.length),
+        label: '',
         hideDataPoint: true,
         onPress: () => scheduleSelection(index),
       })),
@@ -393,7 +438,7 @@ export function WeatherCharts({
     () =>
       days.map((day, index) => ({
         value: day.precipitation ?? undefined,
-        label: axisLabel(day, index, days.length),
+        label: '',
         frontColor:
           day.precipitation === null ? 'transparent' : COLORS.precipitation,
         onPress: () => scheduleSelection(index),
@@ -404,7 +449,7 @@ export function WeatherCharts({
     () =>
       days.map((day, index) => ({
         value: day.humidity ?? undefined,
-        label: axisLabel(day, index, days.length),
+        label: '',
         hideDataPoint: true,
         onPress: () => scheduleSelection(index),
       })),
@@ -418,7 +463,7 @@ export function WeatherCharts({
     () =>
       days.map((day, index) => ({
         value: day.gust ?? undefined,
-        label: axisLabel(day, index, days.length),
+        label: '',
         hideDataPoint: true,
         onPress: () => scheduleSelection(index),
       })),
@@ -441,7 +486,7 @@ export function WeatherCharts({
       width: plotWidth,
       height: CHART_HEIGHT + GIFTED_CHART_TOP_INSET,
       component: () => (
-        <TemperatureRangeArea
+        <TemperatureRangePlot
           days={days}
           width={plotWidth}
           lower={temperature.lower}
@@ -469,7 +514,10 @@ export function WeatherCharts({
         days={days}
         selectedDateIndex={selectedDateIndex}
         onSelectDateIndex={onSelectDateIndex}
-        cursorX={lineCursorX}
+      cursorX={lineCursorX}
+        plotWidth={plotWidth}
+        onGestureX={(x) => scheduleSelection(Math.round((x / plotWidth) * (days.length - 1)))}
+        onGestureEnd={flushSelection}
         selectedSummary={`minima ${valueLabel(
           selectedDay?.temperatureMin ?? null,
           '°C',
@@ -482,10 +530,10 @@ export function WeatherCharts({
           {...shared}
           data={temperatureMinData}
           data2={temperatureMaxData}
-          color1={COLORS.temperatureMin}
-          color2={COLORS.temperatureMax}
-          thickness1={2}
-          thickness2={2}
+          color1="transparent"
+          color2="transparent"
+          thickness1={0}
+          thickness2={0}
           maxValue={temperatureSpan}
           stepValue={temperatureSpan / 4}
           formatYLabel={formatTemperatureYLabel}
@@ -501,6 +549,9 @@ export function WeatherCharts({
         selectedDateIndex={selectedDateIndex}
         onSelectDateIndex={onSelectDateIndex}
         cursorX={precipitationCursorX}
+        plotWidth={plotWidth}
+        onGestureX={(x) => scheduleSelection(Math.min(days.length - 1, Math.max(0, Math.round((x - barWidth / 2) / (barWidth + barSpacing)))))}
+        onGestureEnd={flushSelection}
         selectedSummary={valueLabel(
           selectedDay?.precipitation ?? null,
           'mm',
@@ -525,6 +576,9 @@ export function WeatherCharts({
         selectedDateIndex={selectedDateIndex}
         onSelectDateIndex={onSelectDateIndex}
         cursorX={lineCursorX}
+        plotWidth={plotWidth}
+        onGestureX={(x) => scheduleSelection(Math.round((x / plotWidth) * (days.length - 1)))}
+        onGestureEnd={flushSelection}
         selectedSummary={valueLabel(selectedDay?.humidity ?? null, '%')}
       >
         <MemoLineChart
@@ -545,6 +599,9 @@ export function WeatherCharts({
         selectedDateIndex={selectedDateIndex}
         onSelectDateIndex={onSelectDateIndex}
         cursorX={lineCursorX}
+        plotWidth={plotWidth}
+        onGestureX={(x) => scheduleSelection(Math.round((x / plotWidth) * (days.length - 1)))}
+        onGestureEnd={flushSelection}
         selectedSummary={valueLabel(selectedDay?.gust ?? null, 'km/h')}
       >
         <MemoLineChart
@@ -592,4 +649,10 @@ const styles = StyleSheet.create({
     top: GIFTED_CHART_TOP_INSET,
     zIndex: 30,
   },
+  chartFrame: { position: 'relative' },
+  gestureSurface: { position: 'absolute', top: GIFTED_CHART_TOP_INSET, height: CHART_HEIGHT, zIndex: 40, elevation: 2, backgroundColor: 'rgba(0,0,0,0.001)' },
+  timeTicks: { position: 'absolute', top: CHART_HEIGHT + GIFTED_CHART_TOP_INSET, height: 28, zIndex: 35 },
+  timeTick: { position: 'absolute', top: 0, height: 28 },
+  timeTickMark: { position: 'absolute', top: 0, width: 1, height: 5, backgroundColor: COLORS.axis },
+  timeTickLabel: { marginTop: 7, width: '100%', color: COLORS.muted, fontSize: 10, lineHeight: 13, textAlign: 'center', fontVariant: ['tabular-nums'] },
 });

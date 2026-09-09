@@ -131,7 +131,7 @@ function TerrainStrip({
       {terrain.status === 'outside' && (
         <StateMessage
           title="Punto fuori copertura"
-          message="I dati statici del terreno non coprono questa coordinata."
+          message="I dati del terreno non sono disponibili in questa zona."
         />
       )}
       {terrain.status === 'unavailable' && (
@@ -271,7 +271,7 @@ function WeatherContent({
         <Text style={styles.sectionTitle}>Meteo</Text>
         <StateMessage
           title="Punto fuori copertura"
-          message="La griglia meteorologica non copre questa coordinata."
+          message="I dati meteo non sono disponibili in questa zona."
         />
       </View>
     );
@@ -479,8 +479,8 @@ const styles = StyleSheet.create({
     borderBottomColor: COLORS.border,
   },
   backButton: {
-    width: 40,
-    height: 40,
+    width: 44,
+    height: 44,
     borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
@@ -495,20 +495,20 @@ const styles = StyleSheet.create({
   },
   headerTitle: {
     color: COLORS.text,
-    fontSize: 20,
+    fontSize: 22,
     lineHeight: 25,
     fontWeight: '900',
   },
   coordinates: {
     marginTop: 2,
     color: COLORS.secondary,
-    fontSize: 13,
+    fontSize: 14,
     fontVariant: ['tabular-nums'],
   },
   period: {
     marginTop: 2,
     color: COLORS.muted,
-    fontSize: 12,
+    fontSize: 13,
   },
   scroll: {
     flex: 1,
@@ -533,7 +533,7 @@ const styles = StyleSheet.create({
   },
   sectionEyebrow: {
     color: COLORS.muted,
-    fontSize: 10,
+    fontSize: 12,
     lineHeight: 14,
     fontWeight: '800',
     letterSpacing: 1,
@@ -551,7 +551,7 @@ const styles = StyleSheet.create({
   },
   stateTitle: {
     color: COLORS.secondary,
-    fontSize: 14,
+    fontSize: 16,
     fontWeight: '800',
     marginBottom: 4,
   },
@@ -561,8 +561,8 @@ const styles = StyleSheet.create({
   stateText: {
     flexShrink: 1,
     color: COLORS.muted,
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 14,
+    lineHeight: 20,
   },
   terrainGrid: {
     flexDirection: 'row',
@@ -586,7 +586,7 @@ const styles = StyleSheet.create({
   },
   terrainLabel: {
     color: COLORS.muted,
-    fontSize: 10,
+    fontSize: 12,
     lineHeight: 14,
     fontWeight: '800',
     textTransform: 'uppercase',
@@ -609,8 +609,8 @@ const styles = StyleSheet.create({
   availabilityText: {
     flex: 1,
     color: COLORS.secondary,
-    fontSize: 12,
-    lineHeight: 17,
+    fontSize: 14,
+    lineHeight: 20,
   },
   selectedDaySection: {
     paddingVertical: 16,
@@ -651,14 +651,14 @@ const styles = StyleSheet.create({
   },
   metricLabel: {
     color: COLORS.muted,
-    fontSize: 10,
+    fontSize: 12,
     lineHeight: 14,
     textTransform: 'uppercase',
     fontWeight: '800',
   },
   metricValue: {
     color: COLORS.text,
-    fontSize: 15,
+    fontSize: 17,
     lineHeight: 20,
     fontWeight: '800',
     fontVariant: ['tabular-nums'],

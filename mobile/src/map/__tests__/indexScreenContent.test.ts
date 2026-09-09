@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 describe('IndiceScreen content', () => {
   const source = readFileSync(resolve(process.cwd(), 'IndiceScreen.tsx'), 'utf8');
+  const appSource = readFileSync(resolve(process.cwd(), 'App.tsx'), 'utf8');
 
   it('uses the published tile thresholds and colors', () => {
     for (const threshold of ['0', '5', '15', '30', '45', '60', '75', '90', '100']) {
@@ -22,9 +23,16 @@ describe('IndiceScreen content', () => {
   });
 
   it('keeps one legend and the user-facing scoring explanation', () => {
-    expect(source.match(/>LEGENDA</g)).toHaveLength(1);
+    expect(source.match(/>Legenda</g)).toHaveLength(1);
     expect(source).toContain('Terreno e bosco');
     expect(source).toContain('Pioggia e avvio del ciclo');
     expect(source).toContain('Rischio di asciugamento');
+  });
+
+  it('espone il calendario con date consentite e date riservate senza cambiare schermata', () => {
+    expect(appSource).toContain('IndexDateCalendarModal');
+    expect(appSource).toContain('allowedTileSets={tileSets}');
+    expect(appSource).toContain('allTileSets={allTileSets}');
+    expect(appSource).toContain('onRestrictedDate={onShowIndexAccessNotice}');
   });
 });

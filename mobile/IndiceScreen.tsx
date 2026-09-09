@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { ChevronDown, ChevronUp } from 'lucide-react-native';
 
 export type ActiveLayer = 'off' | 'porcini' | 'finferli';
 
@@ -94,6 +95,7 @@ interface Props {
 }
 
 export default function IndiceScreen({ activeLayer, setActiveLayer, fullIndexAccess, onRequestAccess }: Props) {
+  const [calculationOpen, setCalculationOpen] = React.useState(false);
   const activeLabel = LAYERS.find((layer) => layer.key === activeLayer)?.label ?? 'Nessuno';
 
   return (
@@ -101,7 +103,7 @@ export default function IndiceScreen({ activeLayer, setActiveLayer, fullIndexAcc
       <StatusBar barStyle="light-content" backgroundColor={UI.bg0} />
 
       <View style={s.header}>
-        <Text style={s.headerTitle}>INDICE FUNGHI</Text>
+        <Text style={s.headerTitle}>Indice funghi</Text>
         <Text style={s.headerSub}>Condizioni giornaliere per porcini e finferli, da 0 a 100</Text>
       </View>
 
@@ -112,7 +114,7 @@ export default function IndiceScreen({ activeLayer, setActiveLayer, fullIndexAcc
         </View>}
         <View style={s.section}>
           <View style={s.sectionHead}>
-            <Text style={s.sectionTitle}>INDICE SULLA MAPPA</Text>
+            <Text style={s.sectionTitle}>Mostra sulla mappa</Text>
             <Text style={s.statusText}>{activeLabel}</Text>
           </View>
           <View style={s.layerRow}>
@@ -137,11 +139,10 @@ export default function IndiceScreen({ activeLayer, setActiveLayer, fullIndexAcc
               );
             })}
           </View>
-          <Text style={s.sectionSub}>La scelta aggiorna solo il livello colorato visibile sulla mappa.</Text>
         </View>
 
         <View style={s.section}>
-          <Text style={s.sectionTitle}>LEGENDA</Text>
+          <Text style={s.sectionTitle}>Legenda</Text>
           <Text style={s.sectionSub}>
             I valori bassi sono quasi trasparenti. Il colore diventa più evidente al crescere dell'indice.
           </Text>
@@ -160,7 +161,7 @@ export default function IndiceScreen({ activeLayer, setActiveLayer, fullIndexAcc
                 return (
                   <View key={stop.score} style={[s.tickInterval, { flex: next.score - stop.score }]}>
                     <View style={s.tickLine} />
-                    <Text style={s.tickText}>{stop.label}</Text>
+                    <Text style={s.tickText}>{stop.score === 5 ? '' : stop.label}</Text>
                   </View>
                 );
               })}
@@ -172,7 +173,6 @@ export default function IndiceScreen({ activeLayer, setActiveLayer, fullIndexAcc
           </View>
 
           <View style={s.adviceBox}>
-            <Text style={s.adviceTitle}>COME LEGGERLO</Text>
             {ADVICE_BANDS.map((band) => (
               <View key={band.range} style={[s.adviceRow, { borderLeftColor: band.color }]}>
                 <Text style={s.adviceRange}>{band.range}</Text>
@@ -183,7 +183,11 @@ export default function IndiceScreen({ activeLayer, setActiveLayer, fullIndexAcc
         </View>
 
         <View style={[s.section, s.lastSection]}>
-          <Text style={s.sectionTitle}>COME VIENE CALCOLATO</Text>
+          <TouchableOpacity style={s.sectionHead} onPress={() => setCalculationOpen((open) => !open)} accessibilityRole="button" accessibilityState={{ expanded: calculationOpen }}>
+            <Text style={s.sectionTitle}>Come viene calcolato</Text>
+            {calculationOpen ? <ChevronUp size={22} color={UI.textSec} /> : <ChevronDown size={22} color={UI.textSec} />}
+          </TouchableOpacity>
+          {calculationOpen && <>
           <Text style={s.calculationIntro}>
             L'indice confronta le caratteristiche del luogo con il meteo degli ultimi 19 giorni. Cerca le condizioni che possono aver avviato e sostenuto il ciclo dei funghi, con criteri specifici per ogni specie.
           </Text>
@@ -193,6 +197,7 @@ export default function IndiceScreen({ activeLayer, setActiveLayer, fullIndexAcc
               <Text style={s.factorDesc}>{step.text}</Text>
             </View>
           ))}
+          </>}
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -209,30 +214,29 @@ const s = StyleSheet.create({
     borderBottomColor: UI.border,
     backgroundColor: UI.bg0,
   },
-  headerTitle: { color: UI.textPri, fontSize: 21, fontWeight: '900', letterSpacing: 3 },
-  headerSub: { color: UI.textMut, fontSize: 11, fontWeight: '600', marginTop: 4 },
+  headerTitle: { color: UI.textPri, fontSize: 26, fontWeight: '700' },
+  headerSub: { color: UI.textSec, fontSize: 14, lineHeight: 20, marginTop: 5 },
   body: { flex: 1 },
   scroll: { padding: 14, gap: 12 },
   accessNotice: { minHeight: 58, flexDirection: 'row', alignItems: 'center', gap: 10, borderWidth: 1, borderColor: '#765039', borderRadius: 9, backgroundColor: '#201911', padding: 11 },
   accessCopy: { flex: 1 }, accessTitle: { color: '#e5b16f', fontSize: 9, fontWeight: '900', letterSpacing: 1.4 }, accessText: { color: UI.textSec, fontSize: 11, lineHeight: 16, marginTop: 2 },
   accessButton: { minHeight: 36, justifyContent: 'center', borderRadius: 7, borderWidth: 1, borderColor: '#8d674c', paddingHorizontal: 10 }, accessButtonText: { color: UI.textPri, fontSize: 10, fontWeight: '800' },
   section: {
-    backgroundColor: UI.bg1,
-    borderRadius: 9,
-    borderWidth: 1,
-    borderColor: UI.border,
-    padding: 13,
+    borderBottomWidth: 1,
+    borderBottomColor: UI.border,
+    paddingVertical: 16,
+    paddingHorizontal: 4,
     gap: 11,
   },
   lastSection: { marginBottom: 28 },
-  sectionHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
-  sectionTitle: { color: UI.textMut, fontSize: 10, fontWeight: '900', letterSpacing: 2 },
-  sectionSub: { color: UI.textSec, fontSize: 11, lineHeight: 16 },
+  sectionHead: { minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
+  sectionTitle: { color: UI.textPri, fontSize: 18, fontWeight: '700', flexShrink: 1 },
+  sectionSub: { color: UI.textSec, fontSize: 15, lineHeight: 22 },
   statusText: { color: UI.textPri, fontSize: 11, fontWeight: '800' },
   layerRow: { flexDirection: 'row', gap: 7 },
   layerButton: {
     flex: 1,
-    minHeight: 43,
+    minHeight: 48,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -244,7 +248,7 @@ const s = StyleSheet.create({
     backgroundColor: UI.bg2,
   },
   layerDot: { width: 9, height: 9, borderRadius: 5 },
-  layerLabel: { color: UI.textPri, fontSize: 11, fontWeight: '900' },
+  layerLabel: { color: UI.textPri, fontSize: 14, fontWeight: '700' },
   legendBox: { gap: 5 },
   legendGradient: {
     height: 24,
@@ -257,14 +261,10 @@ const s = StyleSheet.create({
   tickInterval: { alignItems: 'flex-start', gap: 2 },
   lastTick: { width: 20, alignItems: 'flex-end', gap: 2, marginLeft: -10 },
   tickLine: { width: 1, height: 5, backgroundColor: UI.borderHi },
-  tickText: { color: UI.textMut, fontSize: 8, fontWeight: '800' },
+  tickText: { color: UI.textSec, fontSize: 11, fontWeight: '600' },
   adviceBox: {
-    borderWidth: 1,
-    borderColor: UI.borderHi,
-    borderRadius: 8,
-    padding: 10,
-    gap: 7,
-    backgroundColor: UI.bg2,
+    paddingVertical: 12,
+    gap: 10,
   },
   adviceTitle: { color: UI.textMut, fontSize: 10, fontWeight: '900', letterSpacing: 1.4 },
   adviceRow: {
@@ -275,15 +275,15 @@ const s = StyleSheet.create({
     borderLeftWidth: 4,
     paddingLeft: 9,
   },
-  adviceRange: { width: 50, color: UI.textPri, fontSize: 12, fontWeight: '900' },
-  adviceLabel: { flex: 1, color: UI.textSec, fontSize: 12, fontWeight: '700' },
-  calculationIntro: { color: UI.textSec, fontSize: 12, lineHeight: 18 },
+  adviceRange: { width: 58, color: UI.textPri, fontSize: 15, fontWeight: '700' },
+  adviceLabel: { flex: 1, color: UI.textSec, fontSize: 15, fontWeight: '500' },
+  calculationIntro: { color: UI.textSec, fontSize: 15, lineHeight: 23 },
   factorRow: {
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: UI.border,
     paddingTop: 11,
     gap: 4,
   },
-  factorName: { color: UI.textPri, fontSize: 12, fontWeight: '900' },
-  factorDesc: { color: UI.textSec, fontSize: 11, lineHeight: 17 },
+  factorName: { color: UI.textPri, fontSize: 16, fontWeight: '700' },
+  factorDesc: { color: UI.textSec, fontSize: 15, lineHeight: 23 },
 });

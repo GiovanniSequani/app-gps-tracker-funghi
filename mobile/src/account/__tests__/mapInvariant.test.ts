@@ -43,7 +43,7 @@ describe('account archive map invariants', () => {
     expect(callbackModal).not.toContain('Linking.openURL');
   });
 
-  it('mantiene la mappa montata e non muove la camera durante l’editing cloud', () => {
+  it('mantiene la mappa montata e inquadra la traccia solo all’apertura esplicita dell’editor', () => {
     const app = fs.readFileSync(path.resolve(__dirname, '../../../App.tsx'), 'utf8');
     expect(app.match(/<MemoMapCanvas\b/g)).toHaveLength(1);
     expect(app.indexOf('<CloudTrackEditor')).toBeGreaterThan(app.indexOf('<MemoMapCanvas'));
@@ -51,7 +51,11 @@ describe('account archive map invariants', () => {
       app.indexOf('const openCloudEditor'),
       app.indexOf('const openIndexAnalysis'),
     );
-    expect(editingCallbacks).not.toMatch(/runCameraCommand|centerCamera|setCameraCommand/);
+    expect(editingCallbacks.match(/runCameraCommand/g)).toHaveLength(2);
+    expect(editingCallbacks).toContain('paddingBottom');
+    expect(editingCallbacks).toContain('"Modifica" è un\'azione esplicita');
+    const afterOpen = editingCallbacks.slice(editingCallbacks.indexOf('const cancelCloudEditor'));
+    expect(afterOpen).not.toMatch(/runCameraCommand|centerCamera|setCameraCommand/);
     expect(app).toContain('onLongPress={editingCloudTrack ? undefined : handleMapLongPress}');
   });
 
@@ -78,7 +82,7 @@ describe('account archive map invariants', () => {
     const app = fs.readFileSync(path.resolve(__dirname, '../../../App.tsx'), 'utf8');
     expect(source).toContain('<MoreHorizontal');
     expect(source).toContain('<Text style={styles.menuActionText}>Rinomina</Text>');
-    expect(source).toContain('<Text style={styles.menuActionText}>Edita</Text>');
+    expect(source).toContain('<Text style={styles.menuActionText}>Modifica</Text>');
     expect(source).toContain('<Text style={styles.menuActionText}>Scarica</Text>');
     expect(source).toContain('styles.menuDeleteText]}>Elimina</Text>');
     expect(app).toContain('onEditTrackOnMap={editCloudTrackOnMap}');
@@ -102,8 +106,26 @@ describe('account archive map invariants', () => {
     expect(editor).toContain("useState<MushroomSpecies>('porcini')");
     expect(editor).toContain("marker.species === selectedSpecies");
     expect(editor).toContain("['porcini', 'finferli'] as const");
-    expect(app).toContain('${marker.track_point_index}-${marker.species}');
-    expect(app).toContain("marker.species === 'porcini' ? 'P' : 'F'");
+    expect(app).toContain('mushroomMarkersToGeoJSON');
+    expect(app.match(/<MushroomMarkerBadge/g)).toHaveLength(2);
+    expect(app).toContain('clusterMushroomFeatures');
+    expect(app).not.toContain('SymbolLayer');
+    expect(app).toContain("'porcini' as const : 'finferli' as const");
+  });
+
+  it('consente di rimuovere dall archivio una traccia gia mostrata senza muovere la camera', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, '../AccountArchiveScreen.tsx'), 'utf8');
+    const app = fs.readFileSync(path.resolve(__dirname, '../../../App.tsx'), 'utf8');
+    expect(source).toContain('props.visibleCloudTrackIds.has(track.id)');
+    expect(source).toContain('props.onRemoveTrackFromMap(track.id)');
+    expect(source).toContain('styles.iconButtonRemove');
+    expect(source).toContain('<MapPinOff');
+    expect(app).toContain('onRemoveTrackFromMap={removeCloudTrackFromMap}');
+    const removal = app.slice(
+      app.indexOf('const removeCloudTrackFromMap'),
+      app.indexOf('const handleLocalRouteArchived'),
+    );
+    expect(removal).not.toMatch(/runCameraCommand|centerCamera|setCameraCommand/);
   });
 
   it('mostra gli esiti normali come toast temporanei e lascia inline solo gli errori', () => {

@@ -2,6 +2,7 @@ import { gzipSync, strToU8 } from 'fflate';
 import { describe, expect, it } from 'vitest';
 import { decodeGpxBytes, parseGpxBytes } from '../gpxParser';
 import { getCloudTrackDate } from '../trackDates';
+import { mushroomMarkersToGeoJSON } from '../../map/mushroomMarkers';
 
 const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" xmlns="http://www.topografix.com/GPX/1/1">
@@ -56,5 +57,27 @@ describe('GPX import parser', () => {
       ready_at: '2026-08-23T10:05:00Z',
       created_at: '2026-08-23T10:00:00Z',
     })).toBe('2019-10-12T06:30:00.000Z');
+  });
+
+  it('mantiene visibili e accorpa i ritrovamenti nel formato GPX storico Funghi Tracker', () => {
+    const legacyGpx = `<gpx version="1.1" creator="Funghi Tracker"><trk><trkseg>
+      <trkpt lat="46.3400" lon="11.4700"/><trkpt lat="46.3410" lon="11.4710"/>
+    </trkseg></trk>
+    <wpt lat="46.3405" lon="11.4705"><name>Porcino_1</name><type>Porcino</type></wpt>
+    <wpt lat="46.3405" lon="11.4705"><name>Porcino_2</name><type>Porcino</type></wpt>
+    <wpt lat="46.3408" lon="11.4708"><name>Finferlo_3</name><type>Finferlo</type></wpt>
+    </gpx>`;
+    const parsed = parseGpxBytes(strToU8(legacyGpx), 'lavazè.gpx', 100_000);
+    const geoJson = mushroomMarkersToGeoJSON(parsed.markers.map((marker) => ({
+      latitude: marker.latitude,
+      longitude: marker.longitude,
+      species: marker.tipo === 'Porcino' ? 'porcini' : 'finferli',
+      count: 1,
+    })));
+
+    expect(parsed.porciniCount).toBe(2);
+    expect(parsed.finferliCount).toBe(1);
+    expect(geoJson.features).toHaveLength(2);
+    expect(geoJson.features.find((feature) => feature.properties.species === 'porcini')?.properties.count).toBe(2);
   });
 });

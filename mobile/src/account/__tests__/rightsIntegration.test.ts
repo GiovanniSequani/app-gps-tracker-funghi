@@ -39,8 +39,9 @@ describe('integrazione diritti account mobile', () => {
     expect(rightsPanel).toContain('Questa schermata non indica che il processo sia già completato');
   });
 
-  it('non promette la notifica export finché il worker email non è sempre operativo', () => {
-    expect(rightsPanel).toContain('La notifica email non è ancora attiva');
-    expect(rightsPanel).not.toContain('Riceverai un’email quando sarà pronto');
+  it('informa sulla notifica export e mantiene disponibile il controllo manuale', () => {
+    expect(rightsPanel).toContain('Riceverai un’email quando sarà pronto');
+    expect(rightsPanel).toContain('puoi anche controllare qui con Aggiorna');
+    expect(rightsPanel).not.toContain('La notifica email non è ancora attiva');
   });
 });

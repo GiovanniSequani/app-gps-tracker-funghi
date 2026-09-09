@@ -19,15 +19,17 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { File, Paths } from 'expo-file-system';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Sharing from 'expo-sharing';
-import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useNavigation } from '@react-navigation/native';
 import uuid from 'react-native-uuid';
 import {
   AlertTriangle,
+  ArrowLeft,
   Cloud,
   CloudDownload,
   FileUp,
   LogIn,
   LogOut,
+  MapPinOff,
   MapPinned,
   MoreHorizontal,
   Pencil,
@@ -165,6 +167,8 @@ export default function AccountArchiveScreen(props: {
   sessionState: AccountSessionState;
   lifecycle: AccountLifecycleState;
   onShowTrackOnMap: (route: ArchiveMapRoute) => void;
+  onRemoveTrackFromMap: (trackId: string) => void;
+  visibleCloudTrackIds: ReadonlySet<string>;
   onEditTrackOnMap: (route: ArchiveMapRoute) => void;
   onLocalRouteArchived: (routeId: string) => void;
   onCloudRouteRenamed: (trackId: string, name: string) => void;
@@ -174,8 +178,12 @@ export default function AccountArchiveScreen(props: {
   const canUseOfflineLocalArchive = Boolean(
     sessionState.session
     && !props.lifecycle.fullAccess
-    && props.lifecycle.access === null
-    && (sessionState.offline || Boolean(props.lifecycle.error)),
+    && !props.lifecycle.authoritativeRestriction
+    && (
+      sessionState.offline
+      || Boolean(props.lifecycle.error)
+      || props.lifecycle.cachedFullAccessExpired
+    ),
   );
   const canReadLocalArchive = props.lifecycle.fullAccess || canUseOfflineLocalArchive;
   const navigation = useNavigation<any>();
@@ -200,6 +208,7 @@ export default function AccountArchiveScreen(props: {
   const [trackNameError, setTrackNameError] = React.useState<string | null>(null);
   const [trackNameBusy, setTrackNameBusy] = React.useState(false);
   const [trackMenu, setTrackMenu] = React.useState<GpxTrack | null>(null);
+  const [accountVisible, setAccountVisible] = React.useState(false);
   const loadSequence = React.useRef(0);
   const detailSequence = React.useRef(0);
   const cloudDetailsRef = React.useRef<Record<string, CloudDetail>>({});
@@ -397,10 +406,6 @@ export default function AccountArchiveScreen(props: {
     void refresh();
   }, [props.cloudEditRevision, refresh]);
 
-  useFocusEffect(React.useCallback(() => {
-    void props.lifecycle.refresh();
-  }, [props.lifecycle.refresh]));
-
   React.useEffect(() => { void refresh(); }, [refresh]);
 
   const runAuth = async (action: () => Promise<void>) => {
@@ -564,6 +569,10 @@ export default function AccountArchiveScreen(props: {
   };
 
   const handleShowOnMap = async (track: GpxTrack) => {
+    if (props.visibleCloudTrackIds.has(track.id)) {
+      props.onRemoveTrackFromMap(track.id);
+      return;
+    }
     setActions((current) => ({ ...current, [track.id]: 'map' }));
     setError(null);
     try {
@@ -619,10 +628,13 @@ export default function AccountArchiveScreen(props: {
           <Text style={styles.noticeToastText}>{notice}</Text>
         </Animated.View>
       )}
-      <ScrollView contentContainerStyle={[styles.content, { paddingTop: safeAreaInsets.top + 16 }]} keyboardShouldPersistTaps="handled" refreshControl={<RefreshControl refreshing={loading} onRefresh={() => void refresh()} enabled={Boolean(sessionState.session && props.lifecycle.fullAccess)} tintColor={COLORS.green} />}>
+      <ScrollView contentContainerStyle={[styles.content, { paddingTop: safeAreaInsets.top }]} keyboardShouldPersistTaps="handled" refreshControl={<RefreshControl refreshing={loading} onRefresh={() => void refresh()} enabled={Boolean(sessionState.session && props.lifecycle.fullAccess)} tintColor={COLORS.green} />}>
         <View style={styles.header}>
-          <View><Text style={styles.eyebrow}>FUNGHI TRACKER</Text><Text style={styles.title}>Archivio</Text></View>
-          {sessionState.session && props.lifecycle.fullAccess && <TouchableOpacity style={styles.iconButton} onPress={() => void refresh()} accessibilityLabel="Aggiorna archivio"><RefreshCw size={19} color={COLORS.text} /></TouchableOpacity>}
+          <View><Text style={styles.title}>Archivio</Text><Text style={styles.headerSub}>Percorsi salvati</Text></View>
+          {sessionState.session && props.lifecycle.fullAccess && <View style={styles.headerActions}>
+            <TouchableOpacity style={styles.iconButton} onPress={() => void refresh()} accessibilityLabel="Aggiorna archivio"><RefreshCw size={20} color={COLORS.text} /></TouchableOpacity>
+            <TouchableOpacity style={styles.iconButton} onPress={() => setAccountVisible(true)} accessibilityLabel="Apri account e privacy"><UserRound size={21} color={COLORS.text} /></TouchableOpacity>
+          </View>}
         </View>
         {sessionState.loading && <View style={styles.stateRow}><ActivityIndicator color={COLORS.green} /><Text style={styles.muted}>Ripristino sessione…</Text></View>}
         {sessionState.error && <Text style={styles.errorText}>{sessionState.error}</Text>}
@@ -649,8 +661,11 @@ export default function AccountArchiveScreen(props: {
               notice={authNotice}
               onViewChange={(view) => { setAuthView(view); setAuthError(null); setAuthNotice(null); }}
               onLogin={(email, password) => runAuth(async () => {
-                await signIn(email, password);
-                props.lifecycle.applyAccess(await recordMyMeaningfulActivity('interactive_login'));
+                const signedInSession = await signIn(email, password);
+                props.lifecycle.applyAccess(
+                  await recordMyMeaningfulActivity('interactive_login'),
+                  signedInSession.user.id,
+                );
               })}
               onRegister={(email, password, username) => runAuth(async () => {
                 if (!props.lifecycle.config) throw new Error('Configurazione account non disponibile. Riprova.');
@@ -658,6 +673,11 @@ export default function AccountArchiveScreen(props: {
                 if (!result.session) {
                   setAuthView('login');
                   setAuthNotice('Account creato. Controlla l’email e confermala prima di accedere.');
+                } else {
+                  props.lifecycle.applyAccess(
+                    await recordMyMeaningfulActivity('account_action'),
+                    result.session.user.id,
+                  );
                 }
               })}
               onForgotPassword={(email) => runAuth(async () => {
@@ -683,7 +703,7 @@ export default function AccountArchiveScreen(props: {
             ? <View style={styles.stateRow}><ActivityIndicator color={COLORS.green} /><Text style={styles.muted}>Verifica accesso…</Text></View>
             : <AccountLifecyclePanel
               config={props.lifecycle.config}
-              access={props.lifecycle.access}
+              access={props.lifecycle.cachedFullAccessExpired ? null : props.lifecycle.access}
               loading={props.lifecycle.loading}
               error={props.lifecycle.error}
               busy={lifecycleBusy}
@@ -708,19 +728,8 @@ export default function AccountArchiveScreen(props: {
         </>}
 
         {sessionState.session && props.lifecycle.fullAccess && <>
-          <View style={styles.profileRow}>
-            <View style={styles.avatar}><UserRound size={25} color={COLORS.green} /></View>
-            <View style={styles.profileCopy}><Text style={styles.sectionTitle}>{archive?.profile.username ?? sessionState.username ?? 'Utente'}</Text><Text style={styles.muted}>{sessionState.session.user.email}</Text></View>
-            <TouchableOpacity style={styles.secondaryButton} onPress={() => void runAuth(signOut)} disabled={authBusy}><LogOut size={16} color={COLORS.text} /><Text style={styles.secondaryButtonText}>Esci</Text></TouchableOpacity>
-          </View>
-          {archive && <View style={styles.usageRow}>
-            <View><Text style={styles.metric}>{archive.tracks.length}/{archive.config.max_tracks_per_user}</Text><Text style={styles.muted}>percorsi salvati</Text></View>
-            <View><Text style={styles.metric}>{formatBytes(archive.config.max_compressed_bytes)}</Text><Text style={styles.muted}>massimo per file</Text></View>
-            <ShieldCheck size={23} color={COLORS.green} />
-          </View>}
-          <AccountRightsPanel accountState={props.lifecycle.access?.account_state ?? 'active'} />
           <View style={styles.sectionHeaderRow}>
-            <View><Text style={styles.sectionTitle}>Archivio</Text><Text style={styles.muted}>Percorsi salvati</Text></View>
+            <Text style={styles.sectionTitle}>Percorsi</Text>
             <TouchableOpacity style={styles.importButton} onPress={() => void handleImport()} disabled={actions.import === 'import'} accessibilityLabel="Importa un file GPX dal dispositivo">
               {actions.import === 'import' ? <ActivityIndicator size="small" color={COLORS.bg} /> : <FileUp size={17} color={COLORS.bg} />}
               <Text style={styles.uploadButtonText}>Importa GPX</Text>
@@ -730,8 +739,19 @@ export default function AccountArchiveScreen(props: {
           {archive && archive.tracks.length === 0 && <Text style={styles.empty}>Nessun percorso salvato.</Text>}
           {archive?.tracks.map((track) => {
             const detail = cloudDetails[track.id];
+            const isOnMap = props.visibleCloudTrackIds.has(track.id);
             return <TrackRow key={track.id} source="cloud" title={track.display_name} subtitle={`${formatDate(getCloudTrackDate(track))} · ${formatBytes(track.compressed_size_bytes)}`} stats={<TrackStats distanceM={track.distance_m} pointCount={track.point_count} porciniCount={detail?.route?.porciniCount} finferliCount={detail?.route?.finferliCount} loadingSpecies={detail?.loading} />} warning={partialDeletes.has(track.id) ? 'File eliminato; completa la cancellazione dei metadati.' : detail?.error ? 'Dettagli GPX temporaneamente non disponibili.' : undefined}>
-              <TouchableOpacity style={styles.iconButton} onPress={() => void handleShowOnMap(track)} disabled={Boolean(actions[track.id])} accessibilityLabel={`Mostra ${track.display_name} sulla mappa`}>{actions[track.id] === 'map' ? <ActivityIndicator size="small" color={COLORS.green} /> : <MapPinned size={19} color={COLORS.green} />}</TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.iconButton, isOnMap && styles.iconButtonRemove]}
+                onPress={() => void handleShowOnMap(track)}
+                disabled={Boolean(actions[track.id])}
+                accessibilityLabel={isOnMap ? `Rimuovi ${track.display_name} dalla mappa` : `Mostra ${track.display_name} sulla mappa`}
+                accessibilityState={{ selected: isOnMap }}
+              >
+                {actions[track.id] === 'map'
+                  ? <ActivityIndicator size="small" color={COLORS.green} />
+                  : isOnMap ? <MapPinOff size={19} color={COLORS.red} /> : <MapPinned size={19} color={COLORS.green} />}
+              </TouchableOpacity>
               <TouchableOpacity style={styles.iconButton} onPress={() => setTrackMenu(track)} disabled={Boolean(actions[track.id])} accessibilityLabel={`Altre azioni per ${track.display_name}`}>
                 {actions[track.id] ? <ActivityIndicator size="small" color={COLORS.text} /> : <MoreHorizontal size={21} color={COLORS.text} />}
               </TouchableOpacity>
@@ -769,7 +789,7 @@ export default function AccountArchiveScreen(props: {
                 <Pencil size={19} color={COLORS.amber} /><Text style={styles.menuActionText}>Rinomina</Text>
               </TouchableOpacity>
               <TouchableOpacity style={styles.menuAction} onPress={() => void handleEditOnMap(trackMenu)} accessibilityLabel={`Modifica ${trackMenu.display_name} sulla mappa`}>
-                <Scissors size={19} color={COLORS.green} /><Text style={styles.menuActionText}>Edita</Text>
+                <Scissors size={19} color={COLORS.green} /><Text style={styles.menuActionText}>Modifica</Text>
               </TouchableOpacity>
               <TouchableOpacity style={styles.menuAction} onPress={() => { const track = trackMenu; setTrackMenu(null); void handleDownload(track); }} accessibilityLabel={`Scarica ${trackMenu.display_name}`}>
                 <CloudDownload size={19} color={COLORS.text} /><Text style={styles.menuActionText}>Scarica</Text>
@@ -795,6 +815,27 @@ export default function AccountArchiveScreen(props: {
         onCancel={closeNameAction}
         onConfirm={() => void confirmNameAction()}
       />
+      {accountVisible && sessionState.session && props.lifecycle.fullAccess && <Modal visible animationType="slide" onRequestClose={() => setAccountVisible(false)}>
+        <View style={styles.accountScreen}>
+          <View style={[styles.accountHeader, { paddingTop: safeAreaInsets.top + 8 }]}>
+            <TouchableOpacity style={styles.iconButton} onPress={() => setAccountVisible(false)} accessibilityLabel="Torna all'archivio"><ArrowLeft size={22} color={COLORS.text} /></TouchableOpacity>
+            <Text style={styles.accountTitle}>Account e privacy</Text>
+          </View>
+          <ScrollView contentContainerStyle={[styles.accountContent, { paddingBottom: safeAreaInsets.bottom + 28 }]} showsVerticalScrollIndicator={false}>
+            <View style={styles.profileRow}>
+              <View style={styles.avatar}><UserRound size={25} color={COLORS.green} /></View>
+              <View style={styles.profileCopy}><Text style={styles.sectionTitle}>{archive?.profile.username ?? sessionState.username ?? 'Utente'}</Text><Text style={styles.muted}>{sessionState.session?.user.email}</Text></View>
+              <TouchableOpacity style={styles.secondaryButton} onPress={() => void runAuth(async () => { await signOut(); setAccountVisible(false); })} disabled={authBusy}><LogOut size={17} color={COLORS.text} /><Text style={styles.secondaryButtonText}>Esci</Text></TouchableOpacity>
+            </View>
+            {archive && <View style={styles.usageRow}>
+              <View><Text style={styles.metric}>{archive.tracks.length}/{archive.config.max_tracks_per_user}</Text><Text style={styles.muted}>percorsi salvati</Text></View>
+              <View><Text style={styles.metric}>{formatBytes(archive.config.max_compressed_bytes)}</Text><Text style={styles.muted}>massimo per file</Text></View>
+              <ShieldCheck size={23} color={COLORS.green} />
+            </View>}
+            <AccountRightsPanel accountState={props.lifecycle.access?.account_state ?? 'active'} />
+          </ScrollView>
+        </View>
+      </Modal>}
     </KeyboardAvoidingView>
   );
 }
@@ -802,32 +843,35 @@ export default function AccountArchiveScreen(props: {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: COLORS.bg },
   content: { padding: 18, paddingBottom: 36, gap: 14 },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingTop: 8, paddingBottom: 10 },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingTop: 10, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: COLORS.border },
   eyebrow: { color: COLORS.green, fontSize: 10, fontWeight: '800', letterSpacing: 2 },
-  title: { color: COLORS.text, fontSize: 28, fontWeight: '800', marginTop: 3 },
+  title: { color: COLORS.text, fontSize: 26, fontWeight: '700' },
+  headerSub: { color: COLORS.muted, fontSize: 14, lineHeight: 20, marginTop: 5 },
+  headerActions: { flexDirection: 'row', gap: 8 },
   sectionTitle: { color: COLORS.text, fontSize: 17, fontWeight: '800' },
   body: { color: COLORS.muted, fontSize: 14, lineHeight: 21, textAlign: 'center' },
-  muted: { color: COLORS.muted, fontSize: 12, lineHeight: 17 },
+  muted: { color: COLORS.muted, fontSize: 14, lineHeight: 20 },
   signedOut: { alignItems: 'center', gap: 13, paddingVertical: 20 },
   buttonRow: { flexDirection: 'row', gap: 10, marginTop: 6 },
   primaryButton: { minHeight: 44, borderRadius: 9, backgroundColor: COLORS.green, paddingHorizontal: 18, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
   primaryButtonText: { color: COLORS.bg, fontWeight: '800', fontSize: 14 },
-  secondaryButton: { minHeight: 40, borderRadius: 9, borderWidth: 1, borderColor: COLORS.border, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
+  secondaryButton: { minHeight: 44, borderRadius: 9, borderWidth: 1, borderColor: COLORS.border, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
   secondaryButtonText: { color: COLORS.text, fontWeight: '700', fontSize: 13 },
   profileRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: COLORS.border },
   avatar: { width: 44, height: 44, borderRadius: 22, backgroundColor: COLORS.panel2, alignItems: 'center', justifyContent: 'center' },
   profileCopy: { flex: 1 },
   usageRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: COLORS.panel, borderRadius: 10, padding: 14 },
   metric: { color: COLORS.text, fontSize: 17, fontWeight: '800' },
-  sectionHeaderRow: { borderTopWidth: 1, borderTopColor: COLORS.border, paddingTop: 16, marginTop: 4, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
+  sectionHeaderRow: { paddingTop: 4, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
   stateRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 18 },
   trackRow: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: COLORS.panel, borderRadius: 9, padding: 12 },
   trackCopy: { flex: 1, minWidth: 0, gap: 2 },
   trackTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  trackName: { flexShrink: 1, color: COLORS.text, fontWeight: '700', fontSize: 14 },
+  trackName: { flexShrink: 1, color: COLORS.text, fontWeight: '700', fontSize: 16 },
   sourceBadgeLocal: { color: COLORS.amber, borderWidth: 1, borderColor: '#735f30', borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1, fontSize: 8, fontWeight: '900', letterSpacing: 0.6 },
   trackActions: { width: 85, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', gap: 5 },
-  iconButton: { width: 40, height: 40, borderRadius: 8, borderWidth: 1, borderColor: COLORS.border, alignItems: 'center', justifyContent: 'center' },
+  iconButton: { width: 44, height: 44, borderRadius: 9, borderWidth: 1, borderColor: COLORS.border, alignItems: 'center', justifyContent: 'center' },
+  iconButtonRemove: { borderColor: COLORS.red, backgroundColor: '#351d1d' },
   uploadButton: { minHeight: 38, paddingHorizontal: 11, borderRadius: 8, backgroundColor: COLORS.green, flexDirection: 'row', gap: 5, alignItems: 'center' },
   importButton: { minHeight: 40, paddingHorizontal: 12, borderRadius: 8, backgroundColor: COLORS.green, flexDirection: 'row', gap: 6, alignItems: 'center' },
   uploadButtonText: { color: COLORS.bg, fontWeight: '800', fontSize: 12 },
@@ -854,4 +898,8 @@ const styles = StyleSheet.create({
   menuDeleteText: { color: COLORS.red },
   warning: { color: COLORS.amber, fontSize: 11, lineHeight: 16 },
   retry: { color: COLORS.text, fontWeight: '800', textDecorationLine: 'underline' },
+  accountScreen: { flex: 1, backgroundColor: COLORS.bg },
+  accountHeader: { minHeight: 64, flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 18, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: COLORS.border },
+  accountTitle: { color: COLORS.text, fontSize: 22, fontWeight: '700' },
+  accountContent: { padding: 18, gap: 16 },
 });

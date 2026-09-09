@@ -29,8 +29,9 @@ describe('index-history UI integration', () => {
     expect(chart).toContain('const MemoLineChart = React.memo(LineChart)');
     expect(chart).toContain('PanResponder.create');
     expect(chart).toContain('onStartShouldSetPanResponder: () => true');
-    expect(chart).toContain("gestureDirectionRef.current !== 'horizontal'");
+    expect(chart).toContain("gestureDirectionRef.current === 'vertical'");
     expect(chart).toContain("gestureDirectionRef.current !== 'vertical'");
+    expect(chart).toContain('gesture.moveX - gestureLeftRef.current');
     expect(chart).toContain('selectionX.setValue(clampedX)');
     expect(chart).toContain('panResponder.panHandlers');
     expect(chart).toContain('collapsable={false}');

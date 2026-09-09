@@ -21,14 +21,29 @@ describe('recording pause integration', () => {
   });
 
   it('shows clear pause, resume and finish actions without camera commands', () => {
-    expect(app).toContain('REGISTRAZIONE ATTIVA');
-    expect(app).toContain('REGISTRAZIONE IN PAUSA');
+    expect(app).toContain('Registrazione attiva');
+    expect(app).toContain('In pausa');
     expect(app).toContain('title="Registrazione terminata"');
-    expect(app).toContain("recordingPaused ? 'RIPRENDI' : 'PAUSA'");
-    expect(app).toContain('>TERMINA</Text>');
+    expect(app).toContain("recordingPaused ? 'Riprendi' : 'Pausa'");
+    expect(app).toContain('>Termina</Text>');
     const handlers = app.slice(app.indexOf('const pauseRecording'), app.indexOf('const saveCurrentRoute'));
     expect(handlers).not.toMatch(/runCameraCommand|centerCamera|setCameraCommand/);
     expect(app.match(/<MemoMapCanvas\b/g)).toHaveLength(1);
+  });
+
+  it('keeps the species totals out of the add buttons and in the compact findings panel', () => {
+    const recordingControls = app.slice(
+      app.indexOf('<View style={mStyles.bottomControls}>'),
+      app.indexOf('{coordinateSelection && ('),
+    );
+    const findingsPanel = app.slice(
+      app.indexOf('{recording && markers.length > 0 && ('),
+      app.indexOf('{!editingCloudRoute && routesOnMap.length > 0 && ('),
+    );
+    expect(recordingControls).not.toContain('mStyles.speciesCount');
+    expect(findingsPanel).toContain('mStyles.markerTotals');
+    expect(findingsPanel).toContain('P {porciniCount}');
+    expect(findingsPanel).toContain('F {finferliCount}');
   });
 
   it('creates durable checkpoints every ten points and forces them at lifecycle boundaries', () => {

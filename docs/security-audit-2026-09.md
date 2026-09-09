@@ -454,6 +454,11 @@ interattivo; riuso della credenziale negato.
 
 ### `SEC-AUD-005` — `finalize_my_gpx_track` accetta contenuti non validati
 
+**Remediation 2026-09-09 (code complete, production pending).** La migration
+`202609090001` aggiunge admission separata e worker service-role streaming.
+Export e funzioni trusted richiedono `validation_status=validated`; legacy e
+nuovi upload non sono trusted prima del controllo server.
+
 **Evidenza.** La reservation valida suffisso, valori dichiarati e formato
 dell'hash (`backend/supabase/migrations/202608130001_gpx_display_name_and_rename.sql:47-130`). La finalize
 controlla owner, dimensione Storage e MIME dichiarato
@@ -559,6 +564,10 @@ pubblici; testare range/batch con richieste limitate.
 **Mapping.** API1:2023, API5:2023, API4:2023.
 
 ### `SEC-AUD-009` — Quota globale cancellazione esterna esauribile da anonimo
+
+**Remediation 2026-09-09 (code complete, production pending).** La lookup
+account precede token, lock e insert. Un indirizzo sconosciuto riceve la stessa
+risposta generica ma non crea righe e non consuma il budget globale.
 
 **Evidenza.** `request_external_account_deletion` e' eseguibile da `anon`. La
 migration assegna un limite globale orario 100 e un limite per identificatore;
@@ -668,6 +677,10 @@ nel repository o nell'archive EAS.
 
 ### `SEC-AUD-016` — Quota GPX moltiplicabile e export ad alto costo senza budget tenant
 
+**Remediation 2026-09-09 (partial, production pending).** Budget atomici DB
+coprono byte per utente/tenant, pending, ingress tenant 24h, frequenza utente ed
+input export tenant 24h. Restano CAPTCHA/rate edge signup e alert di piano.
+
 **Evidenza.** La registrazione e' pubblica e richiede conferma email. Il limite
 iniziale e' 50 tracce da 10 MiB compressi per account, cioe' fino a 500 MiB di
 Storage per ogni identita' confermata
@@ -705,6 +718,10 @@ servire account legittimi. Nessun test di saturazione in produzione.
 
 ### `SEC-AUD-017` — Cleanup export scaduti senza limite puo' monopolizzare il worker
 
+**Remediation 2026-09-09 (code complete, production pending).** Le cancellazioni
+sono elaborate prima della manutenzione. Il cleanup ha cap per job, byte e tempo e il
+claim SQL rispetta il budget residuo.
+
 **Evidenza.** `run_account_rights` limita costruzione export e cancellazioni
 (`backend/src/accounts/rights.py:408,452`),
 ma tra le due fasi esegue un `while True` che reclama e cancella tutti gli
@@ -736,6 +753,10 @@ progredire comunque sulla cancellazione, senza doppie delete.
 ## Finding Low
 
 ### `SEC-AUD-013` — Oracle cross-user sullo stato contributor
+
+**Remediation 2026-09-09 (code complete, production pending).** EXECUTE sulla
+funzione UUID viene revocato ad `authenticated`; il client ha solo il wrapper
+basato su `auth.uid()`, mentre service-role conserva l'helper.
 
 **Evidenza.** `has_current_contributor_access(uuid)` e' `SECURITY DEFINER` e
 accetta un UUID arbitrario; la migration concede `EXECUTE` ad `authenticated`.

@@ -306,6 +306,8 @@ def test_gpx_gzip_validator_checks_real_content(tmp_path: Path) -> None:
     assert result.uncompressed_size_bytes == len(content)
     assert result.track_point_count == 2
     assert len(result.content_sha256) == 64
+    assert result.bbox == {"west": 10.2, "south": 45.1, "east": 10.3, "north": 45.2}
+    assert result.distance_m > 0
 
 
 def test_gpx_gzip_validator_rejects_fake_or_oversized_content(tmp_path: Path) -> None:
@@ -329,3 +331,9 @@ def test_gpx_gzip_validator_rejects_fake_or_oversized_content(tmp_path: Path) ->
             max_compressed_bytes=1024,
             max_uncompressed_bytes=2048,
         )
+
+    dangerous = tmp_path / "dangerous.gpx.gz"
+    with gzip.open(dangerous, "wb") as target:
+        target.write(b'<!DOCTYPE gpx [<!ENTITY x "x">]><gpx><trk><trkseg><trkpt lat="1" lon="1"/></trkseg></trk></gpx>')
+    with pytest.raises(ValueError, match="DTD/entities"):
+        validate_gpx_gzip(dangerous, max_compressed_bytes=1024, max_uncompressed_bytes=2048)

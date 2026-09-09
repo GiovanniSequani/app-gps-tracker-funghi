@@ -5,6 +5,7 @@ import hashlib
 from pathlib import Path
 
 from backend.src.accounts.gpx_admission import validate_pending_gpx
+from backend.src.accounts.gpx_admission import SupabaseAdmissionStore
 
 
 GPX = b'<gpx><trk><trkseg><trkpt lat="46.1" lon="11.2"><time>2026-09-01T10:00:00Z</time></trkpt><trkpt lat="46.2" lon="11.3"><time>2026-09-01T10:05:00Z</time></trkpt></trkseg></trk></gpx>'
@@ -62,3 +63,12 @@ def test_transient_download_error_is_retryable_not_rejected() -> None:
     payload = archive(); store = Store(row(payload))
     result = validate_pending_gpx(store, Storage(payload, fail=True))
     assert (result.failed, store.retried, store.rejected) == (1, 1, 0)
+
+
+def test_preview_calls_zero_argument_rpc_with_empty_payload() -> None:
+    class Client:
+        def rpc(self, function, payload):
+            assert (function, payload) == ("preview_gpx_admission", {})
+            return {"eligible": 2, "batch_limit": 20}
+
+    assert SupabaseAdmissionStore(Client()).preview()["eligible"] == 2

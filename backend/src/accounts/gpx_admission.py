@@ -28,7 +28,7 @@ class SupabaseAdmissionStore:
         self.client = client
 
     def preview(self) -> dict[str, Any]:
-        value = self.client.rpc("preview_gpx_admission")
+        value = self.client.rpc("preview_gpx_admission", {})
         return value[0] if isinstance(value, list) else value
 
     def claim(self, owner_token: str, limit: int | None) -> list[dict[str, Any]]:

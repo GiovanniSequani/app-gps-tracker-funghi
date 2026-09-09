@@ -848,7 +848,7 @@ Aggiornare con righe concise; non trasformare questa sezione in una chat log.
 | 2026-09-07 | OPS-001 | IN-PROGRESS | Verificato su messaggio Gmail in Spam: SPF, DKIM e DMARC tutti PASS. Corretto backend lifecycle con display name, Reply-To, Date e Message-ID `gmail.com`, mantenendo cleanup dei Message-ID legacy. Resta da adottare, prima di una crescita significativa, dominio verificato e provider transazionale con SPF/DKIM/DMARC propri. |
 | 2026-09-08 | BE-EMAIL-004 | DONE | Migration `202609070001` applicata. Collaudo usa-e-getta: ZIP privato, download owner, enqueue singolo/minimizzato, SMTP accettato e cleanup Storage/database/Auth senza residui. |
 | 2026-09-09 | SEC-001 | DONE (backend/mobile) | Rimossi log mobile di path, waypoint, coordinate e oggetti errore grezzi; le eccezioni pipeline persistono solo come classe. Test mirato anti-interpolazione dati sensibili, suite backend, typecheck e 213 test mobile superati; scansione di otto log reali account senza pattern sensibili. Il web resta un repository separato con handoff obbligatorio prima della prossima release. |
-| 2026-09-09 | SEC-AUD-001/002/004 | IN-PROGRESS | Eliminato il bridge Auth verso custom scheme; web con auto-detection URL disabilitata e callback HTTPS acquisite/pulite prima del render; mobile configurato per App/Universal Links e parser origin/path strict. Suite mobile 213 passed, typecheck e build/test web positivi. Mancano associazioni dominio e template Supabase live, AAB/IPA e collaudi usa-e-getta. |
+| 2026-09-09 | SEC-AUD-001/002/004 | IN-PROGRESS | Eliminato il bridge Auth verso custom scheme; web con auto-detection URL disabilitata e callback HTTPS acquisite/pulite prima del render; mobile configurato per App/Universal Links e parser origin/path strict. Suite mobile 213 passed, typecheck e build/test web positivi. Il proprietario dichiara completati allow-list e template Supabase; manca verifica indipendente. Restano associazioni dominio, AAB/IPA e collaudi usa-e-getta. |
 
 ## Security audit pre-release 2026-09
 
@@ -863,21 +863,36 @@ test runtime a due account e AAB finale restano `NOT TESTED`.
 | SEC-AUD-001 | IN-PROGRESS | Rimossi bridge e callback Auth custom; configurati App Links/Universal Links HTTPS. Restano file di associazione live, AAB/IPA e collaudo concorrente cold/warm. |
 | SEC-AUD-002 | IN-PROGRESS | `detectSessionInUrl=false` e callback limitate ai path Auth, con test locali. Resta il test runtime di session swapping a due account. |
 | SEC-AUD-003 | TODO | Spostare la sessione mobile in storage sicuro ed escludere sessione, GPX, database, draft e cache dal backup. |
-| SEC-AUD-004 | IN-PROGRESS | Callback acquisita in memoria e URL pulita prima del render; template a fragment documentato. Restano modifica template Supabase e verifica log/flussi reali. |
-| SEC-AUD-005 | TODO | Introdurre validazione GPX server-side prima dello stato trusted/ready. |
+| SEC-AUD-004 | IN-PROGRESS | Callback acquisita in memoria e URL pulita prima del render; allow-list e template a fragment dichiarati configurati dal proprietario. Restano verifica Management/runtime, log e flussi reali. |
+| SEC-AUD-005 | IMPLEMENTED, CUTOVER PENDING | Admission worker streaming e stato `validation_status`; export/modelling accettano solo `validated`. |
 | SEC-AUD-006 | TODO | Applicare cap pre-read e decompressione/parser bounded al GPX web e ai download cloud. |
 | SEC-AUD-007 | TODO | Eliminare i file GPX/export temporanei mobile dopo share, errore, logout e cancellazione. |
 | SEC-AUD-008 | TODO/RISK-ACCEPTANCE | Proteggere tecnicamente l'indice recente o accettare formalmente per release bypass diretto ed egress pubblico. |
-| SEC-AUD-009 | TODO | Proteggere la richiesta esterna di cancellazione dall'esaurimento anonimo della quota globale. |
+| SEC-AUD-009 | IMPLEMENTED, CUTOVER PENDING | Email sconosciute: risposta invariata, nessuna riga e nessun consumo quota globale. |
 | SEC-AUD-010 | TODO | Aggiornare MapLibre oltre CVE-2026-85061 e verificare attribution/popup/CSP. |
 | SEC-AUD-011 | TODO | Creare dependency gate/SBOM, lock Python e triage reachability delle advisory mobile/web. |
 | SEC-AUD-012 | TODO | Firmare end-to-end gli update EAS o disabilitare OTA per la release. |
-| SEC-AUD-013 | TODO | Rendere owner-only l'helper pubblico sullo stato contributor, preservando service-role e RLS. |
+| SEC-AUD-013 | IMPLEMENTED, CUTOVER PENDING | Helper UUID revocato ai client; wrapper owner-only, service-role preservata. |
 | SEC-AUD-014 | TODO | Confermare revoca o restriction della chiave client rimossa ma presente nella history Git. |
 | SEC-AUD-015 | TODO | Abilitare HSTS e allineare gli header sensibili a entrambe le varianti URL della cancellazione. |
-| SEC-AUD-016 | TODO | Applicare budget aggregati a GPX/Storage/export e proteggere signup/upload da moltiplicazione tramite account usa-e-getta. |
-| SEC-AUD-017 | TODO | Limitare per job, byte e tempo il cleanup export scaduti e garantire avanzamento equo delle cancellazioni. |
+| SEC-AUD-016 | PARTIAL, CUTOVER PENDING | Budget DB user/tenant su byte, pending, ingress 24h ed export; CAPTCHA/rate edge signup resta separato. |
+| SEC-AUD-017 | IMPLEMENTED, CUTOVER PENDING | Cancellazioni prioritarie; cleanup export limitato per job, byte e tempo. |
 | SEC-AUD-018 | TODO | Introdurre backoff, jitter, `Retry-After` e tetto ai retry/polling client; verificare con errori simulati e staging. |
+
+### Task differiti per App Links e Universal Links
+
+I task seguenti riprendono i punti 3-7 del runbook Auth. Non creare file con
+placeholder: attendere gli identificativi definitivi degli account sviluppatore.
+
+| ID | Stato | Task / criterio di completamento |
+|---|---|---|
+| SEC-AUTH-LINK-003 | BLOCKED | Dopo l'apertura dell'account Google Play, recuperare il fingerprint SHA-256 Play App Signing; aggiungere anche quello EAS solo se diverso e necessario per APK preview. Creare `public/.well-known/assetlinks.json` nel repository web con package `com.giovannisequani.funghitracker`, senza chiavi private. |
+| SEC-AUTH-LINK-004 | BLOCKED | Dopo l'apertura dell'account Apple Developer, recuperare l'Apple Team ID e creare `public/.well-known/apple-app-site-association`, senza estensione, limitato a `/auth/confirm` e `/auth/recovery`. |
+| SEC-AUTH-LINK-005 | BLOCKED | Dopo 003/004, committare e distribuire i due file su Cloudflare Pages; verificare risposta diretta `200`, `Content-Type: application/json`, assenza di redirect e assenza di fallback HTML. |
+| SEC-AUTH-LINK-006 | BLOCKED | Dopo 005, generare nuove build firmate EAS Android/iOS; verificare manifest/entitlement finali e lo stato App Links Android con `pm verify-app-links` e `pm get-app-links`. Un update OTA non soddisfa il criterio. |
+| SEC-AUTH-LINK-007 | BLOCKED | Dopo 006, usare soltanto account usa-e-getta per conferma e recovery web/mobile, cold/warm start, cambio password, handler custom-scheme concorrente, session swapping, URL pulita e assenza di query sensibili nei log provider. Chiudere `SEC-AUD-001/002/004` solo dopo evidenza positiva. |
+
+| 2026-09-09 | SEC-AUD-005/009/013/016/017 | IMPLEMENTED, CUTOVER PENDING | Migration incrementale `202609090001`, worker admission GPX, trusted gate, budget user/tenant e cleanup bounded. Test locali; nessuna applicazione o azione distruttiva in produzione. |
 
 ## Questioni aperte
 

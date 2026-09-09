@@ -75,6 +75,7 @@ import {
   writeRecordingDraft,
 } from './src/recording/recordingDraftStorage';
 import { RecordingRecoveryModal } from './src/recording/RecordingRecoveryModal';
+import { BackgroundLocationDisclosureModal } from './src/recording/BackgroundLocationDisclosureModal';
 import {
   effectiveTrim,
   excludedTrackSegments,
@@ -414,8 +415,8 @@ TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
         });
       });
       await FileSystemLegacy.writeAsStringAsync(RECORDING_BACKGROUND_POSITIONS_FILE, JSON.stringify(arr));
-    } catch (err) {
-      console.error('Errore scrittura file bg positions:', err);
+    } catch {
+      console.error('Errore scrittura file bg positions');
     }
   }
 });
@@ -522,6 +523,7 @@ export default function App() {
   const lastCheckpointPointCountRef = React.useRef(0);
   const scheduledCheckpointPointCountRef = React.useRef(0);
   const pendingFinishedDraftRef = React.useRef<RecordingDraft | null>(null);
+  const backgroundDisclosureResolverRef = React.useRef<((continueRequest: boolean) => void) | null>(null);
   const pathRef = React.useRef<Coordinate[]>(path);
   const markersRef = React.useRef<MarkerData[]>(markers);
 
@@ -959,7 +961,7 @@ export default function App() {
           recordingStatusRef.current === 'paused' ? 'paused' : 'recording',
           { force: true, path: updatedPath },
         ))
-        .catch((err) => console.warn('[gps-recovery] Checkpoint background non riuscito:', err));
+        .catch(() => console.warn('[gps-recovery] Checkpoint background non riuscito'));
     });
     return () => subscription.remove();
   }, [checkpointRecordingDraft, syncPathFromFile]);
@@ -1321,8 +1323,8 @@ export default function App() {
         setRecoveryDraft(null);
         setRecoveryError(null);
       })
-      .catch((err) => {
-        console.warn('[gps-recovery] Eliminazione della registrazione annullata non riuscita:', err);
+      .catch(() => {
+        console.warn('[gps-recovery] Eliminazione della registrazione annullata non riuscita');
         setRecordingNameError('Impossibile eliminare la registrazione non salvata. Riprova.');
         setRecordingNameVisible(true);
       })

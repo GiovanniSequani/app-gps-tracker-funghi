@@ -3,6 +3,10 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const app = fs.readFileSync(path.resolve(__dirname, '../../../App.tsx'), 'utf8');
+const backgroundDisclosure = fs.readFileSync(
+  path.resolve(__dirname, '../BackgroundLocationDisclosureModal.tsx'),
+  'utf8',
+);
 
 describe('recording pause integration', () => {
   it('gates both foreground and background points while paused', () => {
@@ -29,6 +33,21 @@ describe('recording pause integration', () => {
     const handlers = app.slice(app.indexOf('const pauseRecording'), app.indexOf('const saveCurrentRoute'));
     expect(handlers).not.toMatch(/runCameraCommand|centerCamera|setCameraCommand/);
     expect(app.match(/<MemoMapCanvas\b/g)).toHaveLength(1);
+  });
+
+  it('shows the prominent disclosure before requesting background location', () => {
+    const start = app.slice(app.indexOf('const startRecording'), app.indexOf('const pauseRecording'));
+    const disclosureIndex = start.indexOf('await showBackgroundLocationDisclosure()');
+    const permissionRequestIndex = start.indexOf('Location.requestBackgroundPermissionsAsync()');
+
+    expect(start).toContain('Location.getBackgroundPermissionsAsync()');
+    expect(disclosureIndex).toBeGreaterThan(-1);
+    expect(permissionRequestIndex).toBeGreaterThan(disclosureIndex);
+    expect(backgroundDisclosure).toContain('raccoglie dati sulla posizione');
+    expect(backgroundDisclosure).toContain('anche quando l’app non è in uso');
+    expect(backgroundDisclosure).toContain('registrare il percorso');
+    expect(backgroundDisclosure).toContain('onRequestClose={onCancel}');
+    expect(start).not.toMatch(/runCameraCommand|centerCamera|setCameraCommand/);
   });
 
   it('keeps the species totals out of the add buttons and in the compact findings panel', () => {

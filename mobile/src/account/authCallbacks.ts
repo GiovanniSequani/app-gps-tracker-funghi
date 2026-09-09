@@ -1,6 +1,6 @@
-export const AUTH_CONFIRM_REDIRECT_URL = 'https://web-funghi-index.pages.dev/auth/mobile-confirm';
-export const AUTH_CONFIRM_DEEP_LINK_URL = 'funghitracker://auth/confirm';
-export const AUTH_RECOVERY_REDIRECT_URL = 'funghitracker://auth/recovery';
+export const AUTH_CALLBACK_ORIGIN = 'https://web-funghi-index.pages.dev';
+export const AUTH_CONFIRM_REDIRECT_URL = `${AUTH_CALLBACK_ORIGIN}/auth/confirm`;
+export const AUTH_RECOVERY_REDIRECT_URL = `${AUTH_CALLBACK_ORIGIN}/auth/recovery`;
 
 export type AuthCallbackRequest =
   | { kind: 'confirm'; type: 'email' | 'signup'; tokenHash: string }
@@ -26,40 +26,36 @@ function isValidTokenHash(value: string): boolean {
 }
 
 export function parseAuthCallbackUrl(value: string): AuthCallbackParseResult {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    return value.toLowerCase().startsWith('funghitracker://auth/')
-      ? { status: 'invalid' }
-      : { status: 'ignored' };
-  }
-
-  if (url.protocol !== 'funghitracker:' || url.hostname !== 'auth') {
+  const match = value.match(/^https:\/\/web-funghi-index\.pages\.dev(\/auth\/(?:confirm|recovery))(\?[^#]*)?(?:#(.*))?$/);
+  if (!match) {
     return { status: 'ignored' };
   }
-
-  if (url.pathname !== '/confirm' && url.pathname !== '/recovery') {
+  const pathname = match[1];
+  const queryParams = new URLSearchParams((match[2] ?? '').replace(/^\?/, ''));
+  const fragmentParams = new URLSearchParams(match[3] ?? '');
+  const queryHasCredential = queryParams.has('type') || queryParams.has('token_hash');
+  const fragmentHasCredential = fragmentParams.has('type') || fragmentParams.has('token_hash');
+  if ((queryHasCredential && fragmentHasCredential)
+    || [...queryParams.keys()].some((key) => key !== 'type' && key !== 'token_hash')
+    || [...fragmentParams.keys()].some((key) => key !== 'type' && key !== 'token_hash')) {
     return { status: 'invalid' };
   }
-  if (url.hash || [...url.searchParams.keys()].some((key) => key !== 'type' && key !== 'token_hash')) {
-    return { status: 'invalid' };
-  }
 
-  const types = url.searchParams.getAll('type');
-  const tokenHashes = url.searchParams.getAll('token_hash');
+  const params = fragmentHasCredential ? fragmentParams : queryParams;
+  const types = params.getAll('type');
+  const tokenHashes = params.getAll('token_hash');
   const tokenHash = tokenHashes[0]?.trim() ?? '';
   if (types.length !== 1 || tokenHashes.length !== 1 || !isValidTokenHash(tokenHash)) {
     return { status: 'invalid' };
   }
 
-  if (url.pathname === '/confirm' && CONFIRM_TYPES.has(types[0])) {
+  if (pathname === '/auth/confirm' && CONFIRM_TYPES.has(types[0])) {
     return {
       status: 'valid',
       request: { kind: 'confirm', type: types[0] as 'email' | 'signup', tokenHash },
     };
   }
-  if (url.pathname === '/recovery' && types[0] === 'recovery') {
+  if (pathname === '/auth/recovery' && types[0] === 'recovery') {
     return {
       status: 'valid',
       request: { kind: 'recovery', type: 'recovery', tokenHash },

@@ -75,7 +75,7 @@ describe('account archive client', () => {
       auth: { resetPasswordForEmail },
     } as never);
     expect(resetPasswordForEmail).toHaveBeenCalledWith('mario@example.test', {
-      redirectTo: 'funghitracker://auth/recovery',
+      redirectTo: 'https://web-funghi-index.pages.dev/auth/recovery',
     });
 
     await expect(requestPasswordRecovery('mario@example.test', {

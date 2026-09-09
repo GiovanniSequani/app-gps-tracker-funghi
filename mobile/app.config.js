@@ -30,6 +30,24 @@ const isValidSupabaseUrl = (value) =>
 module.exports = ({ config }) => ({
   ...config,
   scheme: 'funghitracker',
+  ios: {
+    ...config.ios,
+    associatedDomains: ['applinks:web-funghi-index.pages.dev'],
+  },
+  android: {
+    ...config.android,
+    intentFilters: [
+      {
+        action: 'VIEW',
+        autoVerify: true,
+        data: [
+          { scheme: 'https', host: 'web-funghi-index.pages.dev', pathPrefix: '/auth/confirm' },
+          { scheme: 'https', host: 'web-funghi-index.pages.dev', pathPrefix: '/auth/recovery' },
+        ],
+        category: ['BROWSABLE', 'DEFAULT'],
+      },
+    ],
+  },
   extra: {
     ...config.extra,
     supabaseUrl: isValidSupabaseUrl(env.EXPO_PUBLIC_SUPABASE_URL)

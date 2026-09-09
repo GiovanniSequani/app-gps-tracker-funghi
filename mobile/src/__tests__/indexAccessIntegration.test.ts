@@ -29,8 +29,19 @@ describe('integrazione accesso indice e mappa', () => {
   it('non ricarica la selezione tile durante una semplice rivalidazione e rimuove il livello recente alla perdita di accesso', () => {
     expect(app).toContain('loadedTileAccessLevelRef.current === fullIndexAccess');
     expect(app).toContain("loadedTileAccessLevelRef.current === true && !fullIndexAccess");
-    expect(app).toContain('}, [fullIndexAccess, indexAccessReady]);');
+    expect(app).toContain('}, [fullIndexAccess, indexAccessReady, tileBootstrapRevision]);');
     expect(app).toContain("setTileDate('')");
     expect(app).toContain("setTileVersion('')");
+  });
+
+  it('ritenta il bootstrap delle tile dopo un errore di rete senza impartire comandi camera', () => {
+    expect(app).toContain('if (!indexAccessReady || tilesLoading || !tilesError) return;');
+    expect(app).toContain('setTileBootstrapRevision((current) => current + 1);');
+    expect(app).toContain('TILE_BOOTSTRAP_RETRY_DELAY_MS');
+    const retryEffect = app.slice(
+      app.indexOf('if (!indexAccessReady || tilesLoading || !tilesError) return;'),
+      app.indexOf('// posizione iniziale'),
+    );
+    expect(retryEffect).not.toContain('runCameraCommand');
   });
 });

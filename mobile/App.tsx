@@ -170,6 +170,7 @@ const SUPABASE_URL =
 const SUPABASE_BUCKET = 'tiles';
 const TILE_SET_MANIFEST = 'tile_sets.json';
 const TILE_SET_REGEX = /^(\d{4})([-_])(\d{2})\2(\d{2})_v(\d+)$/;
+const TILE_BOOTSTRAP_RETRY_DELAY_MS = 4000;
 
 type ParsedTileSet = TileSet & {
   year: number;
@@ -506,6 +507,7 @@ export default function App() {
   const [tileOpacity, setTileOpacity] = React.useState(0.85);
   const [tilesLoading, setTilesLoading] = React.useState(true);
   const [tilesError, setTilesError] = React.useState<string | null>(null);
+  const [tileBootstrapRevision, setTileBootstrapRevision] = React.useState(0);
   const loadedTileAccessLevelRef = React.useRef<boolean | null>(null);
   const [cameraCommand, setCameraCommand] = React.useState<CameraCommand | null>(null);
   const followLocationRef = React.useRef(true);
@@ -797,7 +799,15 @@ export default function App() {
       }
     })();
     return () => { mounted = false; };
-  }, [fullIndexAccess, indexAccessReady]);
+  }, [fullIndexAccess, indexAccessReady, tileBootstrapRevision]);
+
+  React.useEffect(() => {
+    if (!indexAccessReady || tilesLoading || !tilesError) return;
+    const retryTimer = setTimeout(() => {
+      setTileBootstrapRevision((current) => current + 1);
+    }, TILE_BOOTSTRAP_RETRY_DELAY_MS);
+    return () => clearTimeout(retryTimer);
+  }, [indexAccessReady, tilesError, tilesLoading]);
 
   // posizione iniziale: struttura ripresa dal bundle recuperato
   React.useEffect(() => {

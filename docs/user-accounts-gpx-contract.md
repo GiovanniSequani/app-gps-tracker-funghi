@@ -1,18 +1,5 @@
 # User accounts and private GPX archive contract
 
-> **Current-state contract.** This document describes the implementation that
-> currently uses `raw_gpx_research_consent`. The approved target product policy
-> is the contributor-account lifecycle in
-> `docs/contributor-account-contract.md` and
-> `docs/account-access-privacy-rollout.md`. Until its migrations are complete,
-> do not reinterpret legacy acceptances or use this contract as evidence that
-> existing users accepted the target treatment.
->
-> Il backend target e ora preparato nelle migration `202608290001` e
-> `202608310001`, ma non e ancora applicato. Dopo il cutover, il contratto
-> lifecycle descritto sotto sostituira i passaggi legacy di registrazione e
-> consenso di questa sezione.
-
 This contract is backend-owned. Mobile and web use the Supabase anon key plus
 the signed-in user's JWT. The service-role key is permitted only in trusted
 backend/admin jobs and must never be embedded in either client.
@@ -88,23 +75,6 @@ The current consent explicitly covers raw GPX tracks. Mushroom markers are
 separate user annotations: include them in research only after the legal text
 and its version explicitly cover that use. The schema keeps raw data and edits
 separate so this distinction remains enforceable.
-
-### Target lifecycle (not yet active)
-
-After the coordinated cutover, clients read versions from
-`get_account_lifecycle_public_config()`, submit exact `terms_version`,
-`privacy_version`, `terms_acceptance_source` and `privacy_acknowledged` at
-signup, and use `get_my_account_access()` after authentication. The legacy
-`raw_gpx_research_consent` RPC is revoked and its fields no longer authorize
-archive access or trusted modelling.
-
-Normal list/download/upload/edit/delete operations require `full_access=true`.
-An account in `restricted` or `deletion_pending` cannot bypass this rule via
-direct REST, Storage, or an archive RPC. Export and full account deletion are
-separate future workflows; they are not implemented by this lifecycle block.
-
-The complete client sequence and payloads are documented in
-`docs/account-lifecycle-frontend-handoff.md`.
 
 ## GPX object and metadata
 
@@ -200,17 +170,6 @@ Finalization verifies the Storage row, owner, MIME and size and changes status
 from `pending_upload` to `ready`. It is idempotent. If upload fails before an
 object exists, release the reservation with
 `delete_my_gpx_track_metadata({p_track_id: id})`.
-
-### Automatic cleanup of incomplete uploads
-
-After the lifecycle migration is enabled operationally, a backend-only daily
-worker also reclaims reservations left in `pending_upload` for more than the
-database-configured TTL (24 hours by default). This is a server recovery path,
-not a client discovery/listing mechanism: it claims a small locked batch, acts
-only on the exact canonical object path of each reservation, verifies removal,
-then deletes the metadata. A transient failure releases the claim for retry;
-`ready` tracks and their objects are never selected. Clients should still call
-the normal release RPC immediately after a known failed upload.
 
 ## Listing and download
 
@@ -325,12 +284,6 @@ all metadata and download raw GPX objects, but must filter current research
 consent and produce anonymized derived data. Never log JWTs, service keys,
 emails, usernames, object paths or raw GPX content.
 
-The preceding consent filter is the current implementation only. Under the
-target contributor-account policy, jobs must instead apply the point-in-time
-eligibility and temporary-dataset lifecycle defined by `MODEL-PIPE-001` in
-`docs/account-access-privacy-rollout.md`. No target-policy extraction may run
-before the account and legal-version migration is complete.
-
 The SQL layer validates the canonical `.gpx.gz` suffix, reservation, exact
 compressed size, MIME, hashes' shape, time ordering, numeric ranges and bbox.
 Storage/Postgres cannot inspect gzip magic or parse GPX XML during a direct
@@ -340,36 +293,8 @@ client upload. The backend validator performs those checks before trusted use:
 python -m backend.scripts.supabase.validate_gpx_file path\to\track.gpx.gz
 ```
 
-Migration `202609090001_security_audit_backend_hardening.sql` makes this an
-enforced server-side admission flow. `finalize_my_gpx_track` still makes a
-successful upload visible to its owner for backward compatibility, but it does
-not make its bytes trusted. `user_gpx_tracks.validation_status` is authoritative:
-
-- `pending`: newly finalized object waiting for the backend worker;
-- `legacy_unverified`: pre-migration ready object waiting for the same checks;
-- `validating`: leased by one service-role worker;
-- `validated`: gzip/XML, hash, size, coordinates and statistics recomputed;
-- `rejected`: invalid object; the worker removes its exact Storage path.
-
-Only `validated` raw objects enter personal-data ZIPs or the two
-`trusted_current_contributor_gpx_*` functions. The owner still sees metadata for
-unverified/rejected rows, so migration does not silently erase historical data.
-Run admission from the repository root (normally via the daily account pipeline):
-
-```powershell
-python -m backend.scripts.accounts.validate_pending_gpx --dry-run
-python -m backend.scripts.accounts.validate_pending_gpx --run
-```
-
-The parser is streaming and bounded by database configuration. DTD/entities,
-invalid gzip/XML/root/coordinates, false hashes or sizes, and excessive
-decompressed data are rejected. No recursive Storage listing is used.
-
-Server-side reservation budgets are configurable in `gpx_archive_config`:
-total bytes per user/tenant, pending uploads per user, daily uploads per user,
-daily tenant ingress bytes and admission batch size. An admission-event ledger
-prevents reserve/delete loops from resetting the 24-hour budget. Clients may
-display quota errors but cannot override enforcement.
+A future research/ingestion worker must call the same validator, use the limits
+read from `gpx_archive_config`, and quarantine invalid objects before training.
 
 ## Applying and validating
 
@@ -397,15 +322,6 @@ Finally apply the marker-species migration:
 ```text
 backend/supabase/migrations/202608160002_gpx_marker_species.sql
 ```
-
-After lifecycle/rights, apply:
-
-```text
-backend/supabase/migrations/202609090001_security_audit_backend_hardening.sql
-```
-
-It does not change either account feature switch. Existing ready tracks become
-`legacy_unverified` and are admitted gradually by the local worker.
 
 Expected SQL Editor result is `Success. No rows returned`. Then, from the
 repository root, run the read-only service-role audit:

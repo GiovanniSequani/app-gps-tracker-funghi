@@ -33,6 +33,8 @@ Leggere `../AGENTS.md` prima di lavorare nel repository.
   repository web separato.
 - `security-audit-backend-handoff.md`: compatibilita client dopo admission GPX,
   quote aggregate e rimozione dell'oracle lifecycle cross-user.
+- `dependency-security-runbook.md`: lock Python, dependency gate, SBOM,
+  eccezioni advisory e verifica sicura della chiave Google storica.
 - `user-accounts-gpx-contract.md`: contratto tecnico corrente di account e GPX.
 - `public-data-contract.md`: contratti dei dataset pubblici.
 - `weather-time-series.md`: serie temporali meteo.

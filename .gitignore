@@ -22,6 +22,7 @@
 /backend/logs/
 /backend/outputs/
 /backend/tmp/
+/backend/.venv/
 /backend/data/final/meteo/.hrs_staging/
 *.building
 **/__pycache__/

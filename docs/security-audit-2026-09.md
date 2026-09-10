@@ -2,7 +2,7 @@
 
 Data assessment: 2026-09-09
 
-Fase: 1, audit senza modifiche al codice
+Fase: remediation documentata; verifiche runtime e release ancora aperte
 
 Remediation 2026-09-09: implementazione locale avviata per `SEC-AUD-001`,
 `SEC-AUD-002` e `SEC-AUD-004`. I tre finding restano aperti fino alle verifiche
@@ -282,12 +282,12 @@ Nessun servizio puo' essere dichiarato "DDoS-proof" sulla sola base del CDN.
 
 | Superficie | Vettore di disponibilita' | Esito |
 |---|---|---|
-| GPX web/server | decompressione client non bounded e contenuto non validato server-side | `BLOCKED`: `SEC-AUD-005`, `SEC-AUD-006` |
-| Dataset pubblici | scraping diretto, egress e bypass del gate client | `BLOCKED`: `SEC-AUD-008` |
-| Cancellazione esterna | esaurimento anonimo della quota globale | `BLOCKED`: `SEC-AUD-009` |
-| GPX/export | moltiplicazione della quota tramite piu' account | `BLOCKED`: `SEC-AUD-016` |
-| Worker diritti | backlog export scaduti senza budget per run | `BLOCKED`: `SEC-AUD-017` |
-| Client mobile/web | retry e polling fissi durante outage | `BLOCKED`: `SEC-AUD-018` |
+| GPX web/server | decompressione e ammissione di contenuto non valido | `IMPLEMENTED, RUNTIME NEGATIVE TEST PENDING`: `SEC-AUD-005`, `SEC-AUD-006` |
+| Dataset pubblici | scraping diretto, egress e bypass del gate client | `RISK ACCEPTED 1.9.0`: `SEC-AUD-008` |
+| Cancellazione esterna | esaurimento anonimo della quota globale | `IMPLEMENTED, RUNTIME PENDING`: `SEC-AUD-009` |
+| GPX/export | moltiplicazione della quota tramite piu' account | `PARTIAL`: budget DB attivi, edge/signup pending (`SEC-AUD-016`) |
+| Worker diritti | backlog export scaduti senza budget per run | `IMPLEMENTED, RUNTIME BACKLOG TEST PENDING`: `SEC-AUD-017` |
+| Client mobile/web | retry e polling fissi durante outage | `IMPLEMENTED, RUNTIME PENDING`: `SEC-AUD-018` |
 
 ### Limiti della verifica
 
@@ -383,6 +383,11 @@ callback confirm/recovery legittimi devono continuare a funzionare.
 
 ### `SEC-AUD-003` — Sessione e geodati mobile inclusi nel backup Android
 
+**Remediation 2026-09-11 (implemented, signed-build verification pending).** La
+sessione usa SecureStore, Android imposta `allowBackup=false` e il plugin iOS
+esclude documenti/application support dal backup. Test statici e unitari sono
+verdi; restano ispezione dell'AAB/IPA e prova backup/restore su dispositivo.
+
 **Evidenza.** `mobile/src/account/supabase.ts:2,19,48-52` conserva la sessione,
 incluso il refresh token, in AsyncStorage. GPX, SQLite e draft di registrazione
 sono salvati nello storage applicativo. L'Expo config non imposta
@@ -454,10 +459,12 @@ interattivo; riuso della credenziale negato.
 
 ### `SEC-AUD-005` — `finalize_my_gpx_track` accetta contenuti non validati
 
-**Remediation 2026-09-09 (code complete, production pending).** La migration
-`202609090001` aggiunge admission separata e worker service-role streaming.
-Export e funzioni trusted richiedono `validation_status=validated`; legacy e
-nuovi upload non sono trusted prima del controllo server.
+**Remediation 2026-09-09 (implemented, runtime negative test pending).** La
+migration `202609090001` è applicata e aggiunge admission separata e worker
+service-role streaming. Export e funzioni trusted richiedono
+`validation_status=validated`; legacy e nuovi upload non sono trusted prima
+del controllo server. Il worker ha validato i 9 archivi eleggibili senza
+errori; manca una prova live controllata con contenuto avverso.
 
 **Evidenza.** La reservation valida suffisso, valori dichiarati e formato
 dell'hash (`backend/supabase/migrations/202608130001_gpx_display_name_and_rename.sql:47-130`). La finalize
@@ -491,6 +498,11 @@ usa-e-getta.
 
 ### `SEC-AUD-006` — Decompressione GPX web prima dei limiti
 
+**Remediation 2026-09-11 (implemented, deploy/runtime verification pending).**
+Il parser web applica cap prima della lettura, decompressione bounded e limiti
+XML/punti; i test sintetici sono presenti nel commit web `aadfcab`. Restano il
+deploy verificato e una prova browser sui file avversi previsti dal finding.
+
 **Evidenza.** `../web-funghi-index/src/account/gpx.ts:80-86` legge l'intero file e chiama
 `gunzip` prima di verificare limite compresso e non compresso.
 `decodeCloudGpx`, righe 89-92, non riceve alcun limite. Il probe locale ha
@@ -516,6 +528,11 @@ misurati senza crescita incontrollata.
 
 ### `SEC-AUD-007` — GPX ed export restano nella cache mobile
 
+**Remediation 2026-09-11 (implemented, device verification pending).** Copie
+GPX ed export usano una directory temporanea dedicata, cleanup in `finally` e
+purge nei confini account previsti. Test unitari verdi; resta l'ispezione del
+filesystem su dispositivo dopo successo, errore, logout e riavvio.
+
 **Evidenza.** `mobile/src/account/AccountArchiveScreen.tsx:310-312,562-565`
 crea copie GPX in `Paths.cache`; `mobile/src/account/useAccountRights.ts:25-30`
 crea l'export ZIP nella stessa cache.
@@ -539,6 +556,15 @@ logout, restart e cancellazione account.
 **Mapping.** MASVS-STORAGE, MASVS-PRIVACY.
 
 ### `SEC-AUD-008` — Bypass diretto di `full_access` sui dataset correnti
+
+**Decisione prodotto 2026-09-11 — rischio accettato per release 1.9.0.**
+`tiles`, `index-data` e `index-history` restano tecnicamente pubblici nei
+bucket correnti. Il gate D-7 rispetto all'indice corrente è una regola UI e di
+prodotto, non una misura di autorizzazione. Non sono coinvolti dati personali.
+Si accettano per questa release scraping, bypass del gate client ed egress
+associato. La decisione va rivalutata prima di una crescita rilevante degli
+utenti, dell'introduzione di forecast riservati oppure al verificarsi di costi,
+egress o traffico anomali; in quei casi valutare bucket privato/gateway e quote.
 
 **Evidenza.** Il contratto dichiara `tiles`, `index-data` e `index-history`
 pubblici. Il 2026-09-09 richieste `HEAD` anonime ai tre pointer/manifests hanno
@@ -565,7 +591,7 @@ pubblici; testare range/batch con richieste limitate.
 
 ### `SEC-AUD-009` — Quota globale cancellazione esterna esauribile da anonimo
 
-**Remediation 2026-09-09 (code complete, production pending).** La lookup
+**Remediation 2026-09-09 (implemented, runtime verification pending).** La lookup
 account precede token, lock e insert. Un indirizzo sconosciuto riceve la stessa
 risposta generica ma non crea righe e non consuma il budget globale.
 
@@ -596,6 +622,11 @@ richiesta legittima e che non causano enumerazione.
 
 ### `SEC-AUD-010` — MapLibre web vulnerabile a CVE-2026-85061
 
+**Remediation 2026-09-11 (implemented, browser/deploy verification pending).**
+Il web usa `maplibre-gl@6.4.1`, prima versione corretta, e il dependency gate
+non rileva advisory web. Restano verifica sul deploy di attribution, popup e
+CSP e il test regressivo browser richiesto.
+
 **Evidenza.** Il lock web installa `maplibre-gl@5.24.0`; la advisory critica
 GHSA-jrc7-96c5-q579/CVE-2026-85061 riguarda versioni `<=6.4.0` e corregge in
 `6.4.1`: [GitHub Advisory](https://github.com/advisories/GHSA-jrc7-96c5-q579).
@@ -621,6 +652,14 @@ regressivo con payload innocuo che verifichi la rimozione degli event handler.
 **Mapping.** ASVS V5, CWE-79.
 
 ### `SEC-AUD-011` — Dependency gate incompleto e backend non riproducibile
+
+**Remediation 2026-09-10 (code complete).** Backend definito da
+`pyproject.toml` e `uv.lock`; un gate unico genera tre SBOM CycloneDX e fallisce
+su advisory nuovi o eccezioni scadute. `requests`, `pytest` e `fflate` sono
+stati aggiornati alle sole versioni correttive necessarie. Backend e web hanno 0
+advisory note; le eccezioni mobile residue scadono il 2026-10-10.
+Il gate finale del 2026-09-11 riporta backend 0, web 0 e mobile 34 advisory
+conosciute, senza advisory inattese.
 
 **Evidenza.** `npm audit --omit=dev` riporta nel grafo mobile 35 advisory
 (1 Critical, 16 High, 17 Moderate, 1 Low). La Critical `shell-quote` arriva da
@@ -652,6 +691,11 @@ confermare quali moduli vengono spediti.
 
 ### `SEC-AUD-012` — Update OTA EAS non firmati end-to-end
 
+**Remediation 2026-09-11 (implemented, signed-build verification pending).**
+Per la release 1.9.0 EAS Update è disabilitato (`updates.enabled=false`), quindi
+non vengono accettati bundle OTA non firmati. Resta da verificare questa
+configurazione nell'AAB/IPA candidato effettivamente firmato.
+
 **Evidenza.** `mobile/app.json:63-65` abilita EAS Update e `eas.json` usa un
 canale production. Non risultano `updates.codeSigningCertificate` o
 `codeSigningMetadata`. Expo documenta che, con code signing configurato, il
@@ -677,7 +721,7 @@ nel repository o nell'archive EAS.
 
 ### `SEC-AUD-016` — Quota GPX moltiplicabile e export ad alto costo senza budget tenant
 
-**Remediation 2026-09-09 (partial, production pending).** Budget atomici DB
+**Remediation 2026-09-09 (partial, database cutover complete).** Budget atomici DB
 coprono byte per utente/tenant, pending, ingress tenant 24h, frequenza utente ed
 input export tenant 24h. Restano CAPTCHA/rate edge signup e alert di piano.
 
@@ -718,7 +762,7 @@ servire account legittimi. Nessun test di saturazione in produzione.
 
 ### `SEC-AUD-017` — Cleanup export scaduti senza limite puo' monopolizzare il worker
 
-**Remediation 2026-09-09 (code complete, production pending).** Le cancellazioni
+**Remediation 2026-09-09 (implemented, runtime backlog test pending).** Le cancellazioni
 sono elaborate prima della manutenzione. Il cleanup ha cap per job, byte e tempo e il
 claim SQL rispetta il budget residuo.
 
@@ -754,7 +798,7 @@ progredire comunque sulla cancellazione, senza doppie delete.
 
 ### `SEC-AUD-013` — Oracle cross-user sullo stato contributor
 
-**Remediation 2026-09-09 (code complete, production pending).** EXECUTE sulla
+**Remediation 2026-09-09 (implemented, two-account runtime test pending).** EXECUTE sulla
 funzione UUID viene revocato ad `authenticated`; il client ha solo il wrapper
 basato su `auth.uid()`, mentre service-role conserva l'helper.
 
@@ -777,6 +821,11 @@ job service-role devono continuare a funzionare.
 **Mapping.** API1:2023, ASVS V4.
 
 ### `SEC-AUD-014` — Chiave client storica ancora recuperabile da Git
+
+**Remediation 2026-09-10 (complete).** Uno script ispeziona history e HEAD
+senza stampare valori; la chiave risulta assente dal codice corrente e il
+proprietario ne ha confermato l'eliminazione in Google Cloud Console. Non è
+stata eseguita alcuna riscrittura distruttiva della history.
 
 **Evidenza.** Una chiave Google API-shaped fu aggiunta nel 2025 e rimossa dal
 file corrente dal commit `9548a73` del 2026-07-23. Il valore non e' stato
@@ -824,6 +873,11 @@ cancellazione; tutte le route sensibili devono avere la policy attesa.
 **Mapping.** ASVS V9/V14.
 
 ### `SEC-AUD-018` — Retry e polling fissi possono amplificare un outage
+
+**Remediation 2026-09-11 (implemented, runtime verification pending).** Web e
+mobile applicano backoff esponenziale con jitter, `Retry-After`, tetto ai
+tentativi e pausa offline/background; i test con errori simulati sono verdi.
+Resta una prova controllata sul deploy/build, senza stressare la produzione.
 
 **Evidenza.** Il mobile ritenta il manifest tile ogni 4 secondi finche' il
 bootstrap fallisce e aggiunge un query parameter temporale a ogni richiesta
@@ -908,8 +962,8 @@ indicata; non significa che tutti i finding correlati siano corretti.
 | Area / controllo | Stato | Evidenza o blocker |
 |---|---|---|
 | Documenti richiesti e threat model | DONE | lettura completa e modello in questo report |
-| Suite backend | DONE | 179 passed |
-| Suite/typecheck mobile | DONE | 213 passed, 3 skipped; typecheck passed |
+| Suite backend | DONE | 193 passed |
+| Suite/typecheck mobile | DONE | 227 passed, 3 skipped; typecheck passed |
 | Suite/build web | DONE | 128 passed; build passed |
 | Signup email e conferma obbligatoria pubblica | DONE | audit Auth read-only del 2026-09-09 |
 | Redirect allow-list, template, SMTP gestiti | NOT TESTED | manca access token Management |
@@ -927,26 +981,26 @@ indicata; non significa che tutti i finding correlati siano corretti.
 | Export/cancellazione IDOR runtime corrente | NOT TESTED | prove storiche, non ripetute |
 | Enforcement lifecycle/riaccettazione statico | DONE | trigger, policy e RPC revisionati |
 | Enforcement lifecycle/riaccettazione runtime | NOT TESTED | account usa-e-getta mancanti |
-| Protezione tecnica `full_access` dati recenti | BLOCKED | `SEC-AUD-008`; rischio differito attuale |
+| Protezione tecnica `full_access` dati recenti | RISK ACCEPTED 1.9.0 | Dati non personali; gate D-7 solo UI, rivalutazione su crescita/forecast riservati/costi anomali (`SEC-AUD-008`) |
 | GPX cap mobile nel percorso testato | DONE | ISIZE precheck e cap post-decompressione |
-| GPX ammissione server-side | BLOCKED | `SEC-AUD-005` |
-| GPX web anti-zip-bomb/XML budget | BLOCKED | `SEC-AUD-006` |
+| GPX ammissione server-side | IMPLEMENTED, RUNTIME NEGATIVE TEST PENDING | Migration applicata e 9 archivi validati; manca upload avverso live (`SEC-AUD-005`) |
+| GPX web anti-zip-bomb/XML budget | IMPLEMENTED, RUNTIME PENDING | Cap e parser bounded testati; deploy/browser avverso non verificati (`SEC-AUD-006`) |
 | GPX path traversal Storage/export | DONE | path/entry UUID server-side |
 | Race upload/finalize/delete produzione | NOT TESTED | controlli statici presenti; nessuna race live |
-| Cache/export mobile rimossi | BLOCKED | `SEC-AUD-007` |
+| Cache/export mobile rimossi | IMPLEMENTED, DEVICE TEST PENDING | Cleanup dedicato testato; filesystem reale non verificato (`SEC-AUD-007`) |
 | Injection backend/API | DONE | nessun sink SQL/shell raggiungibile trovato |
 | CSRF/CORS applicabile | DONE | bearer API; login CSRF trattato separatamente |
-| Quota cancellazione esterna resistente ad abuso | BLOCKED | `SEC-AUD-009` |
+| Quota cancellazione esterna resistente ad abuso | IMPLEMENTED, RUNTIME PENDING | Input sconosciuti non consumano budget per contratto/test locale; prova live limitata mancante (`SEC-AUD-009`) |
 | Quota CDN/Storage/tile e spending alert | NOT TESTED | configurazione provider non disponibile |
 | Protezione volumetrica edge sito | DONE | risposta live Cloudflare e garanzia provider; nessuno stress test |
 | Protezione volumetrica edge Supabase/Storage | DONE | edge/CDN dichiarati dal provider e header live; nessuno stress test |
 | WAF, rate limit applicativi, CAPTCHA e alert DDoS | NOT TESTED | pannelli provider non disponibili |
-| Budget tenant GPX/Storage/export | BLOCKED | `SEC-AUD-016` |
-| Fairness e limite cleanup export scaduti | BLOCKED | `SEC-AUD-017` |
-| Backoff/jitter client durante outage | BLOCKED | `SEC-AUD-018` |
+| Budget tenant GPX/Storage/export | PARTIAL | Budget DB applicati; CAPTCHA/rate edge signup e alert provider restano aperti (`SEC-AUD-016`) |
+| Fairness e limite cleanup export scaduti | IMPLEMENTED, RUNTIME BACKLOG TEST PENDING | Cap job/byte/tempo e priorità cancellazioni; backlog live non simulato (`SEC-AUD-017`) |
+| Backoff/jitter client durante outage | IMPLEMENTED, RUNTIME PENDING | Test simulati web/mobile verdi; prova deploy/build mancante (`SEC-AUD-018`) |
 | Load test controllato su staging | NOT TESTED | vietato sollecitare la produzione; staging non disponibile |
 | CSP/XSS applicativo web | DONE | CSP live e nessun sink applicativo diretto |
-| MapLibre corretto | BLOCKED | `SEC-AUD-010` |
+| MapLibre corretto | IMPLEMENTED, BROWSER TEST PENDING | Web a 6.4.1; attribution/popup/CSP live non riverificati (`SEC-AUD-010`) |
 | Cache/referrer route Auth | DONE | `no-store`, `no-referrer` live |
 | HSTS e route cancellazione coerente | BLOCKED | `SEC-AUD-015` |
 | Logging sorgente senza dati sensibili | DONE | scansione statica; nessun valore sensibile stampato |
@@ -955,22 +1009,23 @@ indicata; non significa che tutti i finding correlati siano corretti.
 | Dichiarazione Play e comportamento permesso background | NOT TESTED | richiede build/device/Play Console |
 | Manifest, firma, permission e TLS AAB finale | NOT TESTED | nessun AAB/APK di release disponibile |
 | Segreti working tree/tracked files | DONE | nessun segreto privilegiato confermato |
-| Segreti in Git history | BLOCKED | `SEC-AUD-014` richiede verifica revoca/restriction |
+| Segreti in Git history | DONE | Chiave storica eliminata nel provider; valore assente da HEAD, history preservata (`SEC-AUD-014`) |
 | `.gitignore` / `.easignore` | DONE | env, native, signing, dist, dataset e log esclusi |
 | Source map/artifact distribuiti | NOT TESTED | nessun artifact finale; map locale ignorata |
-| Dipendenza web MapLibre | BLOCKED | CVE diretta `SEC-AUD-010` |
-| Dipendenze mobile e backend | BLOCKED | `SEC-AUD-011` |
-| Firma EAS Update | BLOCKED | `SEC-AUD-012` |
+| Dipendenza web MapLibre | IMPLEMENTED, BROWSER TEST PENDING | Versione corretta 6.4.1; verifica deploy/UI ancora aperta (`SEC-AUD-010`) |
+| Dipendenze backend/mobile/web | DONE | Lock hash-bearing, gate e SBOM; eccezioni mobile puntuali da riesaminare entro 2026-10-10 (`SEC-AUD-011`) |
+| Firma EAS Update | IMPLEMENTED, SIGNED BUILD PENDING | OTA disabilitato per 1.9.0; configurazione AAB/IPA non verificata (`SEC-AUD-012`) |
 
 ## Gate di rilascio consigliato
 
-1. Correggere e verificare `SEC-AUD-001`, `SEC-AUD-002`, `SEC-AUD-003`.
-2. Correggere `SEC-AUD-004`, `SEC-AUD-005`, `SEC-AUD-006`, `SEC-AUD-007`,
-   `SEC-AUD-009`, `SEC-AUD-010`, `SEC-AUD-011`, `SEC-AUD-012`,
-   `SEC-AUD-016` e `SEC-AUD-017`, oppure ottenere accettazione del rischio
-   motivata dove tecnicamente appropriato.
-3. Per `SEC-AUD-008`, implementare la protezione o registrare esplicitamente
-   l'accettazione release-specific del bypass diretto e dei costi.
+1. Completare le verifiche runtime/release di `SEC-AUD-001`, `SEC-AUD-002`,
+   `SEC-AUD-003` e `SEC-AUD-004` senza chiuderle sulla sola evidenza locale.
+2. Completare le prove ancora indicate per `SEC-AUD-005`, `SEC-AUD-006`,
+   `SEC-AUD-007`, `SEC-AUD-009`, `SEC-AUD-010`, `SEC-AUD-012`,
+   `SEC-AUD-013`, `SEC-AUD-017` e `SEC-AUD-018`; completare o accettare
+   formalmente i controlli edge/provider residui di `SEC-AUD-016`.
+3. Per `SEC-AUD-008`, applicare l'accettazione rischio della sola release 1.9.0
+   e rivalutarla ai trigger registrati prima di estenderla a release successive.
 4. Ottenere AAB production candidato e ripetere manifest/signing/source-map,
    backup/restore, deep link concorrente, logcat e network test.
 5. Con due account usa-e-getta, ripetere matrice RLS/RPC/Storage/export/delete,

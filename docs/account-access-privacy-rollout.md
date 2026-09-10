@@ -727,13 +727,14 @@ contro scraping. Non considerare controlli client come protezione.
 
 Criterio `DONE`: minacce e limiti misurabili documentati.
 
-Stato audit 2026-09-09: la mitigazione volumetrica edge di Cloudflare Pages e
-Supabase e' presente come controllo provider, ma non chiude il rischio
-applicativo. Restano aperti bypass/egress dei dataset pubblici, quota anonima di
-cancellazione, moltiplicazione GPX/export tra account, cleanup export senza cap
-e retry client senza backoff. WAF, CAPTCHA, Smart CDN, Spend Cap, alert e test
-di capacita' su staging non sono stati verificati. Riferimenti:
-`SEC-AUD-008`, `SEC-AUD-009`, `SEC-AUD-016`, `SEC-AUD-017`, `SEC-AUD-018`.
+Stato audit 2026-09-11: la mitigazione volumetrica edge di Cloudflare Pages e
+Supabase e' presente come controllo provider. Per la release 1.9.0 il rischio
+scraping/egress dei dataset indice pubblici è formalmente accettato; quota
+anonima, cleanup bounded e retry client sono implementati ma attendono le
+prove runtime indicate nell'audit. Restano parziali budget multi-account,
+WAF/CAPTCHA, Smart CDN, Spend Cap, alert e test di capacita' controllati.
+Riferimenti: `SEC-AUD-008`, `SEC-AUD-009`, `SEC-AUD-016`, `SEC-AUD-017`,
+`SEC-AUD-018`.
 
 ### `QA-001` Matrice test cross-component - `IN-PROGRESS`
 
@@ -849,6 +850,10 @@ Aggiornare con righe concise; non trasformare questa sezione in una chat log.
 | 2026-09-08 | BE-EMAIL-004 | DONE | Migration `202609070001` applicata. Collaudo usa-e-getta: ZIP privato, download owner, enqueue singolo/minimizzato, SMTP accettato e cleanup Storage/database/Auth senza residui. |
 | 2026-09-09 | SEC-001 | DONE (backend/mobile) | Rimossi log mobile di path, waypoint, coordinate e oggetti errore grezzi; le eccezioni pipeline persistono solo come classe. Test mirato anti-interpolazione dati sensibili, suite backend, typecheck e 213 test mobile superati; scansione di otto log reali account senza pattern sensibili. Il web resta un repository separato con handoff obbligatorio prima della prossima release. |
 | 2026-09-09 | SEC-AUD-001/002/004 | IN-PROGRESS | Eliminato il bridge Auth verso custom scheme; web con auto-detection URL disabilitata e callback HTTPS acquisite/pulite prima del render; mobile configurato per App/Universal Links e parser origin/path strict. Suite mobile 213 passed, typecheck e build/test web positivi. Il proprietario dichiara completati allow-list e template Supabase; manca verifica indipendente. Restano associazioni dominio, AAB/IPA e collaudi usa-e-getta. |
+| 2026-09-10 | SEC-AUD-011 | DONE | Backend bloccato con `pyproject.toml` e `uv.lock` hash-bearing; gate unico e SBOM CycloneDX per backend/mobile/web. Aggiornati solo `requests`, `pytest` e `fflate`; backend e web senza advisory note, eccezioni mobile puntuali con scadenza 2026-10-10. |
+| 2026-09-10 | SEC-AUD-014 | DONE | Audit non divulgativo: chiave assente da `HEAD`, presente in 2 commit e 1 percorso storico; il proprietario ne ha confermato l'eliminazione in Google Cloud Console. Nessun valore esposto e nessuna riscrittura Git eseguita. |
+| 2026-09-11 | SEC-AUD-008 | RISK ACCEPTED 1.9.0 | Dataset indice recenti tecnicamente pubblici; gate D-7 solo UI/prodotto. Nessun dato personale. Accettati scraping/egress per 1.9.0; riesame obbligatorio prima di crescita rilevante, forecast riservati o costi/traffico anomali. |
+| 2026-09-11 | SECURITY-AUDIT-DOC | UPDATED | Allineati finding implementati senza chiudere prove mancanti: App/Universal Links, runtime a due account, deploy browser, device backup/filesystem e AAB/IPA firmati restano aperti. |
 
 ## Security audit pre-release 2026-09
 
@@ -862,22 +867,22 @@ test runtime a due account e AAB finale restano `NOT TESTED`.
 |---|---|---|
 | SEC-AUD-001 | IN-PROGRESS | Rimossi bridge e callback Auth custom; configurati App Links/Universal Links HTTPS. Restano file di associazione live, AAB/IPA e collaudo concorrente cold/warm. |
 | SEC-AUD-002 | IN-PROGRESS | `detectSessionInUrl=false` e callback limitate ai path Auth, con test locali. Resta il test runtime di session swapping a due account. |
-| SEC-AUD-003 | TODO | Spostare la sessione mobile in storage sicuro ed escludere sessione, GPX, database, draft e cache dal backup. |
+| SEC-AUD-003 | IMPLEMENTED, SIGNED BUILD PENDING | SecureStore e backup exclusion implementati/testati; restano AAB/IPA e backup/restore su dispositivo. |
 | SEC-AUD-004 | IN-PROGRESS | Callback acquisita in memoria e URL pulita prima del render; allow-list e template a fragment dichiarati configurati dal proprietario. Restano verifica Management/runtime, log e flussi reali. |
-| SEC-AUD-005 | IMPLEMENTED, CUTOVER PENDING | Admission worker streaming e stato `validation_status`; export/modelling accettano solo `validated`. |
-| SEC-AUD-006 | TODO | Applicare cap pre-read e decompressione/parser bounded al GPX web e ai download cloud. |
-| SEC-AUD-007 | TODO | Eliminare i file GPX/export temporanei mobile dopo share, errore, logout e cancellazione. |
-| SEC-AUD-008 | TODO/RISK-ACCEPTANCE | Proteggere tecnicamente l'indice recente o accettare formalmente per release bypass diretto ed egress pubblico. |
-| SEC-AUD-009 | IMPLEMENTED, CUTOVER PENDING | Email sconosciute: risposta invariata, nessuna riga e nessun consumo quota globale. |
-| SEC-AUD-010 | TODO | Aggiornare MapLibre oltre CVE-2026-85061 e verificare attribution/popup/CSP. |
-| SEC-AUD-011 | TODO | Creare dependency gate/SBOM, lock Python e triage reachability delle advisory mobile/web. |
-| SEC-AUD-012 | TODO | Firmare end-to-end gli update EAS o disabilitare OTA per la release. |
-| SEC-AUD-013 | IMPLEMENTED, CUTOVER PENDING | Helper UUID revocato ai client; wrapper owner-only, service-role preservata. |
-| SEC-AUD-014 | TODO | Confermare revoca o restriction della chiave client rimossa ma presente nella history Git. |
+| SEC-AUD-005 | IMPLEMENTED, RUNTIME NEGATIVE TEST PENDING | Migration applicata, admission worker attivo e 9 archivi validati; export/modelling accettano solo `validated`. Manca upload avverso live. |
+| SEC-AUD-006 | IMPLEMENTED, RUNTIME PENDING | Web con cap pre-read, decompressione e parser bounded; manca prova sul deploy con file avversi. |
+| SEC-AUD-007 | IMPLEMENTED, DEVICE TEST PENDING | Cleanup file GPX/export implementato e testato; manca ispezione filesystem reale. |
+| SEC-AUD-008 | RISK ACCEPTED 1.9.0 | Indice recente pubblico; gate D-7 solo UI/prodotto. Riesame su crescita rilevante, forecast riservati o costi/traffico anomali. |
+| SEC-AUD-009 | IMPLEMENTED, RUNTIME PENDING | Email sconosciute: risposta invariata, nessuna riga e nessun consumo quota globale; manca prova live limitata. |
+| SEC-AUD-010 | IMPLEMENTED, BROWSER TEST PENDING | Web a MapLibre 6.4.1; restano attribution/popup/CSP sul deploy. |
+| SEC-AUD-011 | DONE | Lock Python con hash, gate/SBOM backend-mobile-web; fix mirati e eccezioni mobile con scadenza 2026-10-10. |
+| SEC-AUD-012 | IMPLEMENTED, SIGNED BUILD PENDING | OTA disabilitato per 1.9.0; verifica AAB/IPA ancora mancante. |
+| SEC-AUD-013 | IMPLEMENTED, TWO-ACCOUNT TEST PENDING | Helper UUID revocato ai client; wrapper owner-only, service-role preservata; manca prova cross-user live. |
+| SEC-AUD-014 | DONE | Chiave assente da HEAD ed eliminata in Google Cloud Console; history preservata senza esporre il valore. |
 | SEC-AUD-015 | TODO | Abilitare HSTS e allineare gli header sensibili a entrambe le varianti URL della cancellazione. |
-| SEC-AUD-016 | PARTIAL, CUTOVER PENDING | Budget DB user/tenant su byte, pending, ingress 24h ed export; CAPTCHA/rate edge signup resta separato. |
-| SEC-AUD-017 | IMPLEMENTED, CUTOVER PENDING | Cancellazioni prioritarie; cleanup export limitato per job, byte e tempo. |
-| SEC-AUD-018 | TODO | Introdurre backoff, jitter, `Retry-After` e tetto ai retry/polling client; verificare con errori simulati e staging. |
+| SEC-AUD-016 | PARTIAL | Budget DB user/tenant applicati su byte, pending, ingress 24h ed export; CAPTCHA/rate edge signup e alert provider restano separati. |
+| SEC-AUD-017 | IMPLEMENTED, RUNTIME BACKLOG TEST PENDING | Cancellazioni prioritarie; cleanup export limitato per job, byte e tempo; manca prova live con backlog oltre soglia. |
+| SEC-AUD-018 | IMPLEMENTED, RUNTIME PENDING | Backoff/jitter/`Retry-After` e cap testati su web/mobile; manca prova controllata su deploy/build. |
 
 ### Task differiti per App Links e Universal Links
 
@@ -892,7 +897,7 @@ placeholder: attendere gli identificativi definitivi degli account sviluppatore.
 | SEC-AUTH-LINK-006 | BLOCKED | Dopo 005, generare nuove build firmate EAS Android/iOS; verificare manifest/entitlement finali e lo stato App Links Android con `pm verify-app-links` e `pm get-app-links`. Un update OTA non soddisfa il criterio. |
 | SEC-AUTH-LINK-007 | BLOCKED | Dopo 006, usare soltanto account usa-e-getta per conferma e recovery web/mobile, cold/warm start, cambio password, handler custom-scheme concorrente, session swapping, URL pulita e assenza di query sensibili nei log provider. Chiudere `SEC-AUD-001/002/004` solo dopo evidenza positiva. |
 
-| 2026-09-09 | SEC-AUD-005/009/013/016/017 | IMPLEMENTED, CUTOVER PENDING | Migration incrementale `202609090001`, worker admission GPX, trusted gate, budget user/tenant e cleanup bounded. Test locali; nessuna applicazione o azione distruttiva in produzione. |
+| 2026-09-09 | SEC-AUD-005/009/013/016/017 | IMPLEMENTED/PARTIAL, RUNTIME TESTS PENDING | Migration `202609090001` applicata; worker admission ha validato 9 archivi. Trusted gate, budget DB e cleanup bounded sono attivi; restano prove negative/cross-user/backlog live e controlli edge/provider di `SEC-AUD-016`. |
 
 ## Questioni aperte
 

@@ -2,7 +2,7 @@
   "expo": {
     "name": "Funghi Tracker",
     "slug": "funghi-tracker",
-    "version": "1.8.0",
+    "version": "1.9.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -14,13 +14,14 @@
     },
     "ios": {
       "bundleIdentifier": "com.giovannisequani.funghitracker",
-      "buildNumber": "12",
+      "buildNumber": "13",
       "supportsTablet": true,
       "userInterfaceStyle": "automatic"
     },
     "android": {
       "package": "com.giovannisequani.funghitracker",
-      "versionCode": 12,
+      "versionCode": 13,
+      "allowBackup": false,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
@@ -55,12 +56,20 @@
         }
       ],
       "expo-sqlite",
-      "@maplibre/maplibre-react-native"
+      "@maplibre/maplibre-react-native",
+      [
+        "expo-secure-store",
+        {
+          "configureAndroidBackup": false
+        }
+      ],
+      "./plugins/withSensitiveDataBackupExclusion"
     ],
     "runtimeVersion": {
       "policy": "appVersion"
     },
     "updates": {
+      "enabled": false,
       "url": "https://u.expo.dev/db015e21-718f-4431-8fb3-02eab77646b5"
     }
   }

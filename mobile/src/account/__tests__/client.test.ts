@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../supabase', () => ({ getAccountSupabaseClient: vi.fn() }));
+vi.mock('../../security/sensitiveTempFiles', () => ({ purgeSensitiveTempFiles: vi.fn(async () => undefined) }));
 
 import {
   createTrackDownloadUrl,

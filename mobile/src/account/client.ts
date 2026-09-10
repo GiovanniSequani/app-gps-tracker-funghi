@@ -1,5 +1,6 @@
 import type { Session, SupabaseClient } from '@supabase/supabase-js';
 import { getAccountSupabaseClient } from './supabase';
+import { purgeSensitiveTempFiles } from '../security/sensitiveTempFiles';
 import {
   AccountArchiveError,
   type ArchiveConfig,
@@ -166,8 +167,12 @@ export async function updateRecoveredPassword(
 }
 
 export async function signOut(): Promise<void> {
-  const { error } = await getAccountSupabaseClient().auth.signOut();
-  if (error) throw toAccountError(error);
+  try {
+    const { error } = await getAccountSupabaseClient().auth.signOut();
+    if (error) throw toAccountError(error);
+  } finally {
+    await purgeSensitiveTempFiles().catch(() => undefined);
+  }
 }
 
 export async function loadArchiveData(

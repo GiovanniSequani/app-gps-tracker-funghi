@@ -16,7 +16,8 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { File, Paths } from 'expo-file-system';
+import { File } from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Sharing from 'expo-sharing';
 import { useNavigation } from '@react-navigation/native';
@@ -78,6 +79,7 @@ import type {
 } from './types';
 import { normalizeTrackName, safeGpxName, toAccountError, validateTrackName } from './validation';
 import { effectiveTrim, snapMarkersToTrack, trimTrackSegments } from './trackEdits';
+import { createSensitiveTempFileUri, deleteSensitiveTempFile } from '../security/sensitiveTempFiles';
 
 type LocalRoute = { route_id: string; name: string; date: string };
 type FullLocalRoute = LocalRoute & {
@@ -307,9 +309,13 @@ export default function AccountArchiveScreen(props: {
 
   const downloadTrackBytes = React.useCallback(async (track: GpxTrack): Promise<Uint8Array> => {
     const signedUrl = await createTrackDownloadUrl(track);
-    const destination = new File(Paths.cache, `cloud-${track.id}.gpx.gz`);
-    const downloaded = await File.downloadFileAsync(signedUrl, destination, { idempotent: true });
-    return downloaded.bytes();
+    const uri = await createSensitiveTempFileUri(`cloud-${track.id}.gpx.gz`);
+    try {
+      const downloaded = await File.downloadFileAsync(signedUrl, new File(uri), { idempotent: true });
+      return await downloaded.bytes();
+    } finally {
+      await deleteSensitiveTempFile(uri).catch(() => undefined);
+    }
   }, []);
 
   const loadCloudDetail = React.useCallback(async (track: GpxTrack): Promise<ArchiveMapRoute> => {
@@ -443,6 +449,7 @@ export default function AccountArchiveScreen(props: {
     if (!config) return;
     setActions((current) => ({ ...current, import: 'import' }));
     setError(null); setNotice(null);
+    let copiedUri: string | null = null;
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: ['application/gpx+xml', 'application/gzip', 'application/x-gzip', 'application/xml', 'text/xml', 'application/octet-stream'],
@@ -451,12 +458,16 @@ export default function AccountArchiveScreen(props: {
       });
       if (result.canceled) return;
       const asset = result.assets[0];
+      copiedUri = asset.uri;
       const source = new File(asset.uri);
       const bytes = await source.bytes();
       const parsed = parseGpxBytes(bytes, asset.name, config.max_uncompressed_bytes);
       openNameAction({ kind: 'import', route: parsed }, parsed.name);
     } catch (reason) { setError(toAccountError(reason).message); }
-    finally { setActions((current) => { const next = { ...current }; delete next.import; return next; }); }
+    finally {
+      if (copiedUri) await FileSystem.deleteAsync(copiedUri, { idempotent: true }).catch(() => undefined);
+      setActions((current) => { const next = { ...current }; delete next.import; return next; });
+    }
   };
 
   const confirmNameAction = async () => {
@@ -557,15 +568,20 @@ export default function AccountArchiveScreen(props: {
   const handleDownload = async (track: GpxTrack) => {
     setActions((current) => ({ ...current, [track.id]: 'download' }));
     setError(null);
+    let uri: string | null = null;
     try {
       const bytes = await downloadTrackBytes(track);
-      const file = new File(Paths.cache, `${safeGpxName(track.original_filename || track.display_name)}-${track.id}.gpx.gz`);
+      uri = await createSensitiveTempFileUri(`${safeGpxName(track.original_filename || track.display_name)}-${track.id}.gpx.gz`);
+      const file = new File(uri);
       try { file.create({ overwrite: true }); } catch { /* downloaded cache may already exist */ }
       file.write(bytes);
       if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(file.uri, { mimeType: 'application/gzip' });
-      else Alert.alert('File scaricato', file.uri);
+      else throw new Error('La condivisione file non è disponibile su questo dispositivo.');
     } catch (reason) { setError(toAccountError(reason).message); }
-    finally { setActions((current) => { const next = { ...current }; delete next[track.id]; return next; }); }
+    finally {
+      await deleteSensitiveTempFile(uri).catch(() => undefined);
+      setActions((current) => { const next = { ...current }; delete next[track.id]; return next; });
+    }
   };
 
   const handleShowOnMap = async (track: GpxTrack) => {

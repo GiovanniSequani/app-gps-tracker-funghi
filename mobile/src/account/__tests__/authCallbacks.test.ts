@@ -78,8 +78,8 @@ describe('callback Auth mobile', () => {
     expect(config).toContain('autoVerify: true');
     expect(config).toContain("pathPrefix: '/auth/confirm'");
     expect(config).toContain("pathPrefix: '/auth/recovery'");
-    expect(appJson.expo.version).toBe('1.8.0');
-    expect(appJson.expo.android.versionCode).toBe(12);
-    expect(appJson.expo.ios.buildNumber).toBe('12');
+    expect(appJson.expo.version).toBe('1.9.0');
+    expect(appJson.expo.android.versionCode).toBe(13);
+    expect(appJson.expo.ios.buildNumber).toBe('13');
   });
 });

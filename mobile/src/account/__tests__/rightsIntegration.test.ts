@@ -15,7 +15,9 @@ describe('integrazione diritti account mobile', () => {
     expect(rightsHook).toContain("['pending', 'building', 'retry']");
     expect(rightsHook).not.toContain('deletion_pending');
     expect(rightsHook).toContain('setAppActive');
-    expect(rightsHook).toContain('[appActive, enabled, job, refresh]');
+    expect(rightsHook).toContain('EXPORT_POLL_MAX_ATTEMPTS');
+    expect(rightsHook).toContain('online === false');
+    expect(rightsHook).toContain('retryAfterFromError');
     expect(rightsPanel).toContain('non indica che il processo sia già completato');
   });
 

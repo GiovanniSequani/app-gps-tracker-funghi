@@ -1,5 +1,13 @@
 # Account lifecycle mobile
 
+## Protezioni locali e rete
+
+- Le sessioni Supabase sono persistite con `expo-secure-store` usando una classe di accesso non migrabile su un altro dispositivo. Al primo avvio della 1.9.0 l'eventuale sessione legacy viene migrata e rimossa da AsyncStorage.
+- Android disabilita integralmente backup e restore dell'app. Su iOS il plugin CNG esclude Documents e Application Support, che contengono database, GPX locali e draft di recovery.
+- GPX ed export destinati alla condivisione vivono esclusivamente in `cache/sensitive-temp` e vengono rimossi dopo successo, annullamento o errore, oltre che all'avvio, al logout e alla perdita autoritativa dell'accesso.
+- Il bootstrap tile e il polling export si sospendono offline/in background, rispettano `Retry-After`, usano backoff esponenziale con jitter e un tetto di tentativi. Dopo il tetto l'utente può riprovare manualmente.
+- Gli EAS Update sono disabilitati nella release 1.9.0. La procedura necessaria per riattivarli con firma e i controlli obbligatori su artefatto/dispositivo sono in `SECURITY_RELEASE_CHECKLIST.md`.
+
 Questa implementazione copre lato app `MOB-001`, `MOB-003`, `MOB-004` e `MOB-005`. Non applica migration e non modifica gli switch server.
 
 ## Fonte dello stato

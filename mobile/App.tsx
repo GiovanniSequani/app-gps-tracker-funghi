@@ -17,7 +17,6 @@ import { Activity, Archive, CalendarDays, Map, Sprout, PanelRightOpen, Pencil, T
 import * as Location from 'expo-location';
 import * as Clipboard from 'expo-clipboard';
 import * as TaskManager from 'expo-task-manager';
-import { File, Paths } from 'expo-file-system';
 import * as FileSystemLegacy from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
@@ -76,6 +75,9 @@ import {
 } from './src/recording/recordingDraftStorage';
 import { RecordingRecoveryModal } from './src/recording/RecordingRecoveryModal';
 import { BackgroundLocationDisclosureModal } from './src/recording/BackgroundLocationDisclosureModal';
+import { backoffDelayMs, createRetryableError, retryAfterFromError } from './src/network/retryPolicy';
+import { useNetworkAvailability } from './src/network/useNetworkAvailability';
+import { createSensitiveTempFileUri, deleteSensitiveTempFile, purgeSensitiveTempFiles } from './src/security/sensitiveTempFiles';
 import {
   effectiveTrim,
   excludedTrackSegments,
@@ -171,7 +173,9 @@ const SUPABASE_URL =
 const SUPABASE_BUCKET = 'tiles';
 const TILE_SET_MANIFEST = 'tile_sets.json';
 const TILE_SET_REGEX = /^(\d{4})([-_])(\d{2})\2(\d{2})_v(\d+)$/;
-const TILE_BOOTSTRAP_RETRY_DELAY_MS = 4000;
+const TILE_BOOTSTRAP_RETRY_BASE_MS = 4_000;
+const TILE_BOOTSTRAP_RETRY_MAX_MS = 60_000;
+const TILE_BOOTSTRAP_MAX_ATTEMPTS = 6;
 
 type ParsedTileSet = TileSet & {
   year: number;
@@ -231,14 +235,12 @@ function sortTileSets(tileSets: ParsedTileSet[]): TileSet[] {
     .map((item) => ({ date: item.date, version: String(item.versionNum) }));
 }
 
-async function getAvailableTileSetsFromManifest(): Promise<TileSet[]> {
-  const url = `${SUPABASE_URL}/storage/v1/object/public/${SUPABASE_BUCKET}/${TILE_SET_MANIFEST}?t=${Date.now()}`;
-  console.log('[tiles] Fetching tile set manifest', { url });
-  const response = await fetch(url, { method: 'GET' });
+async function getAvailableTileSetsFromManifest(signal?: AbortSignal): Promise<TileSet[]> {
+  const url = `${SUPABASE_URL}/storage/v1/object/public/${SUPABASE_BUCKET}/${TILE_SET_MANIFEST}`;
+  const response = await fetch(url, { method: 'GET', signal });
 
   if (!response.ok) {
-    const body = await response.text().catch(() => '');
-    throw new Error(`Tile manifest failed: ${response.status}${body ? ` - ${body}` : ''}`);
+    throw createRetryableError(`Tile manifest failed: ${response.status}`, response);
   }
 
   const manifest = (await response.json()) as TileSetManifest;
@@ -255,8 +257,8 @@ async function getAvailableTileSetsFromManifest(): Promise<TileSet[]> {
   return tileSets;
 }
 
-async function getAvailableTileSets(): Promise<TileSet[]> {
-  const tileSets = await getAvailableTileSetsFromManifest();
+async function getAvailableTileSets(signal?: AbortSignal): Promise<TileSet[]> {
+  const tileSets = await getAvailableTileSetsFromManifest(signal);
   if (tileSets.length === 0) {
     throw new Error('No valid tile set found in tile manifest');
   }
@@ -441,6 +443,8 @@ const checkAndOpenSettingsIfNeeded = async () => {
 // ══════════════════════════════════════════════════════════════════════════════
 export default function App() {
   const accountSession = useAccountSession();
+  const networkOnline = useNetworkAvailability();
+  const [appIsActive, setAppIsActive] = React.useState(AppState.currentState === 'active');
   const accountLifecycle = useAccountLifecycle(accountSession.session, accountSession.loading);
   const indexAccessReady = !accountSession.loading && !accountLifecycle.loading;
   const fullIndexAccess = Boolean(accountSession.session && accountLifecycle.fullAccess);
@@ -509,6 +513,9 @@ export default function App() {
   const [tilesLoading, setTilesLoading] = React.useState(true);
   const [tilesError, setTilesError] = React.useState<string | null>(null);
   const [tileBootstrapRevision, setTileBootstrapRevision] = React.useState(0);
+  const [tileRetryExhausted, setTileRetryExhausted] = React.useState(false);
+  const tileRetryAttemptRef = React.useRef(0);
+  const tileRetryAfterRef = React.useRef<number | undefined>(undefined);
   const loadedTileAccessLevelRef = React.useRef<boolean | null>(null);
   const [cameraCommand, setCameraCommand] = React.useState<CameraCommand | null>(null);
   const followLocationRef = React.useRef(true);
@@ -526,6 +533,20 @@ export default function App() {
   const backgroundDisclosureResolverRef = React.useRef<((continueRequest: boolean) => void) | null>(null);
   const pathRef = React.useRef<Coordinate[]>(path);
   const markersRef = React.useRef<MarkerData[]>(markers);
+
+  React.useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => setAppIsActive(state === 'active'));
+    return () => subscription.remove();
+  }, []);
+
+  React.useEffect(() => {
+    void purgeSensitiveTempFiles().catch(() => undefined);
+  }, []);
+
+  React.useEffect(() => {
+    if (accountSession.session && !accountLifecycle.authoritativeRestriction) return;
+    void purgeSensitiveTempFiles().catch(() => undefined);
+  }, [accountLifecycle.authoritativeRestriction, accountSession.session]);
 
   React.useEffect(() => {
     if (!indexAccessReady) return;
@@ -674,6 +695,7 @@ export default function App() {
 
   // check updates
   React.useEffect(() => {
+    if (!Updates.isEnabled) return;
     (async () => {
       try {
         const update = await Updates.checkForUpdateAsync();
@@ -765,6 +787,11 @@ export default function App() {
 
   React.useEffect(() => {
     if (!indexAccessReady) return;
+    if (!appIsActive || networkOnline === false) {
+      setTilesLoading(false);
+      if (networkOnline === false) setTilesError('Connessione assente. Riprova quando torni online.');
+      return;
+    }
     if (loadedTileAccessLevelRef.current === fullIndexAccess) return;
     if (loadedTileAccessLevelRef.current === true && !fullIndexAccess) {
       setTileSets([]);
@@ -772,12 +799,13 @@ export default function App() {
       setTileVersion('');
     }
     let mounted = true;
+    const controller = new AbortController();
     (async () => {
       try {
         console.log('[tiles] Bootstrap start', { preferred: getDefaultTileSet() });
         setTilesLoading(true);
         setTilesError(null);
-        const available = await getAvailableTileSets();
+        const available = await getAvailableTileSets(controller.signal);
         if (available.length === 0) {
           throw new Error('No valid tile set found in tile manifest');
         }
@@ -791,25 +819,48 @@ export default function App() {
         setTileDate(latest.date);
         setTileVersion(latest.version);
         loadedTileAccessLevelRef.current = fullIndexAccess;
+        tileRetryAttemptRef.current = 0;
+        tileRetryAfterRef.current = undefined;
+        setTileRetryExhausted(false);
       } catch (err) {
         if (!mounted) return;
         const message = err instanceof Error ? err.message : 'Errore caricamento tiles';
         console.log('[tiles] Bootstrap failed, keeping preferred local tile set', { message, preferred: getDefaultTileSet() });
         setTilesError(message);
+        tileRetryAfterRef.current = retryAfterFromError(err);
       } finally {
         if (mounted) setTilesLoading(false);
       }
     })();
-    return () => { mounted = false; };
-  }, [fullIndexAccess, indexAccessReady, tileBootstrapRevision]);
+    return () => { mounted = false; controller.abort(); };
+  }, [appIsActive, fullIndexAccess, indexAccessReady, networkOnline, tileBootstrapRevision]);
 
   React.useEffect(() => {
-    if (!indexAccessReady || tilesLoading || !tilesError) return;
+    if (!indexAccessReady || !appIsActive || networkOnline === false || tilesLoading || !tilesError) return;
+    if (tileRetryAttemptRef.current >= TILE_BOOTSTRAP_MAX_ATTEMPTS) {
+      setTileRetryExhausted(true);
+      return;
+    }
+    const delay = backoffDelayMs({
+      attempt: tileRetryAttemptRef.current,
+      baseMs: TILE_BOOTSTRAP_RETRY_BASE_MS,
+      maxMs: TILE_BOOTSTRAP_RETRY_MAX_MS,
+      retryAfterMs: tileRetryAfterRef.current,
+    });
     const retryTimer = setTimeout(() => {
+      tileRetryAttemptRef.current += 1;
       setTileBootstrapRevision((current) => current + 1);
-    }, TILE_BOOTSTRAP_RETRY_DELAY_MS);
+    }, delay);
     return () => clearTimeout(retryTimer);
-  }, [indexAccessReady, tilesError, tilesLoading]);
+  }, [appIsActive, indexAccessReady, networkOnline, tilesError, tilesLoading]);
+
+  const retryTileBootstrap = React.useCallback(() => {
+    tileRetryAttemptRef.current = 0;
+    tileRetryAfterRef.current = undefined;
+    setTileRetryExhausted(false);
+    loadedTileAccessLevelRef.current = null;
+    setTileBootstrapRevision((current) => current + 1);
+  }, []);
 
   // posizione iniziale: struttura ripresa dal bundle recuperato
   React.useEffect(() => {
@@ -1119,12 +1170,12 @@ export default function App() {
       throw new Error('La condivisione file non è disponibile su questo dispositivo.');
     }
     const safeName = route.name.replace(/[^a-z0-9_-]+/gi, '_').replace(/^_+|_+$/g, '') || 'percorso';
-    const uri = `${FileSystemLegacy.cacheDirectory}${safeName}.gpx`;
+    const uri = await createSensitiveTempFileUri(`${safeName}.gpx`);
     try {
       await FileSystemLegacy.writeAsStringAsync(uri, buildGpxXml(route.name, route.path, route.markers), { encoding: 'utf8' });
       await Sharing.shareAsync(uri, { mimeType: 'application/gpx+xml', dialogTitle: 'Salva o condividi il percorso GPX' });
     } finally {
-      await FileSystemLegacy.deleteAsync(uri, { idempotent: true }).catch(() => undefined);
+      await deleteSensitiveTempFile(uri).catch(() => undefined);
     }
   };
 
@@ -1440,6 +1491,7 @@ export default function App() {
   };
 
   const handleShare = async (route_id: string) => {
+    let uri: string | null = null;
     try {
       const route = (await getRouteById(route_id)) as Route & { waypoints: Waypoint[] };
       const wmarkers: MarkerData[] = route.waypoints.map((wp) => ({
@@ -1450,29 +1502,15 @@ export default function App() {
         name: wp.name,
       }));
       const gpxData = generateGPX(route.path, wmarkers);
-      let uri: string | undefined;
-      try {
-        const safeFileName = fileName?.trim() || `percorso_${Date.now()}`;
-        const file = new File(Paths.cache, safeFileName + '.gpx');
-        try { file.create(); } catch { }
-        try { await (file.write(gpxData) as Promise<void> | void); } catch { }
-        // @ts-ignore
-        uri = file.uri ?? (file.getUri ? await file.getUri() : undefined);
-      } catch { uri = undefined; }
-      if (!uri) {
-        const safeFileName = fileName?.trim() || `percorso_${Date.now()}`;
-        const legacyUri = FileSystemLegacy.cacheDirectory + safeFileName + '.gpx';
-        await FileSystemLegacy.writeAsStringAsync(legacyUri, gpxData, { encoding: 'utf8' });
-        uri = legacyUri;
-      }
-      if (uri) {
-        const available = await Sharing.isAvailableAsync();
-        if (!available) Alert.alert('GPX salvato in: ' + uri);
-        else await Sharing.shareAsync(uri);
-      }
+      const safeFileName = fileName?.trim() || `percorso_${Date.now()}`;
+      uri = await createSensitiveTempFileUri(`${safeFileName}.gpx`);
+      await FileSystemLegacy.writeAsStringAsync(uri, gpxData, { encoding: 'utf8' });
+      if (!await Sharing.isAvailableAsync()) throw new Error('La condivisione file non è disponibile su questo dispositivo.');
+      await Sharing.shareAsync(uri, { mimeType: 'application/gpx+xml' });
     } catch (error: any) {
       Alert.alert('Errore durante la condivisione', error?.message ?? String(error));
     } finally {
+      await deleteSensitiveTempFile(uri).catch(() => undefined);
       setSaveVisible(false);
       setFileName('percorso');
     }
@@ -1518,6 +1556,8 @@ export default function App() {
       setTileOpacity={setTileOpacity}
       tilesLoading={tilesLoading}
       tilesError={tilesError}
+      tileRetryExhausted={tileRetryExhausted}
+      retryTileBootstrap={retryTileBootstrap}
       previewCloudTrackEdit={previewCloudTrackEdit}
       finishCloudTrackEdit={finishCloudTrackEdit}
       cloudEditRequest={cloudEditRequest}
@@ -1527,10 +1567,10 @@ export default function App() {
     />
   ), [
     recording, recordingStatus, recordingActionBusy, path, currentPosition, markers, cameraCommand, initialCenter, showAll, visibleMarkers,
-    addedRoutes, combinedRoutesOnMap, highlightedRoute, tileSets, allTileSets, tilesLoading, tilesError,
+    addedRoutes, combinedRoutesOnMap, highlightedRoute, tileSets, allTileSets, tilesLoading, tilesError, tileRetryExhausted,
     activeLayer, tileDate, tileVersion, tileOpacity,
     runCameraCommand, addMarker, removeRouteFromMap, pauseRecording, resumeRecording, stopRecording,
-    previewCloudTrackEdit, finishCloudTrackEdit, cloudEditRequest, accountLifecycle.fullAccess, fullIndexAccess
+    previewCloudTrackEdit, finishCloudTrackEdit, cloudEditRequest, accountLifecycle.fullAccess, fullIndexAccess, retryTileBootstrap
   ]);
 
   const renderArchiveScreen = React.useCallback(() => (
@@ -2285,7 +2325,7 @@ function MainUI(props: any) {
     addedRoutes, setAddedRoutes, setRoutesOnMap, routesOnMap, removeRouteFromMap,
     highlightRoute, highlightedRoute, activeLayer, setActiveLayer,
     tileDate, setTileDate, tileVersion, setTileVersion, tileSets, allTileSets,
-    tileOpacity, setTileOpacity, tilesLoading, tilesError,
+    tileOpacity, setTileOpacity, tilesLoading, tilesError, tileRetryExhausted, retryTileBootstrap,
     previewCloudTrackEdit, finishCloudTrackEdit, cloudEditRequest, allowPrivateAccountData,
     fullIndexAccess, onShowIndexAccessNotice,
   } = props;
@@ -2555,6 +2595,11 @@ function MainUI(props: any) {
       {!!tilesError && activeLayer !== 'off' && (
         <View style={mStyles.tileStatusPillError}>
           <Text style={mStyles.tileStatusText}>Layer indice non disponibile</Text>
+          {tileRetryExhausted && (
+            <TouchableOpacity onPress={retryTileBootstrap} accessibilityRole="button" accessibilityLabel="Riprova a caricare il layer indice">
+              <Text style={mStyles.tileRetryText}>Riprova</Text>
+            </TouchableOpacity>
+          )}
         </View>
       )}
 
@@ -3021,6 +3066,7 @@ const mStyles = StyleSheet.create({
   tileStatusPill: { position: 'absolute', top: 86, alignSelf: 'center', backgroundColor: 'rgba(10,17,11,0.88)', borderWidth: 1, borderColor: UI.border, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 6 },
   tileStatusPillError: { position: 'absolute', top: 86, alignSelf: 'center', backgroundColor: 'rgba(140,48,48,0.92)', borderWidth: 1, borderColor: UI.redBri, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 6 },
   tileStatusText: { color: UI.textPri, fontSize: 11, fontWeight: '700' },
+  tileRetryText: { color: '#ffffff', fontSize: 11, fontWeight: '800', textDecorationLine: 'underline', marginTop: 3, textAlign: 'center' },
   indexPanel: { position: 'absolute', backgroundColor: 'rgba(10,17,11,0.94)', borderWidth: 1, borderColor: UI.borderHi, borderRadius: 10, padding: 10, gap: 9 },
   indexPanelCollapsed: { padding: 8, gap: 0 },
   indexPanelHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },

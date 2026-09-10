@@ -1,9 +1,9 @@
 import 'react-native-url-polyfill/auto';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createClient, type Session, type SupabaseClient } from '@supabase/supabase-js';
 import Constants from 'expo-constants';
 import { AccountArchiveError } from './types';
 import { getSupabaseAuthStorageKey, parsePersistedAccountSession } from './offlineSession';
+import { secureAuthStorage } from '../security/secureAuthStorage';
 
 declare const process: {
   env?: {
@@ -16,7 +16,7 @@ let accountClient: SupabaseClient | null = null;
 
 export async function getPersistedAccountSession(): Promise<Session | null> {
   const { url } = getAccountSupabaseConfig();
-  const raw = await AsyncStorage.getItem(getSupabaseAuthStorageKey(url));
+  const raw = await secureAuthStorage.getItem(getSupabaseAuthStorageKey(url));
   return parsePersistedAccountSession(raw);
 }
 
@@ -45,7 +45,7 @@ export function getAccountSupabaseClient(): SupabaseClient {
   const { url, anonKey } = getAccountSupabaseConfig();
   accountClient = createClient(url, anonKey, {
     auth: {
-      storage: AsyncStorage,
+      storage: secureAuthStorage,
       storageKey: getSupabaseAuthStorageKey(url),
       persistSession: true,
       autoRefreshToken: true,

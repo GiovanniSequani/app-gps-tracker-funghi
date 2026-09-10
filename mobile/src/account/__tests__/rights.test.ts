@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-vi.mock('../supabase', () => ({ getAccountSupabaseClient: vi.fn() }));
+const { getAccountSupabaseClient, getAccountSupabaseConfig } = vi.hoisted(() => ({
+  getAccountSupabaseClient: vi.fn(),
+  getAccountSupabaseConfig: vi.fn(),
+}));
+vi.mock('../supabase', () => ({ getAccountSupabaseClient, getAccountSupabaseConfig }));
 
 import { AccountArchiveError } from '../types';
 import { getExportStatusCopy, isExportDownloadable, type AccountExportJob } from '../rights';
@@ -20,6 +24,21 @@ describe('account rights client', () => {
     await expect(loadLatestAccountExport(supabase)).resolves.toEqual(job);
     await expect(requestMyDataExport(supabase)).resolves.toEqual(job);
     expect(rpc).toHaveBeenCalledWith('request_my_data_export');
+  });
+
+  it('propaga Retry-After dal polling HTTP autenticato', async () => {
+    getAccountSupabaseClient.mockReturnValue({ auth: { getSession: vi.fn().mockResolvedValue({ data: { session: { access_token: 'private' } } }) } });
+    getAccountSupabaseConfig.mockReturnValue({ url: 'https://project.supabase.co', anonKey: 'public-anon' });
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ message: 'temporarily unavailable' }), {
+      status: 503,
+      headers: { 'Retry-After': '9', 'Content-Type': 'application/json' },
+    }));
+    try {
+      await expect(loadLatestAccountExport()).rejects.toMatchObject({ status: 503, retryAfterMs: 9_000 });
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
   });
 
   it('scarica dallo Storage privato senza URL firmati e non contatta Storage se scaduto', async () => {

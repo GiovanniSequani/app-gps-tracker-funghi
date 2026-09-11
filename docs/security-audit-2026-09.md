@@ -798,9 +798,13 @@ progredire comunque sulla cancellazione, senza doppie delete.
 
 ### `SEC-AUD-013` — Oracle cross-user sullo stato contributor
 
-**Remediation 2026-09-09 (implemented, two-account runtime test pending).** EXECUTE sulla
-funzione UUID viene revocato ad `authenticated`; il client ha solo il wrapper
-basato su `auth.uid()`, mentre service-role conserva l'helper.
+**Remediation 2026-09-11 (complete).** `EXECUTE` sulla funzione UUID resta
+revocato ad `authenticated`; il client ha solo il wrapper basato su
+`auth.uid()`, mentre service-role conserva l'helper. La migration incrementale
+`202609110001` corregge le policy RLS che chiamavano ancora direttamente
+l'helper e causavano `permission denied`: ora usano soltanto il wrapper
+owner-only. Il test runtime con due JWT ha verificato owner active, diniego
+cross-user e blocco `restricted`/`deletion_pending` su metadata, marker e file.
 
 **Evidenza.** `has_current_contributor_access(uuid)` e' `SECURITY DEFINER` e
 accetta un UUID arbitrario; la migration concede `EXECUTE` ad `authenticated`.
@@ -976,7 +980,7 @@ indicata; non significa che tutti i finding correlati siano corretti.
 | Credenziali Auth fuori da URL/log | BLOCKED | fragment e cleanup pre-render implementati; template/deploy/log runtime non verificati (`SEC-AUD-004`) |
 | Logout e scadenza access token prod | NOT TESTED | JWT TTL e test runtime mancanti |
 | RLS/RPC/Storage statici owner-only | DONE | policy e funzioni revisionate; suite verde |
-| Cross-user runtime produzione corrente | NOT TESTED | prove storiche nei runbook; nessuna credenziale in questa sessione |
+| Cross-user runtime produzione corrente | PARTIAL | GPX metadata/marker/Storage verificati con due JWT usa-e-getta il 2026-09-11; matrice completa export/delete non ripetuta |
 | Signed URL owner, expiry e replay runtime | NOT TESTED | TTL 60 s verificato staticamente |
 | Export/cancellazione IDOR runtime corrente | NOT TESTED | prove storiche, non ripetute |
 | Enforcement lifecycle/riaccettazione statico | DONE | trigger, policy e RPC revisionati |

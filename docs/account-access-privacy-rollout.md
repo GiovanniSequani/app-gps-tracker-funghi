@@ -854,6 +854,7 @@ Aggiornare con righe concise; non trasformare questa sezione in una chat log.
 | 2026-09-10 | SEC-AUD-014 | DONE | Audit non divulgativo: chiave assente da `HEAD`, presente in 2 commit e 1 percorso storico; il proprietario ne ha confermato l'eliminazione in Google Cloud Console. Nessun valore esposto e nessuna riscrittura Git eseguita. |
 | 2026-09-11 | SEC-AUD-008 | RISK ACCEPTED 1.9.0 | Dataset indice recenti tecnicamente pubblici; gate D-7 solo UI/prodotto. Nessun dato personale. Accettati scraping/egress per 1.9.0; riesame obbligatorio prima di crescita rilevante, forecast riservati o costi/traffico anomali. |
 | 2026-09-11 | SECURITY-AUDIT-DOC | UPDATED | Allineati finding implementati senza chiudere prove mancanti: App/Universal Links, runtime a due account, deploy browser, device backup/filesystem e AAB/IPA firmati restano aperti. |
+| 2026-09-11 | SEC-AUD-013 | DONE | Migration `202609110001` applicata: le policy RLS usano il wrapper owner-only senza ripristinare `EXECUTE` sull'helper UUID. Due JWT usa-e-getta: owner active accede a profilo/traccia/marker/file, altro account negato, restricted/deletion_pending bloccati; lifecycle/export invariati e cleanup completo. |
 
 ## Security audit pre-release 2026-09
 
@@ -877,7 +878,7 @@ test runtime a due account e AAB finale restano `NOT TESTED`.
 | SEC-AUD-010 | IMPLEMENTED, BROWSER TEST PENDING | Web a MapLibre 6.4.1; restano attribution/popup/CSP sul deploy. |
 | SEC-AUD-011 | DONE | Lock Python con hash, gate/SBOM backend-mobile-web; fix mirati e eccezioni mobile con scadenza 2026-10-10. |
 | SEC-AUD-012 | IMPLEMENTED, SIGNED BUILD PENDING | OTA disabilitato per 1.9.0; verifica AAB/IPA ancora mancante. |
-| SEC-AUD-013 | IMPLEMENTED, TWO-ACCOUNT TEST PENDING | Helper UUID revocato ai client; wrapper owner-only, service-role preservata; manca prova cross-user live. |
+| SEC-AUD-013 | DONE | Helper UUID revocato ai client; policy sul wrapper owner-only, service-role preservata e prova GPX cross-user live superata. |
 | SEC-AUD-014 | DONE | Chiave assente da HEAD ed eliminata in Google Cloud Console; history preservata senza esporre il valore. |
 | SEC-AUD-015 | TODO | Abilitare HSTS e allineare gli header sensibili a entrambe le varianti URL della cancellazione. |
 | SEC-AUD-016 | PARTIAL | Budget DB user/tenant applicati su byte, pending, ingress 24h ed export; CAPTCHA/rate edge signup e alert provider restano separati. |

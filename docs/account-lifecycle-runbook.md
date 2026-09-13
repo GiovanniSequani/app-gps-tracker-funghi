@@ -187,7 +187,10 @@ python -m backend.scripts.accounts.cleanup_pending_gpx_uploads --run
 A process error releases the daily run as `available`; claimed email becomes
 `retry` with backoff. A crashed claim is reclaimed after 15 minutes. Repeating
 the same UTC day resumes its attempt counter and cannot exceed the database or
-CLI daily limit. A completed day is not rerun; pending messages resume next day.
+CLI daily limit. Since `202609120001`, a completed run reopens on the same UTC
+day only when a new due outbox row exists (for example an authenticated account
+deletion verification); cumulative counters are preserved. With no new due
+mail it remains completed and idempotent.
 
 Emergency access rollback is to set `lifecycle_enabled=false`. This restores
 legacy archive access but does not erase states, deadlines, events or outbox.

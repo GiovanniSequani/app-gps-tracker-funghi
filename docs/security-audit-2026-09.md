@@ -824,6 +824,24 @@ job service-role devono continuare a funzionare.
 
 **Mapping.** API1:2023, ASVS V4.
 
+**Follow-up AND-REL-001 (2026-09-12).** Il retest Cloudflare ha distinto un
+download Storage autenticato da un URL firmato gia' emesso. Le policy
+continuavano a negare richieste fresche a `restricted` e `deletion_pending`, ma
+un signed URL e' una credenziale bearer valida fino alla propria scadenza e la
+cache puo' prolungarne il replay. Le migration incrementali `202609120001` e
+`202609120002` consentono su `user-gpx` soltanto le operazioni object-info/body
+del download autenticato, oltre ai controlli owner/path/stato gia' presenti:
+il client non puo' piu' creare
+signed URL e deve usare download con JWT corrente. La stessa migration riapre
+una run lifecycle completata se viene accodata nello stesso giorno una nuova
+email transazionale di verifica cancellazione, conservando i contatori e il
+limite giornaliero. Dopo l'applicazione remota di entrambe, il runtime con due
+JWT usa-e-getta ha verificato: owner active ammesso, cross-user negato, signed
+URL negato, `restricted` e `deletion_pending` negati. La richiesta autenticata
+ha creato la outbox; una run gia' completata si e' riaperta nello stesso giorno,
+la callback ha creato `deletion_pending` e il rights worker ha completato la
+cancellazione del solo account di test senza inviare email reali.
+
 ### `SEC-AUD-014` — Chiave client storica ancora recuperabile da Git
 
 **Remediation 2026-09-10 (complete).** Uno script ispeziona history e HEAD

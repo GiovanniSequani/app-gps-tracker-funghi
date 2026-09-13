@@ -1,5 +1,15 @@
 # Frontend contract: contributor account lifecycle
 
+## AND-REL-001 GPX download change
+
+After migrations `202609120001` and `202609120002`, clients must download an
+owned GPX with `supabase.storage.from('user-gpx').download(storage_path)` while
+authenticated. Do not call `createSignedUrl()` and do not retain a GPX URL.
+The bucket policy intentionally permits only authenticated object-info/body
+operations; signed URL creation and listing are denied. Treat any failed
+download as loss of archive access and discard cached private GPX bytes when
+the server reports `restricted`, `deletion_pending`, or non-full access.
+
 This is a prepared contract, not yet active in production.
 
 ## Shared contract

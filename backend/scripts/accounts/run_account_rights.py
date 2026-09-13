@@ -100,7 +100,8 @@ def main() -> None:
         print(
             "[ACCOUNT RIGHTS] "
             f"exports_ready={result.exports_ready} exports_cleaned={result.exports_cleaned} "
-            f"deletions={result.deletions_completed} email_rows={result.email_rows_cleaned} "
+            f"deletions={result.deletions_completed} "
+            f"email_rows_cleaned={result.email_rows_cleaned} "
             f"failures={result.failures}"
         )
         if result.failures:

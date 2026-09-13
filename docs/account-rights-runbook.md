@@ -78,6 +78,22 @@ remove expired exports, clean service email older than 24 months, then process
 deletion jobs. Logs contain counts and error class only, never email, token,
 coordinates, paths or user ID.
 
+`deletions` counts deletion jobs completed by that rights invocation; it does
+not count verification requests. `email_rows_cleaned` counts old retained
+service-email rows removed by maintenance, not newly queued or sent messages.
+An authenticated deletion request first adds an `external_deletion_verify`
+outbox row. The lifecycle dispatcher sends it; only the one-time callback moves
+the profile to `deletion_pending` and creates the deletion job consumed here.
+Migration `202609120001` allows a completed lifecycle run to reopen for such a
+new same-day transactional message without resetting the daily quota.
+
+Production runtime evidence on 12 September 2026 used two disposable accounts
+and a fake sender: the authenticated request queued exactly its verification,
+the completed test-day lifecycle lock reopened without resetting counters, the
+one-time callback produced `deletion_pending` plus a pending deletion job, and
+the rights worker completed Storage/database/Auth cleanup for only that test
+account. No real lifecycle email was claimed or sent.
+
 ## Export-ready notification (`BE-EMAIL-004`)
 
 Apply `202609070001_export_ready_email.sql` after the existing rights cutover

@@ -224,7 +224,12 @@ user_gpx_tracks
 ```
 
 RLS automatically adds the effective `user_id = auth.uid()` boundary. Download
-the exact `storage_path` through the authenticated `user-gpx` Storage client.
+the exact `storage_path` with the authenticated Storage `download()` operation.
+Do not create or retain signed URLs for `user-gpx`: the SELECT policy permits
+only the authenticated object-info/body operations, so every new request
+carries the current JWT and re-evaluates contributor access. `restricted` and
+`deletion_pending` accounts cannot list, sign, download, upload, replace or
+delete GPX objects.
 Unauthenticated users receive no profile, metadata or object access.
 
 ## Rename

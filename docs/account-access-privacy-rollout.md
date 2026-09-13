@@ -855,6 +855,7 @@ Aggiornare con righe concise; non trasformare questa sezione in una chat log.
 | 2026-09-11 | SEC-AUD-008 | RISK ACCEPTED 1.9.0 | Dataset indice recenti tecnicamente pubblici; gate D-7 solo UI/prodotto. Nessun dato personale. Accettati scraping/egress per 1.9.0; riesame obbligatorio prima di crescita rilevante, forecast riservati o costi/traffico anomali. |
 | 2026-09-11 | SECURITY-AUDIT-DOC | UPDATED | Allineati finding implementati senza chiudere prove mancanti: App/Universal Links, runtime a due account, deploy browser, device backup/filesystem e AAB/IPA firmati restano aperti. |
 | 2026-09-11 | SEC-AUD-013 | DONE | Migration `202609110001` applicata: le policy RLS usano il wrapper owner-only senza ripristinare `EXECUTE` sull'helper UUID. Due JWT usa-e-getta: owner active accede a profilo/traccia/marker/file, altro account negato, restricted/deletion_pending bloccati; lifecycle/export invariati e cleanup completo. |
+| 2026-09-12 | AND-REL-001 backend follow-up | DONE | Applicate `202609120001` e `202609120002`. Due JWT usa-e-getta: owner active ammesso al download autenticato; cross-user, signed URL, restricted e deletion_pending negati. Richiesta cancellazione accodata, run lifecycle completata riaperta same-day senza reset quota, callback confermata e rights worker completato sul solo account test con mittente fittizio. Cleanup account/Storage/job test completato; nessuna email reale inviata. I client devono sostituire `createSignedUrl()` con `download()`. |
 
 ## Security audit pre-release 2026-09
 

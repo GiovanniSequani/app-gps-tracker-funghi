@@ -4,7 +4,7 @@ Questa checklist è obbligatoria per ogni release che include SEC-AUD-003, 007, 
 
 ## Stato OTA della release 1.9.0
 
-`expo.updates.enabled` è `false`: la release 1.9.0 non scarica aggiornamenti OTA. Le modifiche richiedono una nuova build. Non riattivare EAS Update senza completare la procedura firmata qui sotto e produrre una nuova build con un nuovo runtime.
+`expo.updates.enabled` è `false`: la release 1.9.0 non scarica aggiornamenti OTA. Le modifiche richiedono una nuova build distribuita tramite Google Play. La riattivazione di EAS Update non è pianificata.
 
 ## Prima della build
 
@@ -34,19 +34,5 @@ Questa checklist è obbligatoria per ogni release che include SEC-AUD-003, 007, 
 - [ ] Ispezionare il container dell’app: Documents e Application Support devono avere `NSURLIsExcludedFromBackupKey = 1`; Cache non deve contenere file in `sensitive-temp` dopo share/logout.
 - [ ] Un ripristino su altro dispositivo non deve trasferire credenziali, database, GPX, draft o export.
 - [ ] Verificare che nessun pannello o retry modifichi la camera o rimonti la mappa.
-
-## Riattivazione futura di EAS Update con firma
-
-1. Generare offline una chiave RSA privata e un certificato X.509. Conservare la chiave privata fuori dal repository e dai backup/archivi EAS; committare soltanto il certificato pubblico.
-2. Impostare in `app.json`:
-   - `updates.enabled: true`;
-   - `updates.codeSigningCertificate` verso il certificato pubblico;
-   - `updates.codeSigningMetadata` con `keyid` stabile e `alg: rsa-v1_5-sha256`.
-3. Incrementare `expo.version`, così `runtimeVersion.policy: appVersion` crea un runtime nuovo.
-4. Produrre e installare una nuova build nativa: il certificato deve essere incorporato nel binario prima di pubblicare OTA.
-5. Pubblicare sempre con la chiave esplicita fuori repo, per esempio:
-   `eas update --branch main --platform android --private-key-path D:\percorso-esterno\funghitracker-update-private.pem --message "descrizione"`.
-6. Su dispositivo verificare un update firmato valido. In un ambiente di test isolato verificare inoltre che manifest unsigned o alterato venga rifiutato.
-7. Non usare mai il vecchio runtime non firmato per distribuire bundle dopo la riattivazione.
 
 Se uno dei controlli rimane non verificato, la release non è pronta per la pubblicazione sugli store.

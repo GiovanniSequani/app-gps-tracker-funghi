@@ -19,7 +19,6 @@ const SUPABASE_BUCKET = 'tiles';
 
 function tileUrl(species: 'porcini' | 'finferli', date: string, version: string): string {
   const url = `${SUPABASE_URL}/storage/v1/object/public/${SUPABASE_BUCKET}/${date}_v${version}/${species}/{z}/{x}/{y}.png`;
-  console.log(`Caricamento tile con url: ${url}`);
   return url;
 }
 

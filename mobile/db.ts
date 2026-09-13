@@ -47,8 +47,8 @@ export const initDB = async () => {
         type TEXT
       );
     `);
-  } catch (err) {
-    console.error('Errore initDB:', err);
+  } catch {
+    console.error('Errore initDB');
   }
 };
 
@@ -66,17 +66,15 @@ export const insertRoute = async (
       `INSERT INTO routes (route_id, name, date, path) VALUES (?, ?, ?, ?);`,
       [route_id, name, date, JSON.stringify(path)]
     );
-    console.log(`Inserted route ${route_id} with path: ${JSON.stringify(path)}`);
     for (const wp of waypoints) {
       await db.runAsync(
         `INSERT INTO waypoints (route_id, lat, lon, timestamp, name, type) VALUES (?, ?, ?, ?, ?, ?);`,
         [route_id, wp.latitude, wp.longitude, wp.timestamp, wp.name, wp.tipo]
       );
-        console.log(`Inserted waypoint for route ${route_id}: lat:${wp.latitude}, lon:${wp.longitude}, ts:${wp.timestamp}, name:${wp.name}, tipo:${wp.tipo}`);
     }
     console.log('Route inserted');
   } catch (err) {
-    console.error('Insert route error:', err);
+    console.error('Insert route error');
     throw err;
   }
 };
@@ -88,8 +86,8 @@ export const getAllRoutes = async () => {
     return await db.getAllAsync(
       `SELECT route_id, name, date FROM routes ORDER BY date DESC;`
     );
-  } catch (err) {
-    console.error('getAllRoutes error:', err);
+  } catch {
+    console.error('getAllRoutes error');
     return [];
   }
 };
@@ -113,8 +111,8 @@ export const getRouteById = async (route_id: string) => {
       path: JSON.parse(route.path) as Coordinate[],
       waypoints,
     };
-  } catch (err) {
-    console.error('getRouteById error:', err);
+  } catch {
+    console.error('getRouteById error');
     return null;
   }
 };
@@ -129,7 +127,7 @@ export const deleteRoute = async (route_id: string) => {
     });
     console.log('Route deleted');
   } catch (err) {
-    console.error('Delete route error:', err);
+    console.error('Delete route error');
     throw err;
   }
 };

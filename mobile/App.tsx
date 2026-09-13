@@ -253,7 +253,6 @@ async function getAvailableTileSetsFromManifest(signal?: AbortSignal): Promise<T
       .map((item) => parseManifestTileSet(item as ManifestTileSet))
       .filter((item): item is ParsedTileSet => item !== null),
   );
-  console.log('[tiles] Tile set manifest result', { count: tileSets.length, tileSets: tileSets.slice(0, 20) });
   return tileSets;
 }
 
@@ -391,7 +390,7 @@ function archiveRouteToMapRoute(route: ArchiveMapRoute): RouteData {
 
 // ─── BACKGROUND TASK (identico all'originale) ─────────────────────────────────
 TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
-  if (error) { console.error('Errore task location:', error); return; }
+  if (error) { console.error('Errore task location'); return; }
   if (data) {
     try {
       const statusInfo = await FileSystemLegacy.getInfoAsync(RECORDING_STATUS_FILE);
@@ -471,6 +470,7 @@ export default function App() {
   }, [authDeepLink.dismiss]);
   const [recordingStatus, setRecordingStatus] = React.useState<RecordingStatus>('idle');
   const [recordingActionBusy, setRecordingActionBusy] = React.useState(false);
+  const [backgroundLocationDisclosureVisible, setBackgroundLocationDisclosureVisible] = React.useState(false);
   const recording = isRecordingSession(recordingStatus);
   const [path, setPath] = React.useState<Coordinate[]>([]);
   const [currentPosition, setCurrentPosition] = React.useState<Coordinate | null>(null);
@@ -598,6 +598,18 @@ export default function App() {
     setRecordingActionBusy(busy);
   }, []);
 
+  const showBackgroundLocationDisclosure = React.useCallback(() => new Promise<boolean>((resolve) => {
+    backgroundDisclosureResolverRef.current = resolve;
+    setBackgroundLocationDisclosureVisible(true);
+  }), []);
+
+  const closeBackgroundLocationDisclosure = React.useCallback((continueRequest: boolean) => {
+    setBackgroundLocationDisclosureVisible(false);
+    const resolve = backgroundDisclosureResolverRef.current;
+    backgroundDisclosureResolverRef.current = null;
+    resolve?.(continueRequest);
+  }, []);
+
   const checkpointRecordingDraft = React.useCallback(async (
     status: RecordingDraftStatus,
     options?: { force?: boolean; path?: Coordinate[]; markers?: MarkerData[] },
@@ -650,31 +662,13 @@ export default function App() {
 
   React.useEffect(() => {
     if (tileSets.length > 0 && tileDate && tileVersion && tilesError) {
-      console.log('[tiles] Clearing discovery error after valid tile selection', { tileDate, tileVersion });
       setTilesError(null);
     }
   }, [tileSets.length, tileDate, tileVersion, tilesError]);
 
-  React.useEffect(() => {
-    console.log('[tiles] Selection changed', {
-      activeLayer,
-      tileDate,
-      tileVersion,
-      tileOpacity,
-    });
-  }, [activeLayer, tileDate, tileVersion, tileOpacity]);
-
   const runCameraCommand = React.useCallback((command: CameraStop) => {
     cameraCommandIdRef.current += 1;
     const nextCommand: CameraCommand = { ...command, id: cameraCommandIdRef.current };
-    console.log('[camera] Run one-shot command', {
-      id: nextCommand.id,
-      centerCoordinate: nextCommand.centerCoordinate,
-      zoomLevel: nextCommand.zoomLevel,
-      hasBounds: Boolean(nextCommand.bounds),
-      animationDuration: nextCommand.animationDuration,
-      animationMode: nextCommand.animationMode,
-    });
     setCameraCommand(nextCommand);
   }, []);
 
@@ -684,7 +678,6 @@ export default function App() {
     const timeout = setTimeout(() => {
       setCameraCommand((current) => {
         if (current?.id === cameraCommand.id) {
-          console.log('[camera] Clear one-shot command', { id: cameraCommand.id });
           return null;
         }
         return current;
@@ -707,13 +700,13 @@ export default function App() {
             [{ text: 'Più tardi', style: 'cancel' }, { text: 'Aggiorna ora', onPress: () => Updates.reloadAsync() }]
           );
         }
-      } catch (err) { console.log('Errore update:', err); }
+      } catch { console.log('Errore update'); }
     })();
   }, []);
 
   // init DB
   React.useEffect(() => {
-    initDB().then(() => console.log('DB inizializzato')).catch(console.error);
+    initDB().then(() => console.log('DB inizializzato')).catch(() => console.error('Errore initDB'));
   }, []);
 
   React.useEffect(() => {
@@ -727,8 +720,8 @@ export default function App() {
         try {
           const started = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
           if (started) await Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME);
-        } catch (err) {
-          console.warn('[gps-recovery] Impossibile arrestare il task precedente:', err);
+        } catch {
+          console.warn('[gps-recovery] Impossibile arrestare il task precedente');
         }
 
         let backgroundPoints: Coordinate[] = [];
@@ -739,8 +732,8 @@ export default function App() {
             const parsed = JSON.parse(raw || '[]');
             if (Array.isArray(parsed)) backgroundPoints = parsed as Coordinate[];
           }
-        } catch (err) {
-          console.warn('[gps-recovery] Ultimi punti background non leggibili:', err);
+        } catch {
+          console.warn('[gps-recovery] Ultimi punti background non leggibili');
         }
 
         const pauseWindows = storedDraft.pauseWindows.map((window) => ({ ...window }));
@@ -760,7 +753,7 @@ export default function App() {
         await writeRecordingDraft(interruptedDraft);
         if (!cancelled) setRecoveryDraft(interruptedDraft);
       } catch (err) {
-        console.warn('[gps-recovery] Recovery non disponibile:', err);
+        console.warn('[gps-recovery] Recovery non disponibile');
         if (!cancelled && err instanceof CorruptRecordingDraftError) {
           setRecoveryCorrupt(true);
           Alert.alert(
@@ -802,7 +795,6 @@ export default function App() {
     const controller = new AbortController();
     (async () => {
       try {
-        console.log('[tiles] Bootstrap start', { preferred: getDefaultTileSet() });
         setTilesLoading(true);
         setTilesError(null);
         const available = await getAvailableTileSets(controller.signal);
@@ -813,7 +805,6 @@ export default function App() {
         if (allowed.length === 0) throw new Error('Nessuna data indice disponibile per il livello di accesso corrente.');
         const latest = allowed[0];
         if (!mounted) return;
-        console.log('[tiles] Bootstrap selected latest tile set', latest);
         setAllTileSets(available);
         setTileSets(allowed);
         setTileDate(latest.date);
@@ -825,7 +816,7 @@ export default function App() {
       } catch (err) {
         if (!mounted) return;
         const message = err instanceof Error ? err.message : 'Errore caricamento tiles';
-        console.log('[tiles] Bootstrap failed, keeping preferred local tile set', { message, preferred: getDefaultTileSet() });
+        console.log('[tiles] Bootstrap failed');
         setTilesError(message);
         tileRetryAfterRef.current = retryAfterFromError(err);
       } finally {
@@ -882,8 +873,8 @@ export default function App() {
             animationMode: 'flyTo',
           });
         }
-      } catch (err) {
-        console.log('[gps] Initial foreground position failed', err);
+      } catch {
+        console.log('[gps] Initial foreground position failed');
       }
     })();
   }, [runCameraCommand]);
@@ -927,8 +918,8 @@ export default function App() {
             });
           }
         });
-      } catch (err) {
-        console.log('[gps] Foreground watch failed', err);
+      } catch {
+        console.log('[gps] Foreground watch failed');
       }
     })();
 
@@ -999,8 +990,8 @@ export default function App() {
   React.useEffect(() => {
     if (!isRecordingSession(recordingStatus)) return;
     const draftStatus: RecordingDraftStatus = recordingStatus === 'paused' ? 'paused' : 'recording';
-    void checkpointRecordingDraft(draftStatus).catch((err) => {
-      console.warn('[gps-recovery] Checkpoint non riuscito:', err);
+    void checkpointRecordingDraft(draftStatus).catch(() => {
+      console.warn('[gps-recovery] Checkpoint non riuscito');
     });
   }, [path.length, recordingStatus, checkpointRecordingDraft]);
 
@@ -1044,10 +1035,14 @@ export default function App() {
       }
       let bgStatus: Location.PermissionStatus | null = null;
       try {
-        const result = await Location.requestBackgroundPermissionsAsync();
-        bgStatus = result.status;
-      } catch (err) {
-        console.log('[gps] Background permission request failed', err);
+        bgStatus = (await Location.getBackgroundPermissionsAsync()).status;
+        if (bgStatus !== 'granted') {
+          const continueRequest = await showBackgroundLocationDisclosure();
+          if (!continueRequest) return;
+          bgStatus = (await Location.requestBackgroundPermissionsAsync()).status;
+        }
+      } catch {
+        console.log('[gps] Background permission request failed');
       }
       if (Platform.OS === 'android' && bgStatus !== 'granted') {
         Alert.alert(
@@ -1092,7 +1087,7 @@ export default function App() {
         }
       }
     } catch (err) {
-      console.log('[gps] Recording failed to start', err);
+      console.log('[gps] Recording failed to start');
       if (recordingStatusRef.current === 'idle') {
         Alert.alert('Avvio non riuscito', 'Controlla i permessi GPS e riprova.');
       } else {
@@ -1117,8 +1112,8 @@ export default function App() {
       if (started) await Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME);
       const pausedPath = await syncPathFromFile(false);
       await checkpointRecordingDraft('paused', { force: true, path: pausedPath });
-    } catch (err) {
-      console.warn('[gps] Errore durante la pausa:', err);
+    } catch {
+      console.warn('[gps] Errore durante la pausa');
       Alert.alert(
         'Pausa attivata',
         'La traccia resta in pausa, ma non è stato possibile arrestare correttamente il servizio GPS in background.',
@@ -1153,8 +1148,8 @@ export default function App() {
       }
       updateRecordingStatus(nextRecordingStatus(recordingStatusRef.current, 'resume'));
       await checkpointRecordingDraft('recording', { force: true });
-    } catch (err) {
-      console.warn('[gps] Errore durante la ripresa:', err);
+    } catch {
+      console.warn('[gps] Errore durante la ripresa');
       try { await persistRecordingStatus('paused'); } catch { }
       const lastPause = recordingPauseWindowsRef.current.at(-1);
       if (lastPause) lastPause.endedAt = null;
@@ -1201,8 +1196,8 @@ export default function App() {
       },
       shareGuest: shareGuestRecording,
     });
-    try { await clearRecordingDraft(); } catch (err) {
-      console.warn('[gps-recovery] Pulizia della bozza non riuscita:', err);
+    try { await clearRecordingDraft(); } catch {
+      console.warn('[gps-recovery] Pulizia della bozza non riuscita');
     }
     recordingSessionIdRef.current = null;
     recordingStartedAtRef.current = null;
@@ -1235,15 +1230,15 @@ export default function App() {
     try {
       const started = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
       if (started) await Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME);
-    } catch (err) { console.warn('Errore stop location updates:', err); }
+    } catch { console.warn('Errore stop location updates'); }
     const finalPath = await syncPathFromFile(false);
     try {
       pendingFinishedDraftRef.current = await checkpointRecordingDraft('interrupted', {
         force: true,
         path: finalPath,
       });
-    } catch (err) {
-      console.warn('[gps-recovery] Checkpoint finale non riuscito:', err);
+    } catch {
+      console.warn('[gps-recovery] Checkpoint finale non riuscito');
       const sessionId = recordingSessionIdRef.current;
       const startedAt = recordingStartedAtRef.current;
       if (sessionId && startedAt) {
@@ -1296,8 +1291,8 @@ export default function App() {
       await checkpointRecordingDraft('paused', { force: true, path: recoveryDraft.path, markers: recoveryDraft.markers });
       setRecoveryDraft(null);
       await resumeRecording();
-    } catch (err) {
-      console.warn('[gps-recovery] Ripresa non riuscita:', err);
+    } catch {
+      console.warn('[gps-recovery] Ripresa non riuscita');
       setRecoveryError('Impossibile riprendere la registrazione. Controlla i permessi GPS e riprova.');
     } finally {
       setRecoveryBusy(false);
@@ -1641,6 +1636,11 @@ export default function App() {
           if (rootNavigationRef.isReady()) rootNavigationRef.navigate('Archivio');
         }}
       />
+      <BackgroundLocationDisclosureModal
+        visible={backgroundLocationDisclosureVisible}
+        onContinue={() => closeBackgroundLocationDisclosure(true)}
+        onCancel={() => closeBackgroundLocationDisclosure(false)}
+      />
       <TrackNameModal
         visible={recordingNameVisible}
         title="Registrazione terminata"
@@ -1860,8 +1860,8 @@ const MemoMapCanvas = React.memo(function MemoMapCanvas(props: any) {
           animationMode: 'easeTo',
         });
       }
-    } catch (error) {
-      console.warn('[coordinates] Impossibile correggere la viewport del pannello', error);
+    } catch {
+      console.warn('[coordinates] Impossibile correggere la viewport del pannello');
       if (requestId === coordinateRequestIdRef.current) {
         onCoordinateSelect(point, {
           x: Math.max(COORDINATE_POPUP_WIDTH, viewport.width / 2),

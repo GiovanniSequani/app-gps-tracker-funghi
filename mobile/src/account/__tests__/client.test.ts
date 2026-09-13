@@ -4,9 +4,9 @@ vi.mock('../supabase', () => ({ getAccountSupabaseClient: vi.fn() }));
 vi.mock('../../security/sensitiveTempFiles', () => ({ purgeSensitiveTempFiles: vi.fn(async () => undefined) }));
 
 import {
-  createTrackDownloadUrl,
   deleteTrack,
   deleteTrackMushroomMarker,
+  downloadTrack,
   listTrackMushroomMarkers,
   loadArchiveData,
   renameTrack,
@@ -218,13 +218,23 @@ describe('account archive client', () => {
     expect(result.storage_path).toBe(readyTrack.storage_path);
   });
 
-  it('crea un URL firmato breve per scaricare dal bucket privato', async () => {
-    const createSignedUrl = vi.fn().mockResolvedValue({ data: { signedUrl: 'https://signed.example/track' }, error: null });
-    const result = await createTrackDownloadUrl(readyTrack, {
-      storage: { from: () => ({ createSignedUrl }) },
+  it('scarica il GPX con Storage autenticato senza creare URL firmati', async () => {
+    const blob = new Blob(['gpx'], { type: 'application/gzip' });
+    const download = vi.fn().mockResolvedValue({ data: blob, error: null });
+    const from = vi.fn(() => ({ download }));
+    const result = await downloadTrack(readyTrack, {
+      storage: { from },
     } as never);
-    expect(createSignedUrl).toHaveBeenCalledWith(readyTrack.storage_path, 60);
-    expect(result).toBe('https://signed.example/track');
+    expect(from).toHaveBeenCalledWith('user-gpx');
+    expect(download).toHaveBeenCalledWith(readyTrack.storage_path);
+    expect(result).toBe(blob);
+  });
+
+  it('propaga gli errori del download GPX autenticato', async () => {
+    const download = vi.fn().mockResolvedValue({ data: null, error: new Error('network request failed') });
+    await expect(downloadTrack(readyTrack, {
+      storage: { from: () => ({ download }) },
+    } as never)).rejects.toMatchObject({ code: 'network' });
   });
 
   it('salva il trim inclusivo tramite la RPC prevista', async () => {

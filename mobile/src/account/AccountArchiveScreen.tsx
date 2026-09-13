@@ -47,8 +47,8 @@ import { AccountAuthForm, type AuthView } from './AccountAuthForm';
 import { AccountLifecyclePanel } from './AccountLifecyclePanel';
 import { AccountRightsPanel } from './AccountRightsPanel';
 import {
-  createTrackDownloadUrl,
   deleteTrack,
+  downloadTrack,
   listTrackMushroomMarkers,
   loadArchiveData,
   requestPasswordRecovery,
@@ -308,14 +308,8 @@ export default function AccountArchiveScreen(props: {
   }, [canReadLocalArchive, loadLocalRoutes, props.lifecycle.fullAccess, sessionState.session]);
 
   const downloadTrackBytes = React.useCallback(async (track: GpxTrack): Promise<Uint8Array> => {
-    const signedUrl = await createTrackDownloadUrl(track);
-    const uri = await createSensitiveTempFileUri(`cloud-${track.id}.gpx.gz`);
-    try {
-      const downloaded = await File.downloadFileAsync(signedUrl, new File(uri), { idempotent: true });
-      return await downloaded.bytes();
-    } finally {
-      await deleteSensitiveTempFile(uri).catch(() => undefined);
-    }
+    const blob = await downloadTrack(track);
+    return new Uint8Array(await blob.arrayBuffer());
   }, []);
 
   const loadCloudDetail = React.useCallback(async (track: GpxTrack): Promise<ArchiveMapRoute> => {

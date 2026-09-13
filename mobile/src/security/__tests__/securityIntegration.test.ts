@@ -24,6 +24,12 @@ describe('integrazione hardening mobile', () => {
     expect(app).toContain('purgeSensitiveTempFiles()');
   });
 
+  it('scarica GPX privati soltanto tramite Storage autenticato', () => {
+    expect(logout).toContain("storage.from('user-gpx').download(track.storage_path)");
+    expect([logout, archive].join('\n')).not.toContain('createSignedUrl');
+    expect([logout, archive].join('\n')).not.toContain('signedUrl');
+  });
+
   it('sospende retry offline e in background senza aggiungere comandi camera', () => {
     const retryBlock = app.slice(app.indexOf('if (!indexAccessReady || !appIsActive'), app.indexOf('// posizione iniziale'));
     expect(retryBlock).toContain('networkOnline === false');

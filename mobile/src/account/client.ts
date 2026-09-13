@@ -292,14 +292,14 @@ export async function renameTrack(
   return data as GpxTrack;
 }
 
-export async function createTrackDownloadUrl(
+export async function downloadTrack(
   track: GpxTrack,
   supabase: SupabaseClient = getAccountSupabaseClient(),
-): Promise<string> {
-  const { data, error } = await supabase.storage.from('user-gpx').createSignedUrl(track.storage_path, 60);
+): Promise<Blob> {
+  const { data, error } = await supabase.storage.from('user-gpx').download(track.storage_path);
   if (error) throw toAccountError(error);
-  if (!data?.signedUrl) throw new AccountArchiveError('unknown', 'URL temporaneo della traccia non disponibile.');
-  return data.signedUrl;
+  if (!data) throw new AccountArchiveError('unknown', 'Il file GPX non è disponibile. Aggiorna l’archivio e riprova.');
+  return data;
 }
 
 export async function deleteTrack(

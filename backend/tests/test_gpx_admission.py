@@ -59,6 +59,17 @@ def test_hash_mismatch_is_rejected_and_exact_object_removed() -> None:
     assert (result.rejected, storage.deleted, store.rejected) == (1, 1, 1)
 
 
+def test_size_changed_after_finalize_is_rejected_and_exact_object_removed() -> None:
+    payload = archive()
+    metadata = row(payload)
+    metadata["expected_compressed_size_bytes"] = len(payload) - 1
+    store, storage = Store(metadata), Storage(payload)
+
+    result = validate_pending_gpx(store, storage)
+
+    assert (result.rejected, storage.deleted, store.rejected) == (1, 1, 1)
+
+
 def test_transient_download_error_is_retryable_not_rejected() -> None:
     payload = archive(); store = Store(row(payload))
     result = validate_pending_gpx(store, Storage(payload, fail=True))

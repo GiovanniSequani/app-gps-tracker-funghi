@@ -337,3 +337,54 @@ def test_gpx_gzip_validator_rejects_fake_or_oversized_content(tmp_path: Path) ->
         target.write(b'<!DOCTYPE gpx [<!ENTITY x "x">]><gpx><trk><trkseg><trkpt lat="1" lon="1"/></trkseg></trk></gpx>')
     with pytest.raises(ValueError, match="DTD/entities"):
         validate_gpx_gzip(dangerous, max_compressed_bytes=1024, max_uncompressed_bytes=2048)
+
+
+def test_gpx_validator_accepts_utf16_bom_without_ascii_prescan(tmp_path: Path) -> None:
+    path = tmp_path / "utf16.gpx.gz"
+    xml = (
+        '<?xml version="1.0" encoding="UTF-16"?>'
+        '<gpx xmlns="http://www.topografix.com/GPX/1/1"><trk><trkseg>'
+        '<trkpt lat="46.1" lon="11.2"><time>2026-09-14T08:00:00Z</time></trkpt>'
+        '</trkseg></trk></gpx>'
+    ).encode("utf-16")
+    with gzip.open(path, "wb") as target:
+        target.write(xml)
+
+    result = validate_gpx_gzip(
+        path, max_compressed_bytes=2048, max_uncompressed_bytes=4096
+    )
+
+    assert result.track_point_count == 1
+    assert result.uncompressed_size_bytes == len(xml)
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        '<!DOCTYPE gpx [<!ENTITY x "expanded">]>',
+        (
+            '<!DOCTYPE gpx ['
+            '<!ENTITY a "1234567890">'
+            '<!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;">'
+            '<!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;">'
+            ']>'
+        ),
+    ],
+)
+def test_gpx_validator_rejects_utf16_dtd_and_entity_expansion(
+    tmp_path: Path, declaration: str
+) -> None:
+    path = tmp_path / "utf16-dangerous.gpx.gz"
+    xml = (
+        '<?xml version="1.0" encoding="UTF-16"?>'
+        + declaration
+        + '<gpx><trk><trkseg><trkpt lat="46" lon="11">&c;</trkpt>'
+        '</trkseg></trk></gpx>'
+    ).encode("utf-16")
+    with gzip.open(path, "wb") as target:
+        target.write(xml)
+
+    with pytest.raises(ValueError, match="DTD/entities"):
+        validate_gpx_gzip(
+            path, max_compressed_bytes=4096, max_uncompressed_bytes=8192
+        )

@@ -366,15 +366,22 @@ python -m backend.scripts.accounts.validate_pending_gpx --dry-run
 python -m backend.scripts.accounts.validate_pending_gpx --run
 ```
 
-The parser is streaming and bounded by database configuration. DTD/entities,
-invalid gzip/XML/root/coordinates, false hashes or sizes, and excessive
-decompressed data are rejected. No recursive Storage listing is used.
+The parser is streaming and bounded by database configuration. It uses Expat's
+encoding-aware declaration callbacks, rather than scanning raw ASCII bytes, so
+DTD and entity declarations are rejected also with BOM/UTF-16 and the other XML
+encodings supported by the parser. Invalid gzip/XML/root/coordinates, false
+hashes or sizes, and excessive decompressed data are rejected. No recursive
+Storage listing is used.
 
 Server-side reservation budgets are configurable in `gpx_archive_config`:
 total bytes per user/tenant, pending uploads per user, daily uploads per user,
 daily tenant ingress bytes and admission batch size. An admission-event ledger
 prevents reserve/delete loops from resetting the 24-hour budget. Clients may
-display quota errors but cannot override enforcement.
+display quota errors but cannot override enforcement. A pending reservation is
+charged conservatively as one maximum-size object; finalization reads the real
+object size from Storage metadata and replaces that charge with the actual
+compressed size. The 24-hour ledger entry survives metadata cancellation, so a
+reserve/cancel loop cannot reset ingress usage.
 
 ## Applying and validating
 
@@ -401,6 +408,12 @@ Finally apply the marker-species migration:
 
 ```text
 backend/supabase/migrations/202608160002_gpx_marker_species.sql
+```
+
+For installations already using GPX admission and tenant budgets, apply:
+
+```text
+backend/supabase/migrations/202609140001_gpx_parser_and_actual_storage_quotas.sql
 ```
 
 After lifecycle/rights, apply:

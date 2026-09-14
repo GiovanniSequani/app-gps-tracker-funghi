@@ -459,12 +459,15 @@ interattivo; riuso della credenziale negato.
 
 ### `SEC-AUD-005` — `finalize_my_gpx_track` accetta contenuti non validati
 
-**Remediation 2026-09-09 (implemented, runtime negative test pending).** La
+**Remediation 2026-09-14 (done).** La
 migration `202609090001` è applicata e aggiunge admission separata e worker
 service-role streaming. Export e funzioni trusted richiedono
 `validation_status=validated`; legacy e nuovi upload non sono trusted prima
-del controllo server. Il worker ha validato i 9 archivi eleggibili senza
-errori; manca una prova live controllata con contenuto avverso.
+del controllo server. La follow-up incrementale `202609140001` è applicata. Il
+parser Expat streaming rifiuta DTD/entity tramite callback encoding-aware anche
+con BOM/UTF-16. Una prova live ha finalizzato un oggetto UTF-16 con entity: il
+worker lo ha rifiutato e ha eliminato il solo path canonico. Account e oggetti
+usa-e-getta sono stati rimossi al termine.
 
 **Evidenza.** La reservation valida suffisso, valori dichiarati e formato
 dell'hash (`backend/supabase/migrations/202608130001_gpx_display_name_and_rename.sql:47-130`). La finalize
@@ -721,9 +724,13 @@ nel repository o nell'archive EAS.
 
 ### `SEC-AUD-016` — Quota GPX moltiplicabile e export ad alto costo senza budget tenant
 
-**Remediation 2026-09-09 (partial, database cutover complete).** Budget atomici DB
+**Remediation 2026-09-14 (partial, database cutover complete).** Budget atomici DB
 coprono byte per utente/tenant, pending, ingress tenant 24h, frequenza utente ed
-input export tenant 24h. Restano CAPTCHA/rate edge signup e alert di piano.
+input export tenant 24h. `202609140001` addebita ogni pending come un oggetto di
+dimensione massima e alla finalize usa la dimensione effettiva letta da
+`storage.objects`; il ledger 24h sopravvive alla cancellazione dei metadata. Il
+test runtime ha verificato sia il mismatch dichiarato/reale sia la prenotazione
+non finalizzata. Restano CAPTCHA/rate edge signup e alert di piano.
 
 **Evidenza.** La registrazione e' pubblica e richiede conferma email. Il limite
 iniziale e' 50 tracce da 10 MiB compressi per account, cioe' fino a 500 MiB di
@@ -1005,7 +1012,7 @@ indicata; non significa che tutti i finding correlati siano corretti.
 | Enforcement lifecycle/riaccettazione runtime | NOT TESTED | account usa-e-getta mancanti |
 | Protezione tecnica `full_access` dati recenti | RISK ACCEPTED 1.9.0 | Dati non personali; gate D-7 solo UI, rivalutazione su crescita/forecast riservati/costi anomali (`SEC-AUD-008`) |
 | GPX cap mobile nel percorso testato | DONE | ISIZE precheck e cap post-decompressione |
-| GPX ammissione server-side | IMPLEMENTED, RUNTIME NEGATIVE TEST PENDING | Migration applicata e 9 archivi validati; manca upload avverso live (`SEC-AUD-005`) |
+| GPX ammissione server-side | DONE | Parser encoding-aware e prova live UTF-16/entity respinta con cleanup verificato (`SEC-AUD-005`) |
 | GPX web anti-zip-bomb/XML budget | IMPLEMENTED, RUNTIME PENDING | Cap e parser bounded testati; deploy/browser avverso non verificati (`SEC-AUD-006`) |
 | GPX path traversal Storage/export | DONE | path/entry UUID server-side |
 | Race upload/finalize/delete produzione | NOT TESTED | controlli statici presenti; nessuna race live |

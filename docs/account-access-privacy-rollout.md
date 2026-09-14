@@ -871,7 +871,7 @@ test runtime a due account e AAB finale restano `NOT TESTED`.
 | SEC-AUD-002 | IN-PROGRESS | `detectSessionInUrl=false` e callback limitate ai path Auth, con test locali. Resta il test runtime di session swapping a due account. |
 | SEC-AUD-003 | IMPLEMENTED, SIGNED BUILD PENDING | SecureStore e backup exclusion implementati/testati; restano AAB/IPA e backup/restore su dispositivo. |
 | SEC-AUD-004 | IN-PROGRESS | Callback acquisita in memoria e URL pulita prima del render; allow-list e template a fragment dichiarati configurati dal proprietario. Restano verifica Management/runtime, log e flussi reali. |
-| SEC-AUD-005 | IMPLEMENTED, RUNTIME NEGATIVE TEST PENDING | Migration applicata, admission worker attivo e 9 archivi validati; export/modelling accettano solo `validated`. Manca upload avverso live. |
+| SEC-AUD-005 | DONE | Admission trusted-only e parser Expat streaming encoding-aware; DTD/entity UTF-16 respinta e relativo oggetto eliminato in prova live usa-e-getta. |
 | SEC-AUD-006 | IMPLEMENTED, RUNTIME PENDING | Web con cap pre-read, decompressione e parser bounded; manca prova sul deploy con file avversi. |
 | SEC-AUD-007 | IMPLEMENTED, DEVICE TEST PENDING | Cleanup file GPX/export implementato e testato; manca ispezione filesystem reale. |
 | SEC-AUD-008 | RISK ACCEPTED 1.9.0 | Indice recente pubblico; gate D-7 solo UI/prodotto. Riesame su crescita rilevante, forecast riservati o costi/traffico anomali. |
@@ -882,7 +882,7 @@ test runtime a due account e AAB finale restano `NOT TESTED`.
 | SEC-AUD-013 | DONE | Helper UUID revocato ai client; policy sul wrapper owner-only, service-role preservata e prova GPX cross-user live superata. |
 | SEC-AUD-014 | DONE | Chiave assente da HEAD ed eliminata in Google Cloud Console; history preservata senza esporre il valore. |
 | SEC-AUD-015 | TODO | Abilitare HSTS e allineare gli header sensibili a entrambe le varianti URL della cancellazione. |
-| SEC-AUD-016 | PARTIAL | Budget DB user/tenant applicati su byte, pending, ingress 24h ed export; CAPTCHA/rate edge signup e alert provider restano separati. |
+| SEC-AUD-016 | PARTIAL | Budget DB su dimensione Storage reale; pending addebitato al massimo e ledger 24h persistente verificati live. Restano CAPTCHA/rate edge signup e alert provider. |
 | SEC-AUD-017 | IMPLEMENTED, RUNTIME BACKLOG TEST PENDING | Cancellazioni prioritarie; cleanup export limitato per job, byte e tempo; manca prova live con backlog oltre soglia. |
 | SEC-AUD-018 | IMPLEMENTED, RUNTIME PENDING | Backoff/jitter/`Retry-After` e cap testati su web/mobile; manca prova controllata su deploy/build. |
 
@@ -900,6 +900,7 @@ placeholder: attendere gli identificativi definitivi degli account sviluppatore.
 | SEC-AUTH-LINK-007 | BLOCKED | Dopo 006, usare soltanto account usa-e-getta per conferma e recovery web/mobile, cold/warm start, cambio password, handler custom-scheme concorrente, session swapping, URL pulita e assenza di query sensibili nei log provider. Chiudere `SEC-AUD-001/002/004` solo dopo evidenza positiva. |
 
 | 2026-09-09 | SEC-AUD-005/009/013/016/017 | IMPLEMENTED/PARTIAL, RUNTIME TESTS PENDING | Migration `202609090001` applicata; worker admission ha validato 9 archivi. Trusted gate, budget DB e cleanup bounded sono attivi; restano prove negative/cross-user/backlog live e controlli edge/provider di `SEC-AUD-016`. |
+| 2026-09-14 | GPX security findings 2/3 | DONE/PARTIAL | Applicata `202609140001`: parser XML encoding-aware e quote sulla dimensione Storage reale. Test live con due account usa-e-getta: entity UTF-16 respinta e rimossa, mismatch dichiarato/reale contabilizzato, pending preaddebitato al massimo, cross-user e signed URL negati; cleanup verificato. `SEC-AUD-005` chiuso; `SEC-AUD-016` resta parziale solo per controlli edge/provider. |
 
 ## Questioni aperte
 

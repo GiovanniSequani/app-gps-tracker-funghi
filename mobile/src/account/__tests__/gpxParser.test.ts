@@ -32,6 +32,8 @@ describe('GPX import parser', () => {
 
   it('rifiuta un payload oltre il limite configurato', () => {
     expect(() => decodeGpxBytes(strToU8(xml), 'bosco.gpx', 10)).toThrow(/limite/);
+    const compressed = gzipSync(strToU8(xml));
+    expect(() => decodeGpxBytes(compressed, 'bosco.gpx.gz', 100_000, compressed.byteLength - 1)).toThrow(/limite/);
   });
 
   it('mantiene ordine raw e confini dei segmenti per gli indici backend', () => {

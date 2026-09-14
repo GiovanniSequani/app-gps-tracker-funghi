@@ -34,8 +34,9 @@ import {
   writeRecordingDraft,
 } from '../recordingDraftStorage';
 
-function draft(sessionId: string, timestamp: number) {
+function draft(sessionId: string, timestamp: number, ownerUserId: string | null = 'user-a') {
   return createRecordingDraft({
+    ownerUserId,
     sessionId,
     status: 'paused',
     startedAt: '2026-08-25T08:00:00.000Z',
@@ -61,7 +62,7 @@ describe('recording draft durable storage', () => {
     const second = draft('one', 2_000);
     await writeRecordingDraft(first);
     await writeRecordingDraft(second);
-    expect(await loadRecordingDraft()).toEqual(second);
+    expect(await loadRecordingDraft('user-a')).toEqual(second);
     expect(files.has(RECORDING_DRAFT_BACKUP_FILE)).toBe(true);
   });
 
@@ -69,21 +70,28 @@ describe('recording draft durable storage', () => {
     const recovered = draft('temp', 3_000);
     files.set(RECORDING_DRAFT_FILE, '{broken');
     files.set(RECORDING_DRAFT_TEMP_FILE, JSON.stringify(recovered));
-    expect(await loadRecordingDraft()).toEqual(recovered);
+    expect(await loadRecordingDraft('user-a')).toEqual(recovered);
   });
 
   it('falls back to the backup and reports fully corrupt storage', async () => {
     const recovered = draft('backup', 4_000);
     files.set(RECORDING_DRAFT_FILE, '{broken');
     files.set(RECORDING_DRAFT_BACKUP_FILE, JSON.stringify(recovered));
-    expect(await loadRecordingDraft()).toEqual(recovered);
-    files.set(RECORDING_DRAFT_BACKUP_FILE, '{broken too');
-    await expect(loadRecordingDraft()).rejects.toBeInstanceOf(CorruptRecordingDraftError);
+    expect(await loadRecordingDraft('user-a')).toEqual(recovered);
+    files.set(RECORDING_DRAFT_BACKUP_FILE, JSON.stringify({ ownerUserId: 'user-a', schemaVersion: 2 }));
+    await expect(loadRecordingDraft('user-a')).rejects.toBeInstanceOf(CorruptRecordingDraftError);
   });
 
   it('removes every recovery snapshot after save or discard', async () => {
     await writeRecordingDraft(draft('one', 1_000));
     await clearRecordingDraft();
-    expect(await loadRecordingDraft()).toBeNull();
+    expect(await loadRecordingDraft('user-a')).toBeNull();
+  });
+
+  it('elimina senza mostrare una bozza di un account precedente', async () => {
+    await writeRecordingDraft(draft('previous-account', 1_000, 'user-a'));
+
+    expect(await loadRecordingDraft('user-b')).toBeNull();
+    expect(files.has(RECORDING_DRAFT_FILE)).toBe(false);
   });
 });

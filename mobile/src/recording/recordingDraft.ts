@@ -1,6 +1,6 @@
 import type { RecordingPauseWindow, RecordingStatus } from './recordingState';
 
-export const RECORDING_DRAFT_SCHEMA_VERSION = 1;
+export const RECORDING_DRAFT_SCHEMA_VERSION = 2;
 export const RECORDING_CHECKPOINT_POINT_INTERVAL = 10;
 
 export type RecordingDraftPoint = {
@@ -18,6 +18,7 @@ export type RecordingDraftStatus = Exclude<RecordingStatus, 'idle'> | 'interrupt
 
 export type RecordingDraft = {
   schemaVersion: typeof RECORDING_DRAFT_SCHEMA_VERSION;
+  ownerUserId: string | null;
   sessionId: string;
   status: RecordingDraftStatus;
   startedAt: string;
@@ -73,6 +74,7 @@ export function parseRecordingDraft(raw: string): RecordingDraft | null {
   const draft = value as Partial<RecordingDraft>;
   if (
     draft.schemaVersion !== RECORDING_DRAFT_SCHEMA_VERSION
+    || (draft.ownerUserId !== null && (typeof draft.ownerUserId !== 'string' || draft.ownerUserId.length === 0))
     || typeof draft.sessionId !== 'string'
     || draft.sessionId.length === 0
     || (draft.status !== 'recording' && draft.status !== 'paused' && draft.status !== 'interrupted')
@@ -94,6 +96,7 @@ export function parseRecordingDraft(raw: string): RecordingDraft | null {
   }
   return {
     schemaVersion: RECORDING_DRAFT_SCHEMA_VERSION,
+    ownerUserId: draft.ownerUserId,
     sessionId: draft.sessionId,
     status: draft.status,
     startedAt: draft.startedAt,
@@ -126,6 +129,7 @@ export function shouldCheckpointRecording(
 }
 
 export function createRecordingDraft(input: {
+  ownerUserId: string | null;
   sessionId: string;
   status: RecordingDraftStatus;
   startedAt: string;
@@ -136,6 +140,7 @@ export function createRecordingDraft(input: {
 }): RecordingDraft {
   return {
     schemaVersion: RECORDING_DRAFT_SCHEMA_VERSION,
+    ownerUserId: input.ownerUserId,
     sessionId: input.sessionId,
     status: input.status,
     startedAt: input.startedAt,

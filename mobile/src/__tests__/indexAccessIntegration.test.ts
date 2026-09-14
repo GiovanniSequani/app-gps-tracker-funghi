@@ -16,7 +16,7 @@ describe('integrazione accesso indice e mappa', () => {
   it('non apre analisi e non mostra archivio locale al guest', () => {
     expect(app).toContain('if (!fullIndexAccess)');
     expect(app).toContain('onShowIndexAccessNotice()');
-    expect(archive).toContain('localRoutes.length > 0 && canReadLocalArchive');
+    expect(archive).toContain('visibleLocalRoutes.length > 0 && canReadLocalArchive');
     expect(archive).toContain('sessionState.session\n    && !props.lifecycle.fullAccess');
     expect(archive).toContain('!props.lifecycle.authoritativeRestriction');
   });

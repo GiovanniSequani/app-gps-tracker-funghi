@@ -148,6 +148,6 @@ describe('account archive map invariants', () => {
     expect(source).toContain("source=\"cloud\"");
     expect(source).toContain("source=\"local\"");
     expect(source).toContain('La cancellazione non modifica l’archivio cloud.');
-    expect(source).toContain('await deleteRoute(route.routeId)');
+    expect(source).toContain('await deleteRoute(sessionUserId, route.routeId)');
   });
 });

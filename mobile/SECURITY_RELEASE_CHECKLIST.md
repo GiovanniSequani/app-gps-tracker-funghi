@@ -25,6 +25,8 @@ Questa checklist è obbligatoria per ogni release che include SEC-AUD-003, 007, 
 - [ ] Avviare, mettere in pausa, mandare in background, riprendere e salvare una registrazione; verificare anche il recovery dopo terminazione del processo.
 - [ ] Con rete assente, tile ed export non devono martellare la rete; al ritorno online riprendono. Dopo il tetto dei tentativi deve essere disponibile `Riprova`.
 - [ ] Scaricare/condividere GPX ed export, poi annullare la share e ripetere con errore: `cache/sensitive-temp` deve risultare vuota dopo ogni esito e dopo logout.
+- [ ] Con account A creare una route locale e una bozza di recovery, poi fare logout/accesso con account B e simulare anche sessione scaduta: B non deve vedere, caricare o recuperare route, waypoint, marker o metadata di A.
+- [ ] Importare un `.gpx` e un `.gpx.gz` validi; poi scegliere file oltre i limiti configurati e un provider senza size attendibile: il rifiuto deve avvenire prima della copia/lettura completa e `cache/sensitive-temp` deve restare vuota.
 - [ ] Apertura/chiusura di archivio, export e retry tile non deve rimontare MapLibre né cambiare centro, zoom, bearing o pitch.
 
 ## Verifica iOS reale / archivio

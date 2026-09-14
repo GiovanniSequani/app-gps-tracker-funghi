@@ -65,6 +65,7 @@ import {
 } from './lifecycleClient';
 import type { AccountLifecycleState } from './useAccountLifecycle';
 import { parseGpxBytes } from './gpxParser';
+import { readPickedGpxSafely } from './gpxImport';
 import { routeSummary, uploadRouteToCloud } from './routeUpload';
 import { TrackNameModal } from './TrackNameModal';
 import { getCloudTrackDate } from './trackDates';
@@ -177,6 +178,7 @@ export default function AccountArchiveScreen(props: {
   cloudEditRevision: number;
 }) {
   const { sessionState } = props;
+  const sessionUserId = sessionState.session?.user.id ?? null;
   const canUseOfflineLocalArchive = Boolean(
     sessionState.session
     && !props.lifecycle.fullAccess
@@ -214,7 +216,12 @@ export default function AccountArchiveScreen(props: {
   const loadSequence = React.useRef(0);
   const detailSequence = React.useRef(0);
   const cloudDetailsRef = React.useRef<Record<string, CloudDetail>>({});
+  const archiveOwnerRef = React.useRef<string | null>(null);
   const noticeOpacity = React.useRef(new Animated.Value(0)).current;
+  const archiveDataVisible = archiveOwnerRef.current === sessionUserId;
+  const visibleArchive = archiveDataVisible ? archive : null;
+  const visibleLocalRoutes = archiveDataVisible ? localRoutes : [];
+  const visibleCloudDetails = archiveDataVisible ? cloudDetails : {};
 
   React.useEffect(() => {
     if (!notice) return;
@@ -245,8 +252,9 @@ export default function AccountArchiveScreen(props: {
   }, []);
 
   const loadLocalRoutes = React.useCallback(async (): Promise<ArchiveMapRoute[]> => {
-    const rows = await getAllRoutes().catch(() => []) as LocalRoute[];
-    const fullRoutes = await Promise.all(rows.map((row) => getRouteById(row.route_id).catch(() => null)));
+    if (!sessionUserId) return [];
+    const rows = await getAllRoutes(sessionUserId).catch(() => []) as LocalRoute[];
+    const fullRoutes = await Promise.all(rows.map((row) => getRouteById(sessionUserId, row.route_id).catch(() => null)));
     return fullRoutes.flatMap((value) => {
       const route = value as FullLocalRoute | null;
       if (!route) return [];
@@ -258,7 +266,7 @@ export default function AccountArchiveScreen(props: {
         markers: markersFromLocal(route),
       })];
     });
-  }, []);
+  }, [sessionUserId]);
 
   const refresh = React.useCallback(async () => {
     const sequence = ++loadSequence.current;
@@ -322,7 +330,12 @@ export default function AccountArchiveScreen(props: {
         downloadTrackBytes(track),
         listTrackMushroomMarkers(track.id),
       ]);
-      const parsed = parseGpxBytes(bytes, track.original_filename || `${track.display_name}.gpx.gz`, config.max_uncompressed_bytes);
+      const parsed = parseGpxBytes(
+        bytes,
+        track.original_filename || `${track.display_name}.gpx.gz`,
+        config.max_uncompressed_bytes,
+        config.max_compressed_bytes,
+      );
       const rawPointCount = track.point_count ?? parsed.rawTrackPointCount;
       if (track.point_count !== null && parsed.rawTrackPointCount !== track.point_count) {
         throw new Error('Il numero di punti del GPX non corrisponde ai metadati della traccia.');
@@ -365,7 +378,7 @@ export default function AccountArchiveScreen(props: {
   }, [config, downloadTrackBytes, updateCloudDetails]);
 
   React.useEffect(() => {
-    if (!archive || !config) return;
+    if (!archive || !config || !archiveDataVisible) return;
     const sequence = ++detailSequence.current;
     let nextIndex = 0;
     const workers = Array.from({ length: Math.min(3, archive.tracks.length) }, async () => {
@@ -378,7 +391,7 @@ export default function AccountArchiveScreen(props: {
     });
     void Promise.all(workers);
     return () => { detailSequence.current += 1; };
-  }, [archive?.tracks, config, loadCloudDetail]);
+  }, [archive?.tracks, archiveDataVisible, config, loadCloudDetail]);
 
   React.useEffect(() => {
     if (!sessionState.session || !props.lifecycle.fullAccess) {
@@ -397,6 +410,20 @@ export default function AccountArchiveScreen(props: {
     }
     if (sessionState.session) setAuthVisible(false);
   }, [props.lifecycle.fullAccess, sessionState.session]);
+
+  React.useEffect(() => {
+    if (archiveOwnerRef.current === sessionUserId) return;
+    archiveOwnerRef.current = sessionUserId;
+    loadSequence.current += 1;
+    detailSequence.current += 1;
+    setArchive(null);
+    setConfig(null);
+    setLocalRoutes([]);
+    setCloudDetails({});
+    cloudDetailsRef.current = {};
+    setTrackMenu(null);
+    setNameAction(null);
+  }, [sessionUserId]);
 
   React.useEffect(() => {
     if (props.cloudEditRevision === 0) return;
@@ -443,23 +470,41 @@ export default function AccountArchiveScreen(props: {
     if (!config) return;
     setActions((current) => ({ ...current, import: 'import' }));
     setError(null); setNotice(null);
-    let copiedUri: string | null = null;
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: ['application/gpx+xml', 'application/gzip', 'application/x-gzip', 'application/xml', 'text/xml', 'application/octet-stream'],
-        copyToCacheDirectory: true,
+        copyToCacheDirectory: false,
         multiple: false,
       });
       if (result.canceled) return;
       const asset = result.assets[0];
-      copiedUri = asset.uri;
-      const source = new File(asset.uri);
-      const bytes = await source.bytes();
-      const parsed = parseGpxBytes(bytes, asset.name, config.max_uncompressed_bytes);
+      const bytes = await readPickedGpxSafely(asset, config, {
+        stage: async (pickedAsset) => {
+          const stagedUri = await createSensitiveTempFileUri(`import-${pickedAsset.name}`);
+          try {
+            await FileSystem.copyAsync({ from: pickedAsset.uri, to: stagedUri });
+            return stagedUri;
+          } catch (error) {
+            await deleteSensitiveTempFile(stagedUri).catch(() => undefined);
+            throw error;
+          }
+        },
+        statSize: async (stagedUri) => {
+          const info = await FileSystem.getInfoAsync(stagedUri);
+          return info.exists && !info.isDirectory && typeof info.size === 'number' ? info.size : null;
+        },
+        readBytes: async (stagedUri) => new File(stagedUri).bytes(),
+        cleanup: deleteSensitiveTempFile,
+      });
+      const parsed = parseGpxBytes(
+        bytes,
+        asset.name,
+        config.max_uncompressed_bytes,
+        config.max_compressed_bytes,
+      );
       openNameAction({ kind: 'import', route: parsed }, parsed.name);
     } catch (reason) { setError(toAccountError(reason).message); }
     finally {
-      if (copiedUri) await FileSystem.deleteAsync(copiedUri, { idempotent: true }).catch(() => undefined);
       setActions((current) => { const next = { ...current }; delete next.import; return next; });
     }
   };
@@ -495,15 +540,17 @@ export default function AccountArchiveScreen(props: {
         setNameAction(null);
         await refresh();
       } else if (nameAction.kind === 'localUpload') {
+        if (!sessionUserId) throw new Error('Session expired');
         const route = { ...nameAction.route, name: normalizedName };
         await uploadRouteToCloud(route, config);
-        await deleteRoute(route.routeId);
+        await deleteRoute(sessionUserId, route.routeId);
         props.onLocalRouteArchived(route.routeId);
         setLocalRoutes((current) => current.filter((item) => item.routeId !== route.routeId));
         setNotice(`“${normalizedName}” è stato salvato nell’archivio.`);
         setNameAction(null);
         await refresh();
       } else {
+        if (!sessionUserId) throw new Error('Session expired');
         const imported = nameAction.route;
         try {
           await uploadRouteToCloud({ name: normalizedName, path: imported.path, markers: imported.markers }, config);
@@ -512,6 +559,7 @@ export default function AccountArchiveScreen(props: {
           const routeId = uuid.v4() as string;
           const date = imported.startedAt ?? new Date().toISOString();
           await insertRoute(
+            sessionUserId,
             routeId,
             normalizedName,
             date,
@@ -537,7 +585,8 @@ export default function AccountArchiveScreen(props: {
     setActions((current) => ({ ...current, [route.routeId]: 'delete' }));
     setError(null);
     try {
-      await deleteRoute(route.routeId);
+      if (!sessionUserId) throw new Error('Session expired');
+      await deleteRoute(sessionUserId, route.routeId);
       setLocalRoutes((current) => current.filter((item) => item.routeId !== route.routeId));
       props.onLocalRouteArchived(route.routeId);
       setNotice(`Il percorso locale “${route.name}” è stato eliminato.`);
@@ -745,10 +794,10 @@ export default function AccountArchiveScreen(props: {
               <Text style={styles.uploadButtonText}>Importa GPX</Text>
             </TouchableOpacity>
           </View>
-          {loading && !archive && <View style={styles.stateRow}><ActivityIndicator color={COLORS.green} /><Text style={styles.muted}>Caricamento archivio…</Text></View>}
-          {archive && archive.tracks.length === 0 && <Text style={styles.empty}>Nessun percorso salvato.</Text>}
-          {archive?.tracks.map((track) => {
-            const detail = cloudDetails[track.id];
+          {loading && !visibleArchive && <View style={styles.stateRow}><ActivityIndicator color={COLORS.green} /><Text style={styles.muted}>Caricamento archivio…</Text></View>}
+          {visibleArchive && visibleArchive.tracks.length === 0 && <Text style={styles.empty}>Nessun percorso salvato.</Text>}
+          {visibleArchive?.tracks.map((track) => {
+            const detail = visibleCloudDetails[track.id];
             const isOnMap = props.visibleCloudTrackIds.has(track.id);
             return <TrackRow key={track.id} source="cloud" title={track.display_name} subtitle={`${formatDate(getCloudTrackDate(track))} · ${formatBytes(track.compressed_size_bytes)}`} stats={<TrackStats distanceM={track.distance_m} pointCount={track.point_count} porciniCount={detail?.route?.porciniCount} finferliCount={detail?.route?.finferliCount} loadingSpecies={detail?.loading} />} warning={partialDeletes.has(track.id) ? 'File eliminato; completa la cancellazione dei metadati.' : detail?.error ? 'Dettagli GPX temporaneamente non disponibili.' : undefined}>
               <TouchableOpacity
@@ -770,9 +819,9 @@ export default function AccountArchiveScreen(props: {
 
         </>}
 
-        {localRoutes.length > 0 && canReadLocalArchive && <View style={styles.localWarningSection}>
+        {visibleLocalRoutes.length > 0 && canReadLocalArchive && <View style={styles.localWarningSection}>
           <View style={styles.localWarningHeader}><AlertTriangle size={22} color={COLORS.amber} /><View style={styles.profileCopy}><Text style={styles.sectionTitle}>Percorsi non salvati nell’archivio</Text><Text style={styles.warning}>{sessionState.session ? 'Salvare i percorsi nell’archivio' : 'Accedi per salvarli nell’archivio'}</Text></View></View>
-          {localRoutes.map((route) => <TrackRow key={route.routeId} source="local" title={route.name} subtitle={formatDate(route.date)} stats={<TrackStats distanceM={route.distanceM} pointCount={route.pointCount} porciniCount={route.porciniCount} finferliCount={route.finferliCount} />}>
+          {visibleLocalRoutes.map((route) => <TrackRow key={route.routeId} source="local" title={route.name} subtitle={formatDate(route.date)} stats={<TrackStats distanceM={route.distanceM} pointCount={route.pointCount} porciniCount={route.porciniCount} finferliCount={route.finferliCount} />}>
             {props.lifecycle.fullAccess && <TouchableOpacity style={styles.uploadButton} onPress={() => openNameAction({ kind: 'localUpload', route }, route.name)} disabled={Boolean(actions[route.routeId])} accessibilityLabel={`Salva ${route.name} nell'archivio`}>
               {actions[route.routeId] === 'upload' ? <ActivityIndicator size="small" color={COLORS.bg} /> : <UploadCloud size={17} color={COLORS.bg} />}
               <Text style={styles.uploadButtonText}>Salva</Text>
@@ -783,7 +832,7 @@ export default function AccountArchiveScreen(props: {
           </TrackRow>)}
         </View>}
       </ScrollView>
-      <Modal visible={Boolean(trackMenu)} transparent animationType="fade" onRequestClose={() => setTrackMenu(null)}>
+      <Modal visible={archiveDataVisible && Boolean(trackMenu)} transparent animationType="fade" onRequestClose={() => setTrackMenu(null)}>
         <View style={styles.menuBackdrop}>
           <Pressable style={StyleSheet.absoluteFillObject} onPress={() => setTrackMenu(null)} accessibilityLabel="Chiudi menu percorso" />
           {trackMenu && (
@@ -812,7 +861,7 @@ export default function AccountArchiveScreen(props: {
         </View>
       </Modal>
       <TrackNameModal
-        visible={Boolean(nameAction)}
+        visible={archiveDataVisible && Boolean(nameAction)}
         title={nameAction?.kind === 'rename' ? 'Rinomina percorso' : nameAction?.kind === 'import' ? 'Importa percorso' : 'Salva nell’archivio'}
         description={nameAction?.kind === 'rename'
           ? 'Modifica soltanto il nome mostrato. Il file GPX e il suo percorso Storage restano invariati.'
@@ -825,7 +874,7 @@ export default function AccountArchiveScreen(props: {
         onCancel={closeNameAction}
         onConfirm={() => void confirmNameAction()}
       />
-      {accountVisible && sessionState.session && props.lifecycle.fullAccess && <Modal visible animationType="slide" onRequestClose={() => setAccountVisible(false)}>
+      {archiveDataVisible && accountVisible && sessionState.session && props.lifecycle.fullAccess && <Modal visible animationType="slide" onRequestClose={() => setAccountVisible(false)}>
         <View style={styles.accountScreen}>
           <View style={[styles.accountHeader, { paddingTop: safeAreaInsets.top + 8 }]}>
             <TouchableOpacity style={styles.iconButton} onPress={() => setAccountVisible(false)} accessibilityLabel="Torna all'archivio"><ArrowLeft size={22} color={COLORS.text} /></TouchableOpacity>
@@ -834,12 +883,12 @@ export default function AccountArchiveScreen(props: {
           <ScrollView contentContainerStyle={[styles.accountContent, { paddingBottom: safeAreaInsets.bottom + 28 }]} showsVerticalScrollIndicator={false}>
             <View style={styles.profileRow}>
               <View style={styles.avatar}><UserRound size={25} color={COLORS.green} /></View>
-              <View style={styles.profileCopy}><Text style={styles.sectionTitle}>{archive?.profile.username ?? sessionState.username ?? 'Utente'}</Text><Text style={styles.muted}>{sessionState.session?.user.email}</Text></View>
+              <View style={styles.profileCopy}><Text style={styles.sectionTitle}>{visibleArchive?.profile.username ?? sessionState.username ?? 'Utente'}</Text><Text style={styles.muted}>{sessionState.session?.user.email}</Text></View>
               <TouchableOpacity style={styles.secondaryButton} onPress={() => void runAuth(async () => { await signOut(); setAccountVisible(false); })} disabled={authBusy}><LogOut size={17} color={COLORS.text} /><Text style={styles.secondaryButtonText}>Esci</Text></TouchableOpacity>
             </View>
-            {archive && <View style={styles.usageRow}>
-              <View><Text style={styles.metric}>{archive.tracks.length}/{archive.config.max_tracks_per_user}</Text><Text style={styles.muted}>percorsi salvati</Text></View>
-              <View><Text style={styles.metric}>{formatBytes(archive.config.max_compressed_bytes)}</Text><Text style={styles.muted}>massimo per file</Text></View>
+            {visibleArchive && <View style={styles.usageRow}>
+              <View><Text style={styles.metric}>{visibleArchive.tracks.length}/{visibleArchive.config.max_tracks_per_user}</Text><Text style={styles.muted}>percorsi salvati</Text></View>
+              <View><Text style={styles.metric}>{formatBytes(visibleArchive.config.max_compressed_bytes)}</Text><Text style={styles.muted}>massimo per file</Text></View>
               <ShieldCheck size={23} color={COLORS.green} />
             </View>}
             <AccountRightsPanel accountState={props.lifecycle.access?.account_state ?? 'active'} />

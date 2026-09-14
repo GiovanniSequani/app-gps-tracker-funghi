@@ -30,25 +30,46 @@ async function exists(uri: string): Promise<boolean> {
   return (await FileSystemLegacy.getInfoAsync(uri)).exists;
 }
 
-async function readDraftCandidate(uri: string): Promise<RecordingDraft | null> {
+async function readDraftCandidate(uri: string): Promise<{ draft: RecordingDraft | null; ownerUserId: string | null | undefined } | null> {
   if (!(await exists(uri))) return null;
   const raw = await FileSystemLegacy.readAsStringAsync(uri);
-  return parseRecordingDraft(raw);
+  let ownerUserId: string | null | undefined;
+  try {
+    const value = JSON.parse(raw) as { ownerUserId?: unknown };
+    ownerUserId = value.ownerUserId === null || typeof value.ownerUserId === 'string'
+      ? value.ownerUserId
+      : undefined;
+  } catch {
+    ownerUserId = undefined;
+  }
+  return { draft: parseRecordingDraft(raw), ownerUserId };
 }
 
-export async function loadRecordingDraft(): Promise<RecordingDraft | null> {
+export async function loadRecordingDraft(expectedOwnerUserId: string | null): Promise<RecordingDraft | null> {
   await storageQueue.catch(() => undefined);
   await ensureRecordingRecoveryDirectory();
   const primaryExists = await exists(RECORDING_DRAFT_FILE);
   const tempExists = await exists(RECORDING_DRAFT_TEMP_FILE);
   const backupExists = await exists(RECORDING_DRAFT_BACKUP_FILE);
-  const primary = await readDraftCandidate(RECORDING_DRAFT_FILE);
-  if (primary) return primary;
-  const temp = await readDraftCandidate(RECORDING_DRAFT_TEMP_FILE);
-  if (temp) return temp;
-  const backup = await readDraftCandidate(RECORDING_DRAFT_BACKUP_FILE);
-  if (backup) return backup;
-  if (primaryExists || tempExists || backupExists) throw new CorruptRecordingDraftError();
+  const backgroundExists = await exists(RECORDING_BACKGROUND_POSITIONS_FILE);
+  const statusExists = await exists(RECORDING_STATUS_FILE);
+  const candidates = await Promise.all([
+    readDraftCandidate(RECORDING_DRAFT_FILE),
+    readDraftCandidate(RECORDING_DRAFT_TEMP_FILE),
+    readDraftCandidate(RECORDING_DRAFT_BACKUP_FILE),
+  ]);
+  for (const candidate of candidates) {
+    if (candidate?.draft?.ownerUserId === expectedOwnerUserId) return candidate.draft;
+  }
+  const hasOwnedCorruption = candidates.some((candidate) => (
+    candidate?.ownerUserId === expectedOwnerUserId && candidate.draft === null
+  ));
+  if (hasOwnedCorruption) throw new CorruptRecordingDraftError();
+  if (primaryExists || tempExists || backupExists || backgroundExists || statusExists) {
+    // Legacy, senza owner o appartenente a un'altra identita': non esporre
+    // neppure il metadata di recovery e rimuovere tutti i file associati.
+    await clearRecordingDraft();
+  }
   return null;
 }
 

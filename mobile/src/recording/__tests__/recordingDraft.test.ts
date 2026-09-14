@@ -22,6 +22,7 @@ describe('recording recovery draft', () => {
 
   it('round-trips a versioned draft with markers and pause windows', () => {
     const draft = createRecordingDraft({
+      ownerUserId: 'user-a',
       sessionId: 'session-1',
       status: 'paused',
       startedAt: '2026-08-25T08:00:00.000Z',
@@ -37,6 +38,7 @@ describe('recording recovery draft', () => {
     expect(parseRecordingDraft('{broken')).toBeNull();
     expect(parseRecordingDraft(JSON.stringify({ schemaVersion: 99 }))).toBeNull();
     const draft = createRecordingDraft({
+      ownerUserId: 'user-a',
       sessionId: 'session-1',
       status: 'recording',
       startedAt: '2026-08-25T08:00:00.000Z',
@@ -45,6 +47,19 @@ describe('recording recovery draft', () => {
       pauseWindows: [],
     });
     expect(parseRecordingDraft(JSON.stringify(draft))).toBeNull();
+  });
+
+  it('rifiuta le bozze legacy prive di proprietario', () => {
+    expect(parseRecordingDraft(JSON.stringify({
+      schemaVersion: 1,
+      sessionId: 'legacy',
+      status: 'paused',
+      startedAt: '2026-08-25T08:00:00.000Z',
+      updatedAt: '2026-08-25T08:05:00.000Z',
+      path: [point(1_000)],
+      markers: [],
+      pauseWindows: [],
+    }))).toBeNull();
   });
 
   it('merges foreground and background points in timestamp order without duplicates', () => {

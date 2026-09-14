@@ -34,6 +34,7 @@ import { IndexPopupSummary } from './src/index-data/IndexPopupSummary';
 import AccountArchiveScreen from './src/account/AccountArchiveScreen';
 import CloudTrackEditor from './src/account/CloudTrackEditor';
 import { useAccountSession } from './src/account/useAccountSession';
+import { shouldClearPrivateLocalData } from './src/account/accountIdentity';
 import { useAccountLifecycle } from './src/account/useAccountLifecycle';
 import { AuthCallbackModal } from './src/account/AuthCallbackModal';
 import { IndexAccessNoticeModal } from './src/IndexAccessNoticeModal';
@@ -494,6 +495,7 @@ export default function App() {
   const [cloudEditRevision, setCloudEditRevision] = React.useState(0);
   const [cloudEditRequest, setCloudEditRequest] = React.useState<{ id: number; route: ArchiveMapRoute } | null>(null);
   const cloudEditRequestSequence = React.useRef(0);
+  const accountIdentityRef = React.useRef<string | null | undefined>(undefined);
 
   React.useEffect(() => {
     const mustClearPrivateMapData = !accountSession.session || accountLifecycle.authoritativeRestriction;
@@ -526,6 +528,7 @@ export default function App() {
   const recordingPauseWindowsRef = React.useRef<RecordingPauseWindow[]>([]);
   const recordingActionBusyRef = React.useRef(false);
   const recordingSessionIdRef = React.useRef<string | null>(null);
+  const recordingOwnerUserIdRef = React.useRef<string | null>(null);
   const recordingStartedAtRef = React.useRef<string | null>(null);
   const lastCheckpointPointCountRef = React.useRef(0);
   const scheduledCheckpointPointCountRef = React.useRef(0);
@@ -581,7 +584,13 @@ export default function App() {
     indexAccessReady,
   ]);
 
-  const visibleMarkers = showAll ? markers : markers.slice(0, 5);
+  const currentAccountUserId = accountSession.session?.user.id ?? null;
+  const privateLocalDataVisible = accountIdentityRef.current === undefined
+    || accountIdentityRef.current === currentAccountUserId;
+  const mapRecordingStatus = privateLocalDataVisible ? recordingStatus : 'idle';
+  const mapPath = privateLocalDataVisible ? path : [];
+  const mapMarkers = privateLocalDataVisible ? markers : [];
+  const visibleMarkers = showAll ? mapMarkers : mapMarkers.slice(0, 5);
 
   const updateRecordingStatus = React.useCallback((status: RecordingStatus) => {
     recordingStatusRef.current = status;
@@ -597,6 +606,50 @@ export default function App() {
     recordingActionBusyRef.current = busy;
     setRecordingActionBusy(busy);
   }, []);
+
+  React.useEffect(() => {
+    if (accountSession.loading) return;
+    const currentUserId = accountSession.session?.user.id ?? null;
+    const previousUserId = accountIdentityRef.current;
+    if (!shouldClearPrivateLocalData(previousUserId, currentUserId)) {
+      accountIdentityRef.current = currentUserId;
+      return;
+    }
+    accountIdentityRef.current = currentUserId;
+
+    // Un cambio reale di identita' invalida immediatamente ogni geodato in
+    // memoria. Il database resta owner-scoped, quindi non serve attribuire o
+    // migrare dati del precedente account.
+    setCloudRoutesOnMap([]);
+    setAddedRoutes([]);
+    setRoutesOnMap([]);
+    setCloudEditRequest(null);
+    setRecordingNameVisible(false);
+    setRecoveryDraft(null);
+    setRecoveryCorrupt(false);
+    pathRef.current = [];
+    markersRef.current = [];
+    setPath([]);
+    setMarkers([]);
+    recordingSessionIdRef.current = null;
+    recordingOwnerUserIdRef.current = null;
+    recordingStartedAtRef.current = null;
+    recordingPauseWindowsRef.current = [];
+    pendingFinishedDraftRef.current = null;
+    lastCheckpointPointCountRef.current = 0;
+    scheduledCheckpointPointCountRef.current = 0;
+    updateRecordingStatus('idle');
+    void (async () => {
+      try {
+        const started = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
+        if (started) await Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME);
+      } catch {
+        console.warn('[gps] Arresto tracking al cambio account non riuscito');
+      }
+      await clearRecordingDraft().catch(() => undefined);
+      await purgeSensitiveTempFiles().catch(() => undefined);
+    })();
+  }, [accountSession.loading, accountSession.session?.user.id, updateRecordingStatus]);
 
   const showBackgroundLocationDisclosure = React.useCallback(() => new Promise<boolean>((resolve) => {
     backgroundDisclosureResolverRef.current = resolve;
@@ -625,6 +678,7 @@ export default function App() {
       return null;
     }
     const draft = createRecordingDraft({
+      ownerUserId: recordingOwnerUserIdRef.current,
       sessionId,
       status,
       startedAt,
@@ -654,6 +708,7 @@ export default function App() {
     setPath(recoveredPath);
     setMarkers(recoveredMarkers);
     recordingSessionIdRef.current = draft.sessionId;
+    recordingOwnerUserIdRef.current = draft.ownerUserId;
     recordingStartedAtRef.current = draft.startedAt;
     recordingPauseWindowsRef.current = draft.pauseWindows.map((window) => ({ ...window }));
     lastCheckpointPointCountRef.current = recoveredPath.length;
@@ -711,9 +766,10 @@ export default function App() {
 
   React.useEffect(() => {
     let cancelled = false;
+    if (accountSession.loading) return () => { cancelled = true; };
     (async () => {
       try {
-        const storedDraft = await loadRecordingDraft();
+        const storedDraft = await loadRecordingDraft(accountSession.session?.user.id ?? null);
         if (!storedDraft) return;
 
         await persistRecordingStatus('paused');
@@ -743,6 +799,7 @@ export default function App() {
         const mergedPath = mergeRecordingDraftPoints(storedDraft.path, backgroundPoints)
           .filter((point) => !isTimestampPaused(point.timestamp, pauseWindows));
         const interruptedDraft = createRecordingDraft({
+          ownerUserId: storedDraft.ownerUserId,
           sessionId: storedDraft.sessionId,
           status: 'interrupted',
           startedAt: storedDraft.startedAt,
@@ -776,7 +833,7 @@ export default function App() {
       }
     })();
     return () => { cancelled = true; };
-  }, [persistRecordingStatus]);
+  }, [accountSession.loading, accountSession.session?.user.id, persistRecordingStatus]);
 
   React.useEffect(() => {
     if (!indexAccessReady) return;
@@ -1054,6 +1111,7 @@ export default function App() {
       const sessionId = uuid.v4() as string;
       const startedAt = new Date().toISOString();
       recordingSessionIdRef.current = sessionId;
+      recordingOwnerUserIdRef.current = accountSession.session?.user.id ?? null;
       recordingStartedAtRef.current = startedAt;
       pathRef.current = [];
       markersRef.current = [];
@@ -1064,6 +1122,7 @@ export default function App() {
       scheduledCheckpointPointCountRef.current = 0;
       try { await FileSystemLegacy.deleteAsync(RECORDING_BACKGROUND_POSITIONS_FILE, { idempotent: true }); } catch { }
       await writeRecordingDraft(createRecordingDraft({
+        ownerUserId: recordingOwnerUserIdRef.current,
         sessionId,
         status: 'recording',
         startedAt,
@@ -1186,7 +1245,10 @@ export default function App() {
     }, {
       upload: uploadRouteToCloud,
       saveLocal: async (localRoute) => {
+        const ownerUserId = recordingOwnerUserIdRef.current;
+        if (!ownerUserId) throw new Error('Account owner required');
         await insertRoute(
+          ownerUserId,
           localRoute.routeId,
           localRoute.name,
           localRoute.date,
@@ -1200,6 +1262,7 @@ export default function App() {
       console.warn('[gps-recovery] Pulizia della bozza non riuscita');
     }
     recordingSessionIdRef.current = null;
+    recordingOwnerUserIdRef.current = null;
     recordingStartedAtRef.current = null;
     pendingFinishedDraftRef.current = null;
     lastCheckpointPointCountRef.current = 0;
@@ -1243,6 +1306,7 @@ export default function App() {
       const startedAt = recordingStartedAtRef.current;
       if (sessionId && startedAt) {
         pendingFinishedDraftRef.current = createRecordingDraft({
+          ownerUserId: recordingOwnerUserIdRef.current,
           sessionId,
           status: 'interrupted',
           startedAt,
@@ -1330,6 +1394,7 @@ export default function App() {
             void clearRecordingDraft()
               .then(() => {
                 recordingSessionIdRef.current = null;
+                recordingOwnerUserIdRef.current = null;
                 recordingStartedAtRef.current = null;
                 pendingFinishedDraftRef.current = null;
                 lastCheckpointPointCountRef.current = 0;
@@ -1357,6 +1422,7 @@ export default function App() {
     void clearRecordingDraft()
       .then(() => {
         recordingSessionIdRef.current = null;
+        recordingOwnerUserIdRef.current = null;
         recordingStartedAtRef.current = null;
         pendingFinishedDraftRef.current = null;
         recordingPauseWindowsRef.current = [];
@@ -1378,8 +1444,8 @@ export default function App() {
   };
 
   const combinedRoutesOnMap = React.useMemo(
-    () => [...routesOnMap, ...cloudRoutesOnMap],
-    [routesOnMap, cloudRoutesOnMap],
+    () => privateLocalDataVisible ? [...routesOnMap, ...cloudRoutesOnMap] : [],
+    [privateLocalDataVisible, routesOnMap, cloudRoutesOnMap],
   );
 
   const showCloudTrackOnMap = React.useCallback((route: ArchiveMapRoute) => {
@@ -1488,7 +1554,10 @@ export default function App() {
   const handleShare = async (route_id: string) => {
     let uri: string | null = null;
     try {
-      const route = (await getRouteById(route_id)) as Route & { waypoints: Waypoint[] };
+      const ownerUserId = accountSession.session?.user.id;
+      if (!ownerUserId) throw new Error('Sessione account non disponibile.');
+      const route = (await getRouteById(ownerUserId, route_id)) as Route & { waypoints: Waypoint[] };
+      if (!route) throw new Error('Percorso non disponibile per questo account.');
       const wmarkers: MarkerData[] = route.waypoints.map((wp) => ({
         latitude: wp.lat,
         longitude: wp.lon,
@@ -1513,17 +1582,17 @@ export default function App() {
 
   const renderMapScreen = React.useCallback(() => (
     <MainUI
-      recording={recording}
-      recordingStatus={recordingStatus}
+      recording={privateLocalDataVisible && recording}
+      recordingStatus={mapRecordingStatus}
       recordingActionBusy={recordingActionBusy}
       startRecording={startRecording}
       pauseRecording={pauseRecording}
       resumeRecording={resumeRecording}
       stopRecording={stopRecording}
       addMarker={addMarker}
-      path={path}
+      path={mapPath}
       currentPosition={currentPosition}
-      markers={markers}
+      markers={mapMarkers}
       cameraCommand={cameraCommand}
       runCameraCommand={runCameraCommand}
       followLocationRef={followLocationRef}
@@ -1561,11 +1630,12 @@ export default function App() {
       onShowIndexAccessNotice={() => setIndexAccessNoticeOpen(true)}
     />
   ), [
-    recording, recordingStatus, recordingActionBusy, path, currentPosition, markers, cameraCommand, initialCenter, showAll, visibleMarkers,
+    recording, recordingActionBusy, mapRecordingStatus, mapPath, currentPosition, mapMarkers, cameraCommand, initialCenter, showAll, visibleMarkers,
     addedRoutes, combinedRoutesOnMap, highlightedRoute, tileSets, allTileSets, tilesLoading, tilesError, tileRetryExhausted,
     activeLayer, tileDate, tileVersion, tileOpacity,
     runCameraCommand, addMarker, removeRouteFromMap, pauseRecording, resumeRecording, stopRecording,
-    previewCloudTrackEdit, finishCloudTrackEdit, cloudEditRequest, accountLifecycle.fullAccess, fullIndexAccess, retryTileBootstrap
+    previewCloudTrackEdit, finishCloudTrackEdit, cloudEditRequest, accountLifecycle.fullAccess,
+    fullIndexAccess, retryTileBootstrap
   ]);
 
   const renderArchiveScreen = React.useCallback(() => (
@@ -1642,7 +1712,7 @@ export default function App() {
         onCancel={() => closeBackgroundLocationDisclosure(false)}
       />
       <TrackNameModal
-        visible={recordingNameVisible}
+        visible={privateLocalDataVisible && recordingNameVisible}
         title="Registrazione terminata"
         description={fullIndexAccess
           ? 'Scegli il nome da usare nell’archivio.'
@@ -1658,7 +1728,7 @@ export default function App() {
         onConfirm={() => void confirmRecordingSave()}
       />
       <RecordingRecoveryModal
-        draft={recoveryDraft}
+        draft={privateLocalDataVisible ? recoveryDraft : null}
         busy={recoveryBusy}
         error={recoveryError}
         onResume={() => void resumeRecoveredRecording()}
@@ -2332,23 +2402,13 @@ function MainUI(props: any) {
   const recordingPaused = recordingStatus === 'paused';
   const { height: screenHeight } = useWindowDimensions();
 
-  // fetch percorsi salvati quando cambiano gli addedRoutes
+  // La vecchia selezione locale non e' piu' una sorgente caricabile sulla
+  // mappa. I percorsi locali passano dall'Archivio owner-scoped e poi dal cloud.
   React.useEffect(() => {
-    const fetchRoutes = async () => {
-      const newRoutes: RouteData[] = [];
-      for (const route_id of addedRoutes) {
-        const route = (await getRouteById(route_id)) as Route & { waypoints: Waypoint[] };
-        if (!route) continue;
-        const wmarkers: MarkerData[] = route.waypoints.map((wp) => ({
-          latitude: wp.lat, longitude: wp.lon, timestamp: wp.timestamp,
-          tipo: wp.type as 'Porcino' | 'Finferlo', name: wp.name,
-        }));
-        newRoutes.push({ name: route.name, date: route.date, path: route.path, markers: wmarkers, route_id: route.route_id });
-      }
-      setRoutesOnMap(newRoutes);
-    };
-    fetchRoutes();
-  }, [addedRoutes]);
+    if (addedRoutes.length === 0) return;
+    setAddedRoutes([]);
+    setRoutesOnMap([]);
+  }, [addedRoutes, setAddedRoutes, setRoutesOnMap]);
 
   // REC pulse animation
   const recPulse = React.useRef(new Animated.Value(1)).current;
@@ -2934,21 +2994,26 @@ function MainUI(props: any) {
 // ManageRoutesScreen — identico all'originale
 // ══════════════════════════════════════════════════════════════════════════════
 function ManageRoutesScreen(props: any) {
-  const { addedRoutes, setAddedRoutes, handleShare, saveVisible, setSaveVisible, fileName, setFileName } = props;
+  const { addedRoutes, setAddedRoutes, handleShare, saveVisible, setSaveVisible, fileName, setFileName, ownerUserId } = props;
   const [routes, setRoutes] = React.useState<any[]>([]);
   const [refreshing, setRefreshing] = React.useState(false);
   const [selectedRoute, setSelectedRoute] = React.useState<any>(null);
   const [modalVisible, setModalVisible] = React.useState(false);
 
   const fetchAllRoutes = React.useCallback(async () => {
-    try { setRoutes(await getAllRoutes()); } catch { setRoutes([]); }
-  }, []);
+    if (!ownerUserId) { setRoutes([]); return; }
+    try { setRoutes(await getAllRoutes(ownerUserId)); } catch { setRoutes([]); }
+  }, [ownerUserId]);
 
   React.useEffect(() => {
     let mounted = true;
-    getAllRoutes().then((r) => { if (mounted) setRoutes(r); }).catch(() => { if (mounted) setRoutes([]); });
+    if (ownerUserId) {
+      getAllRoutes(ownerUserId).then((r) => { if (mounted) setRoutes(r); }).catch(() => { if (mounted) setRoutes([]); });
+    } else {
+      setRoutes([]);
+    }
     return () => { mounted = false; };
-  }, [fetchAllRoutes]);
+  }, [fetchAllRoutes, ownerUserId]);
 
   const toggleRoute = (route_id: string) => {
     if (addedRoutes.includes(route_id)) setAddedRoutes((prev: string[]) => prev.filter((r: string) => r !== route_id));
@@ -2960,7 +3025,7 @@ function ManageRoutesScreen(props: any) {
     Alert.alert('Conferma eliminazione', `Vuoi eliminare il percorso "${selectedRoute.name}"?`, [
       { text: 'Annulla', style: 'cancel' },
       { text: 'Elimina', style: 'destructive', onPress: async () => {
-        try { await deleteRoute(selectedRoute.route_id); setModalVisible(false); await fetchAllRoutes(); } catch { }
+        try { if (ownerUserId) await deleteRoute(ownerUserId, selectedRoute.route_id); setModalVisible(false); await fetchAllRoutes(); } catch { }
       }},
     ]);
   };

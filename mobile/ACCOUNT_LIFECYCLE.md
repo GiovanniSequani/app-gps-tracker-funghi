@@ -5,6 +5,8 @@
 - Le sessioni Supabase sono persistite con `expo-secure-store` usando una classe di accesso non migrabile su un altro dispositivo. Al primo avvio della 1.9.0 l'eventuale sessione legacy viene migrata e rimossa da AsyncStorage.
 - Android disabilita integralmente backup e restore dell'app. Su iOS il plugin CNG esclude Documents e Application Support, che contengono database, GPX locali e draft di recovery.
 - GPX ed export destinati alla condivisione vivono esclusivamente in `cache/sensitive-temp` e vengono rimossi dopo successo, annullamento o errore, oltre che all'avvio, al logout e alla perdita autoritativa dell'accesso.
+- Le route SQLite locali e i relativi waypoint sono associati all'UUID dell'account e ogni query richiede lo stesso owner. I record legacy senza owner vengono eliminati fail-closed; un cambio account, logout o sessione scaduta rimuove immediatamente dalla memoria mappa, marker e bozza di recovery.
+- Le bozze di recovery includono l'owner account. Una bozza legacy o appartenente a un'altra identita viene eliminata senza mostrarne contenuto o metadata. Le importazioni GPX verificano la dimensione dichiarata prima dello staging e la ricontrollano prima di leggere il file completo.
 - Il bootstrap tile e il polling export si sospendono offline/in background, rispettano `Retry-After`, usano backoff esponenziale con jitter e un tetto di tentativi. Dopo il tetto l'utente può riprovare manualmente.
 - Gli EAS Update sono disabilitati nella release 1.9.0 e non sono pianificati. Le modifiche mobile vengono distribuite tramite nuove build Google Play; i controlli su artefatto e dispositivo sono in `SECURITY_RELEASE_CHECKLIST.md`.
 

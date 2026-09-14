@@ -88,6 +88,7 @@ export function decodeGpxBytes(
   bytes: Uint8Array,
   filename: string,
   maxUncompressedBytes: number,
+  maxCompressedBytes = Number.MAX_SAFE_INTEGER,
 ): Uint8Array {
   if (bytes.byteLength === 0) throw new AccountArchiveError('unknown', 'Il file GPX è vuoto.');
   if (!isGzip(bytes, filename)) {
@@ -95,6 +96,9 @@ export function decodeGpxBytes(
       throw new AccountArchiveError('size_exceeded', 'Il GPX supera il limite non compresso configurato.');
     }
     return bytes;
+  }
+  if (bytes.byteLength > maxCompressedBytes) {
+    throw new AccountArchiveError('size_exceeded', 'Il GPX compresso supera il limite configurato.');
   }
   const declaredSize = declaredGzipSize(bytes);
   if (declaredSize !== null && declaredSize > maxUncompressedBytes) {
@@ -116,8 +120,9 @@ export function parseGpxBytes(
   bytes: Uint8Array,
   filename: string,
   maxUncompressedBytes: number,
+  maxCompressedBytes = Number.MAX_SAFE_INTEGER,
 ): ParsedGpxRoute {
-  const raw = decodeGpxBytes(bytes, filename, maxUncompressedBytes);
+  const raw = decodeGpxBytes(bytes, filename, maxUncompressedBytes, maxCompressedBytes);
   let parsed: UnknownRecord;
   try {
     parsed = parser.parse(strFromU8(raw)) as UnknownRecord;

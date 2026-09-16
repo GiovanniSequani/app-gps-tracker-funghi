@@ -901,6 +901,7 @@ placeholder: attendere gli identificativi definitivi degli account sviluppatore.
 
 | 2026-09-09 | SEC-AUD-005/009/013/016/017 | IMPLEMENTED/PARTIAL, RUNTIME TESTS PENDING | Migration `202609090001` applicata; worker admission ha validato 9 archivi. Trusted gate, budget DB e cleanup bounded sono attivi; restano prove negative/cross-user/backlog live e controlli edge/provider di `SEC-AUD-016`. |
 | 2026-09-14 | GPX security findings 2/3 | DONE/PARTIAL | Applicata `202609140001`: parser XML encoding-aware e quote sulla dimensione Storage reale. Test live con due account usa-e-getta: entity UTF-16 respinta e rimossa, mismatch dichiarato/reale contabilizzato, pending preaddebitato al massimo, cross-user e signed URL negati; cleanup verificato. `SEC-AUD-005` chiuso; `SEC-AUD-016` resta parziale solo per controlli edge/provider. |
+| 2026-09-16 | AND-REL-001 GPX delete follow-up | DONE | Applicate `202609160001` e la correzione autorevole `202609160002`. La policy SELECT Storage ammette l'operazione SDK `storage.object.delete_many` mantenendo owner, path, lifecycle, metadata e DELETE policy. Runtime con due JWT usa-e-getta: cross-user inerte, owner object ancora presente; owner delete Storage e metadata riuscito; secondo tentativo metadata `204`; cleanup completo. Nessun dato esistente riscritto e nessun cambio client. |
 
 ## Questioni aperte
 

@@ -323,6 +323,13 @@ prevents a client from freeing quota while leaving an accessible object. Both
 steps are safe to retry. Auth users that still own Storage objects must have
 their GPX archive removed before an administrator deletes the Auth account.
 
+The private bucket policy permits `storage.object.delete_many` only inside the
+same owner/path/lifecycle checks as authenticated download and the independent
+`DELETE` policy. This is the operation used by Supabase `remove([path])`; bucket
+listing and signed-URL operations remain denied. Migrations `202609160001` and
+`202609160002` are incremental and do not rewrite existing tracks; the second
+one is the authoritative correction for the Storage batch-delete operation.
+
 ## Backend research access
 
 Trusted jobs use `SUPABASE_SERVICE_ROLE_KEY`, which bypasses RLS. They may read

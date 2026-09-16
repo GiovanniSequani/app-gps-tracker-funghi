@@ -22,6 +22,7 @@ describe('account validation', () => {
     expect(toAccountError({ message: 'duplicate username' }).code).toBe('duplicate_username');
     expect(toAccountError({ message: 'GPX track quota exceeded' }).code).toBe('quota_exceeded');
     expect(toAccountError(new TypeError('Network request failed')).code).toBe('network');
+    expect(toAccountError(new TypeError('blob.arrayBuffer is not a function')).code).toBe('unknown');
   });
 
   it('rende sicuro il nome GPX senza consentire path', () => {

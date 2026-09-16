@@ -316,8 +316,7 @@ export default function AccountArchiveScreen(props: {
   }, [canReadLocalArchive, loadLocalRoutes, props.lifecycle.fullAccess, sessionState.session]);
 
   const downloadTrackBytes = React.useCallback(async (track: GpxTrack): Promise<Uint8Array> => {
-    const blob = await downloadTrack(track);
-    return new Uint8Array(await blob.arrayBuffer());
+    return downloadTrack(track);
   }, []);
 
   const loadCloudDetail = React.useCallback(async (track: GpxTrack): Promise<ArchiveMapRoute> => {

@@ -81,7 +81,7 @@ export function toAccountError(error: unknown): AccountArchiveError {
   if (/deletion verification rate limit exceeded/.test(message)) {
     return new AccountArchiveError('deletion_rate_limited', 'Controlla l’email: se la richiesta può essere elaborata riceverai il link di conferma.', { cause: error });
   }
-  if (error instanceof TypeError || /fetch|network|failed to fetch|network request failed/.test(message)) {
+  if (/fetch|network|failed to fetch|network request failed|load failed|internet connection/.test(message)) {
     return new AccountArchiveError('network', 'Errore di rete. Controlla la connessione e riprova.', { cause: error });
   }
   return new AccountArchiveError('unknown', candidate.message || 'Operazione non riuscita. Riprova.', { cause: error });

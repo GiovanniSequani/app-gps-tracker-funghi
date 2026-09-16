@@ -11,6 +11,7 @@ import {
   loadArchiveData,
   renameTrack,
   requestPasswordRecovery,
+  readDownloadedBlob,
   saveTrackMushroomMarker,
   setTrackTrim,
   signUp,
@@ -218,8 +219,8 @@ describe('account archive client', () => {
     expect(result.storage_path).toBe(readyTrack.storage_path);
   });
 
-  it('scarica il GPX con Storage autenticato senza creare URL firmati', async () => {
-    const blob = new Blob(['gpx'], { type: 'application/gzip' });
+  it('scarica il GPX con Storage autenticato e restituisce byte verificati', async () => {
+    const blob = new Blob([new Uint8Array([31, 139, 8, 0])], { type: 'application/gzip' });
     const download = vi.fn().mockResolvedValue({ data: blob, error: null });
     const from = vi.fn(() => ({ download }));
     const result = await downloadTrack(readyTrack, {
@@ -227,7 +228,37 @@ describe('account archive client', () => {
     } as never);
     expect(from).toHaveBeenCalledWith('user-gpx');
     expect(download).toHaveBeenCalledWith(readyTrack.storage_path);
-    expect(result).toBe(blob);
+    expect([...result]).toEqual([31, 139, 8, 0]);
+  });
+
+  it('su runtime nativo converte il Blob con FileReader senza chiamare arrayBuffer', async () => {
+    const originalFileReader = globalThis.FileReader;
+    const arrayBuffer = vi.fn().mockRejectedValue(new TypeError('Blob.arrayBuffer non disponibile'));
+    const nativeBlob = { size: 4, arrayBuffer } as unknown as Blob;
+    class NativeFileReader {
+      result: ArrayBuffer | string | null = null;
+      error: Error | null = null;
+      onerror: (() => void) | null = null;
+      onload: (() => void) | null = null;
+      readAsArrayBuffer() {
+        this.result = new Uint8Array([31, 139, 8, 0]).buffer;
+        this.onload?.();
+      }
+    }
+    Object.defineProperty(globalThis, 'FileReader', { configurable: true, value: NativeFileReader });
+    try {
+      await expect(readDownloadedBlob(nativeBlob, 4)).resolves.toEqual(new Uint8Array([31, 139, 8, 0]));
+      expect(arrayBuffer).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(globalThis, 'FileReader', { configurable: true, value: originalFileReader });
+    }
+  });
+
+  it('rifiuta un download incompleto prima del parsing o della scrittura file', () => {
+    const blob = new Blob(['abc'], { type: 'application/gzip' });
+    expect(() => readDownloadedBlob(blob, 4)).toThrowError(
+      'Il GPX scaricato non corrisponde ai metadati dell’archivio.',
+    );
   });
 
   it('propaga gli errori del download GPX autenticato', async () => {
@@ -235,6 +266,40 @@ describe('account archive client', () => {
     await expect(downloadTrack(readyTrack, {
       storage: { from: () => ({ download }) },
     } as never)).rejects.toMatchObject({ code: 'network' });
+  });
+
+  it('ritenta in modo idempotente la cancellazione metadata dopo errore di rete', async () => {
+    vi.useFakeTimers();
+    try {
+      const remove = vi.fn().mockResolvedValue({ error: null });
+      const rpc = vi.fn()
+        .mockResolvedValueOnce({ error: new TypeError('Network request failed') })
+        .mockResolvedValueOnce({ error: null });
+      const operation = deleteTrack(readyTrack, { storage: { from: () => ({ remove }) }, rpc } as never);
+      await vi.runAllTimersAsync();
+      await expect(operation).resolves.toBeUndefined();
+      expect(remove).toHaveBeenCalledTimes(1);
+      expect(rpc).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('ritenta la RPC quando Storage non è ancora sparito e non ripete la DELETE', async () => {
+    vi.useFakeTimers();
+    try {
+      const remove = vi.fn().mockResolvedValue({ error: null });
+      const rpc = vi.fn()
+        .mockResolvedValueOnce({ error: new Error('delete the GPX Storage object before its metadata') })
+        .mockResolvedValueOnce({ error: null });
+      const operation = deleteTrack(readyTrack, { storage: { from: () => ({ remove }) }, rpc } as never);
+      await vi.runAllTimersAsync();
+      await expect(operation).resolves.toBeUndefined();
+      expect(remove).toHaveBeenCalledTimes(1);
+      expect(rpc).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('salva il trim inclusivo tramite la RPC prevista', async () => {

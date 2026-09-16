@@ -28,6 +28,7 @@ import {
   type AuthCallbackRequest,
 } from './authCallbacks';
 import type { AccountLifecyclePublicConfig } from './lifecycle';
+import { reportAccountOperationFailure } from './diagnostics';
 
 const TRACK_COLUMNS = [
   'id', 'storage_path', 'status', 'display_name', 'original_filename',
@@ -295,11 +296,90 @@ export async function renameTrack(
 export async function downloadTrack(
   track: GpxTrack,
   supabase: SupabaseClient = getAccountSupabaseClient(),
-): Promise<Blob> {
-  const { data, error } = await supabase.storage.from('user-gpx').download(track.storage_path);
-  if (error) throw toAccountError(error);
+): Promise<Uint8Array> {
+  let data: Blob | null = null;
+  try {
+    const result = await supabase.storage.from('user-gpx').download(track.storage_path);
+    if (result.error) throw result.error;
+    data = result.data;
+  } catch (error) {
+    reportAccountOperationFailure('gpx_download_request', error);
+    throw toAccountError(error);
+  }
   if (!data) throw new AccountArchiveError('unknown', 'Il file GPX non è disponibile. Aggiorna l’archivio e riprova.');
-  return data;
+  try {
+    return await readDownloadedBlob(data, track.compressed_size_bytes);
+  } catch (error) {
+    reportAccountOperationFailure('gpx_download_decode', error);
+    throw error;
+  }
+}
+
+export function readDownloadedBlob(blob: Blob, expectedBytes: number): Promise<Uint8Array> {
+  if (!Number.isSafeInteger(expectedBytes) || expectedBytes <= 0) {
+    throw new AccountArchiveError('unknown', 'La dimensione del GPX non è valida. Aggiorna l’archivio e riprova.');
+  }
+  if (blob.size !== expectedBytes) {
+    throw new AccountArchiveError('unknown', 'Il GPX scaricato non corrisponde ai metadati dell’archivio.');
+  }
+
+  // React Native's native Blob does not reliably implement Blob.arrayBuffer()
+  // in release builds. FileReader is backed by the native Blob manager and is
+  // the supported conversion path on Android/iOS. The fallback is only for the
+  // non-native test/web runtime.
+  if (typeof FileReader !== 'undefined') {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new AccountArchiveError(
+        'unknown',
+        'Il GPX scaricato non può essere letto su questo dispositivo.',
+        { cause: reader.error },
+      ));
+      reader.onload = () => {
+        if (!(reader.result instanceof ArrayBuffer) || reader.result.byteLength !== expectedBytes) {
+          reject(new AccountArchiveError('unknown', 'Il GPX scaricato è incompleto. Riprova.'));
+          return;
+        }
+        resolve(new Uint8Array(reader.result));
+      };
+      reader.readAsArrayBuffer(blob);
+    });
+  }
+
+  return blob.arrayBuffer().then((buffer) => {
+    if (buffer.byteLength !== expectedBytes) {
+      throw new AccountArchiveError('unknown', 'Il GPX scaricato è incompleto. Riprova.');
+    }
+    return new Uint8Array(buffer);
+  });
+}
+
+const DELETE_METADATA_DELAYS_MS = [0, 120, 300] as const;
+
+function wait(delayMs: number): Promise<void> {
+  return delayMs === 0 ? Promise.resolve() : new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+function isRetryableMetadataDeleteError(error: unknown): boolean {
+  const normalized = toAccountError(error);
+  const message = String((error as { message?: unknown } | null)?.message ?? '').toLowerCase();
+  return normalized.code === 'network'
+    || /delete the gpx storage object before its metadata/.test(message);
+}
+
+async function deleteMetadataWithRetry(trackId: string, supabase: SupabaseClient): Promise<void> {
+  let lastError: unknown;
+  for (const delayMs of DELETE_METADATA_DELAYS_MS) {
+    await wait(delayMs);
+    try {
+      await deleteMetadata(trackId, supabase);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableMetadataDeleteError(error)) throw error;
+    }
+  }
+  throw lastError;
 }
 
 export async function deleteTrack(
@@ -307,10 +387,17 @@ export async function deleteTrack(
   supabase: SupabaseClient = getAccountSupabaseClient(),
 ): Promise<void> {
   const { error: storageError } = await supabase.storage.from('user-gpx').remove([track.storage_path]);
-  if (storageError && !isMissingStorageObject(storageError)) throw toAccountError(storageError);
+  if (storageError && !isMissingStorageObject(storageError)) {
+    reportAccountOperationFailure('gpx_delete_storage', storageError);
+    throw toAccountError(storageError);
+  }
   try {
-    await deleteMetadata(track.id, supabase);
+    // The metadata RPC is idempotent. Retrying covers both a short Storage
+    // visibility delay and an ambiguous native network response after the
+    // server has already completed the first call.
+    await deleteMetadataWithRetry(track.id, supabase);
   } catch (error) {
+    reportAccountOperationFailure('gpx_delete_metadata', error);
     throw new AccountArchiveError(
       'partial_delete',
       'Il file è stato eliminato, ma la cancellazione dei metadati non è completa. Riprova per terminarla.',

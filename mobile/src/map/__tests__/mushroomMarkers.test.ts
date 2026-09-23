@@ -57,6 +57,14 @@ describe('mushroomMarkersToGeoJSON', () => {
     expect(clusterMushroomFeatures(shape.features, 16)).toBe(shape.features);
   });
 
+  it('mantiene il raggruppamento fino allo zoom immediatamente precedente', () => {
+    const shape = mushroomMarkersToGeoJSON([
+      { latitude: 46.1, longitude: 11.1, species: 'porcini', count: 1 },
+      { latitude: 46.1004, longitude: 11.1004, species: 'finferli', count: 1 },
+    ]);
+    expect(clusterMushroomFeatures(shape.features, 15)).toHaveLength(1);
+  });
+
   it('unisce specie diverse nello stesso punto senza sovrapporle', () => {
     const shape = mushroomMarkersToGeoJSON([
       { latitude: 46.1, longitude: 11.1, species: 'porcini', count: 2 },

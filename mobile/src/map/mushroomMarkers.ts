@@ -23,8 +23,10 @@ type GroupedMarker = Pick<MushroomMapMarker, 'latitude' | 'longitude'> & {
 };
 
 const MERCATOR_TILE_SIZE = 512;
-const MAX_CLUSTER_ZOOM = 15;
-const CLUSTER_RADIUS_PX = 44;
+// Keep the grouping active one zoom step closer than before and use a small
+// visual safety margin so badges do not touch at the edge of a cluster.
+const MAX_CLUSTER_ZOOM = 16;
+const CLUSTER_RADIUS_PX = 48;
 
 function validMarker(marker: MushroomMapMarker): boolean {
   return Number.isFinite(marker.latitude)

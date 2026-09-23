@@ -15,6 +15,7 @@ def test_live_account_pipeline_order_and_limits() -> None:
         "GPX admission",
         "account lifecycle",
         "account rights",
+        "account export email dispatch",
     ]
     assert commands[0][1][-1] == "--run"
     assert commands[1][1][-1] == "--run"
@@ -24,6 +25,7 @@ def test_live_account_pipeline_order_and_limits() -> None:
         "--max-expired-exports", "20", "--max-expired-export-bytes", "1073741824",
         "--max-expired-export-seconds", "120"
     ]
+    assert commands[4][1] == commands[2][1]
 
 
 def test_dry_run_previews_every_step() -> None:
@@ -46,6 +48,34 @@ def test_pipeline_stops_on_first_failed_step(monkeypatch: pytest.MonkeyPatch) ->
         pipeline.run_pipeline(dry_run=False)
 
     assert len(calls) == 2
+
+
+def test_live_pipeline_dispatches_new_export_email_once_in_same_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queued = False
+    export_completed = False
+    sent = 0
+
+    def controlled_run(command: list[str]) -> int:
+        nonlocal queued, export_completed, sent
+        module = command[2]
+        if module.endswith("run_account_lifecycle") and queued:
+            sent += 1
+            queued = False
+        elif module.endswith("run_account_rights") and not export_completed:
+            export_completed = True
+            queued = True
+        return 0
+
+    monkeypatch.setattr(pipeline, "run_logged_cmd", controlled_run)
+
+    pipeline.run_pipeline(dry_run=False)
+    pipeline.run_pipeline(dry_run=False)
+
+    assert export_completed is True
+    assert queued is False
+    assert sent == 1
 
 
 def test_batch_launcher_runs_module_from_repository_root() -> None:

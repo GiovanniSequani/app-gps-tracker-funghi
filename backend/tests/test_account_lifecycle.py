@@ -91,7 +91,13 @@ class FakeStore:
                 return {"claimed": False, "reason": "locked"}
         run = self.runs.setdefault(run_date, {"status": "available", "attempts": 0, "owner": None})
         if run["status"] == "completed":
-            return {"claimed": False, "reason": "completed"}
+            dispatchable = any(
+                item["status"] in {"pending", "retry"}
+                and item.get("available_date", run_date) <= run_date
+                for item in self.emails
+            )
+            if not dispatchable:
+                return {"claimed": False, "reason": "completed"}
         if run["status"] == "running" and run["owner"] != owner:
             return {"claimed": False, "reason": "locked"}
         run.update(status="running", owner=owner)
@@ -161,6 +167,26 @@ def test_dispatch_is_idempotent_when_same_day_is_repeated() -> None:
     assert first.sent == 1
     assert second.stop_reason == "completed"
     assert sender.calls == [1]
+
+
+def test_completed_run_dispatches_export_ready_enqueued_later_same_day_once() -> None:
+    store = FakeStore([])
+    sender = FakeSender()
+
+    first = run_daily_lifecycle(store, sender, now=NOW, pause_seconds=0)
+    store.emails.append({
+        "id": 9,
+        "status": "pending",
+        "event_type": "export_ready",
+        "payload": {"export_id": "controlled-job"},
+    })
+    second = run_daily_lifecycle(store, sender, now=NOW, pause_seconds=0)
+    third = run_daily_lifecycle(store, sender, now=NOW, pause_seconds=0)
+
+    assert first.sent == 0
+    assert second.sent == 1
+    assert third.stop_reason == "completed"
+    assert sender.calls == [9]
 
 
 def test_global_lock_rejects_a_concurrent_run() -> None:

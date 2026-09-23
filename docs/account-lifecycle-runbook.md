@@ -139,9 +139,13 @@ backend\scripts\run_daily_account_pipeline.bat --dry-run
 
 The launcher changes to the repository root and delegates to the testable
 Python orchestrator. It runs, in strict order: expired `pending_upload` cleanup,
-lifecycle transitions/email, then export/deletion/retention rights. A non-zero
-step stops the pipeline immediately. Live limits are 100 lifecycle emails with
-a five-second pause, 20 exports, 100 deletions and 20 old-email cleanup rows.
+GPX admission, lifecycle transitions/email, export/deletion/retention rights,
+then one final lifecycle/outbox pass. The final pass sends an `export_ready`
+notification created by the rights step in the same pipeline invocation. The
+same-day run reopens only for a newly due deduplicated outbox row and preserves
+the cumulative attempt counter, daily limit, retry and backoff. A non-zero step
+stops the pipeline immediately. Live limits are 100 lifecycle emails with a
+five-second pause, 20 exports, 100 deletions and 20 old-email cleanup rows.
 Each invocation writes one combined log under
 `backend/logs/account-lifecycle/`; the directory is gitignored and child
 commands emit only aggregate counts and technical error classes.

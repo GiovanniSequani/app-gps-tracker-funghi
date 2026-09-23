@@ -45,6 +45,16 @@ def build_commands(*, dry_run: bool, python: str = sys.executable) -> list[tuple
                 [python, "-m", "backend.scripts.accounts.run_account_rights", "--dry-run"],
             ),
         ]
+    lifecycle_command = [
+        python,
+        "-m",
+        "backend.scripts.accounts.run_account_lifecycle",
+        "--send",
+        "--daily-limit",
+        "100",
+        "--pause-seconds",
+        "5",
+    ]
     return [
         (
             "pending GPX cleanup",
@@ -56,16 +66,7 @@ def build_commands(*, dry_run: bool, python: str = sys.executable) -> list[tuple
         ),
         (
             "account lifecycle",
-            [
-                python,
-                "-m",
-                "backend.scripts.accounts.run_account_lifecycle",
-                "--send",
-                "--daily-limit",
-                "100",
-                "--pause-seconds",
-                "5",
-            ],
+            lifecycle_command,
         ),
         (
             "account rights",
@@ -87,6 +88,10 @@ def build_commands(*, dry_run: bool, python: str = sys.executable) -> list[tuple
                 "--max-expired-export-seconds",
                 "120",
             ],
+        ),
+        (
+            "account export email dispatch",
+            lifecycle_command.copy(),
         ),
     ]
 

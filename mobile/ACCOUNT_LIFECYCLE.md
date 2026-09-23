@@ -2,6 +2,7 @@
 
 ## Protezioni locali e rete
 
+- Gli export ZIP privati usano il download Storage autenticato e la conversione del Blob nativo tramite `FileReader`, mai URL firmati o `Blob.arrayBuffer()` su Android/iOS. `size_bytes`, dimensione del Blob e byte letti devono coincidere prima della scrittura; il file in `cache/sensitive-temp` viene eliminato dopo condivisione, annullamento o errore.
 - Le sessioni Supabase sono persistite con `expo-secure-store` usando una classe di accesso non migrabile su un altro dispositivo. Al primo avvio della 1.9.0 l'eventuale sessione legacy viene migrata e rimossa da AsyncStorage.
 - Android disabilita integralmente backup e restore dell'app. Su iOS il plugin CNG esclude Documents e Application Support, che contengono database, GPX locali e draft di recovery.
 - GPX ed export destinati alla condivisione vivono esclusivamente in `cache/sensitive-temp` e vengono rimossi dopo successo, annullamento o errore, oltre che all'avvio, al logout e alla perdita autoritativa dell'accesso.

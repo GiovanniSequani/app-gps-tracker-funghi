@@ -10,6 +10,7 @@ import { toAccountError } from './validation';
 import { backoffDelayMs, retryAfterFromError } from '../network/retryPolicy';
 import { useNetworkAvailability } from '../network/useNetworkAvailability';
 import { createSensitiveTempFileUri, deleteSensitiveTempFile } from '../security/sensitiveTempFiles';
+import { readNativeBlob } from './nativeBlob';
 
 const EXPORT_POLL_BASE_MS = 15_000;
 const EXPORT_POLL_MAX_MS = 120_000;
@@ -28,8 +29,13 @@ export type AccountRightsState = {
   requestDeletion: () => Promise<void>;
 };
 
-async function saveExportBlob(blob: Blob): Promise<void> {
-  const bytes = new Uint8Array(await blob.arrayBuffer());
+export async function saveExportBlob(blob: Blob, expectedBytes: number | null): Promise<void> {
+  const bytes = await readNativeBlob(blob, expectedBytes ?? 0, {
+    invalidExpectedSize: 'La dimensione dell’export non è valida. Aggiorna lo stato e riprova.',
+    sizeMismatch: 'Il file export scaricato non corrisponde ai dati preparati dal server.',
+    unreadable: 'Il file export non può essere letto su questo dispositivo.',
+    incomplete: 'Il file export scaricato è incompleto. Riprova.',
+  });
   const uri = await createSensitiveTempFileUri('funghitracker-export.zip');
   try {
     const file = new File(uri);
@@ -158,7 +164,7 @@ export function useAccountRights(enabled: boolean): AccountRightsState {
       setError(err.message); throw err;
     }
     setBusy('download'); setError(null);
-    try { await saveExportBlob(await downloadAccountExport(job)); }
+    try { await saveExportBlob(await downloadAccountExport(job), job.size_bytes); }
     catch (cause) { const normalized = toAccountError(cause); setError(normalized.message); throw normalized; }
     finally { setBusy(null); }
   }, [job]);

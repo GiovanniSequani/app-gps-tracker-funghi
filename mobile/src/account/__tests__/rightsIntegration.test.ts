@@ -46,4 +46,12 @@ describe('integrazione diritti account mobile', () => {
     expect(rightsPanel).toContain('puoi anche controllare qui con Aggiorna');
     expect(rightsPanel).not.toContain('La notifica email non è ancora attiva');
   });
+
+  it('legge il Blob export con il percorso nativo e pulisce sempre il temporaneo', () => {
+    expect(rightsHook).toContain('readNativeBlob(blob, expectedBytes ?? 0');
+    expect(rightsHook).toContain('saveExportBlob(await downloadAccountExport(job), job.size_bytes)');
+    expect(rightsHook).not.toContain('new Uint8Array(await blob.arrayBuffer())');
+    expect(rightsHook).toContain('finally');
+    expect(rightsHook).toContain('deleteSensitiveTempFile(uri)');
+  });
 });

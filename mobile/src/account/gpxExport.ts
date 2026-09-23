@@ -5,7 +5,6 @@ import type { GpxCoordinate, GpxMushroomMarker, GpxTrack, ParsedGpxRoute } from 
 import { safeGpxName } from './validation';
 
 const GPX_NAMESPACE = 'http://www.topografix.com/GPX/1/1';
-const FUNGHITRACKER_NAMESPACE = 'https://funghitracker.it/gpx/1';
 
 function escapeXml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => ({
@@ -30,12 +29,20 @@ function timeElement(point: GpxCoordinate): string {
   return Number.isNaN(date.valueOf()) ? '' : `<time>${date.toISOString()}</time>`;
 }
 
+function markerSpecies(value: string): 'porcino' | 'finferlo' | null {
+  const normalized = value.toLocaleLowerCase('it-IT');
+  if (normalized.includes('porcin')) return 'porcino';
+  if (normalized.includes('finferl') || normalized.includes('gallinacci')) return 'finferlo';
+  return null;
+}
+
 function historicalMarkerXml(marker: ParsedGpxRoute['markers'][number]): string[] {
+  const type = markerSpecies(`${marker.tipo} ${marker.name}`) ?? marker.tipo;
   return [
     `  <wpt lat="${coordinate(marker.latitude)}" lon="${coordinate(marker.longitude)}">`,
     `    ${timeElement(marker)}`,
     `    <name>${escapeXml(marker.name)}</name>`,
-    `    <type>${escapeXml(marker.tipo)}</type>`,
+    `    <type>${escapeXml(type)}</type>`,
     '  </wpt>',
   ];
 }
@@ -46,13 +53,21 @@ function editorMarkerXml(marker: GpxMushroomMarker, name: string): string[] {
     `  <wpt lat="${coordinate(marker.latitude)}" lon="${coordinate(marker.longitude)}">`,
     `    <name>${name}</name>`,
     `    <type>${singular}</type>`,
-    `    <desc>${singular === 'porcino' ? 'Porcini' : 'Finferli'}: ${marker.count}</desc>`,
-    '    <extensions>',
-    `      <funghitracker:species>${marker.species}</funghitracker:species>`,
-    `      <funghitracker:count>${marker.count}</funghitracker:count>`,
-    '    </extensions>',
     '  </wpt>',
   ];
+}
+
+function nextMarkerIndex(
+  markers: ParsedGpxRoute['markers'],
+  species: 'porcini' | 'finferli',
+): number {
+  const prefix = species === 'porcini' ? 'porcino' : 'finferlo';
+  const pattern = new RegExp(`^${prefix}_(\\d+)$`, 'i');
+  return markers.reduce((highest, marker) => {
+    if (markerSpecies(`${marker.tipo} ${marker.name}`) !== prefix) return highest;
+    const match = pattern.exec(marker.name.trim());
+    return match ? Math.max(highest, Number(match[1])) : highest;
+  }, 0);
 }
 
 /** Crea una copia locale derivata senza modificare il GPX raw in Storage. */
@@ -74,7 +89,7 @@ export function createDerivedGpxExport(
 
   const lines = [
     '<?xml version="1.0" encoding="UTF-8"?>',
-    `<gpx version="1.1" creator="FunghiTracker" xmlns="${GPX_NAMESPACE}" xmlns:funghitracker="${FUNGHITRACKER_NAMESPACE}">`,
+    `<gpx version="1.1" creator="FunghiTracker" xmlns="${GPX_NAMESPACE}">`,
   ];
 
   // I waypoint contenuti nel GPX raw sono dati storici: nome, tipo e ordine
@@ -88,14 +103,19 @@ export function createDerivedGpxExport(
     .sort((left, right) => (
       left.track_point_index - right.track_point_index || left.species.localeCompare(right.species)
     ));
-  let porciniIndex = 0;
-  let finferliIndex = 0;
+  let porciniIndex = nextMarkerIndex(parsed.markers, 'porcini');
+  let finferliIndex = nextMarkerIndex(parsed.markers, 'finferli');
   for (const marker of visibleMarkers) {
-    const name = marker.species === 'porcini'
-      ? `porcino${++porciniIndex}`
-      : `finferlo${++finferliIndex}`;
+    if (!Number.isSafeInteger(marker.count) || marker.count < 1) {
+      throw new AccountArchiveError('invalid_track_edit', 'La quantità di un ritrovamento non è valida.');
+    }
     const point = pointByIndex.get(marker.track_point_index)!;
-    lines.push(...editorMarkerXml({ ...marker, latitude: point.latitude, longitude: point.longitude }, name));
+    for (let occurrence = 0; occurrence < marker.count; occurrence += 1) {
+      const name = marker.species === 'porcini'
+        ? `Porcino_${++porciniIndex}`
+        : `Finferlo_${++finferliIndex}`;
+      lines.push(...editorMarkerXml({ ...marker, latitude: point.latitude, longitude: point.longitude }, name));
+    }
   }
 
   if (parsed.usesTrackPoints) {

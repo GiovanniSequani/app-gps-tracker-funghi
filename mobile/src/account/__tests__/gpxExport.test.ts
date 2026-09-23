@@ -35,7 +35,7 @@ const parsed: ParsedGpxRoute = {
     latitude: 46.2,
     longitude: 11.2,
     timestamp: null,
-    name: 'Porcino storico 7',
+    name: 'Porcino_7',
     tipo: 'Porcino',
   }],
   startedAt: '2020-10-10T00:00:00.000Z',
@@ -79,7 +79,7 @@ describe('derived cloud GPX export', () => {
     expect(JSON.stringify(parsed)).toBe(original);
   });
 
-  it('preserva nomi storici e numera i nuovi marker per specie entro il trim', () => {
+  it('preserva i marker storici ed esporta i nuovi nel formato GPX della registrazione', () => {
     const markers = [
       marker(0, 'porcini', 9),
       marker(2, 'finferli', 2),
@@ -88,13 +88,14 @@ describe('derived cloud GPX export', () => {
     ];
     const xml = strFromU8(createDerivedGpxExport(track, parsed, markers).bytes);
 
-    expect(xml).toContain('<name>Porcino storico 7</name>');
-    expect(xml).toContain('<name>finferlo1</name>');
-    expect(xml).toContain('<name>finferlo2</name>');
-    expect(xml).toContain('<name>porcino1</name>');
-    expect(xml).toContain('<funghitracker:count>2</funghitracker:count>');
-    expect(xml).toContain('<funghitracker:count>3</funghitracker:count>');
-    expect(xml).not.toContain('<funghitracker:count>9</funghitracker:count>');
+    expect(xml).toContain('<name>Porcino_7</name>');
+    expect(xml).toContain('<name>Finferlo_1</name>');
+    expect(xml).toContain('<name>Finferlo_2</name>');
+    expect(xml).toContain('<name>Porcino_8</name>');
+    expect(xml).toContain('<name>Porcino_9</name>');
+    expect(xml).toContain('<name>Porcino_10</name>');
+    expect(xml).not.toContain('<desc>');
+    expect(xml).not.toContain('<extensions>');
     expect(xml).toContain('<wpt lat="46.02" lon="11.02">');
   });
 

@@ -98,6 +98,7 @@ export type ParsedGpxRoute = {
   trackPoints: GpxTrackPoint[];
   trackSegments: GpxTrackSegment[];
   rawTrackPointCount: number;
+  usesTrackPoints: boolean;
 };
 
 export type CloudTrackEditData = {

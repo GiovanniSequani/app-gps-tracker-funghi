@@ -19,7 +19,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { File } from 'expo-file-system';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as DocumentPicker from 'expo-document-picker';
-import * as Sharing from 'expo-sharing';
 import { useNavigation } from '@react-navigation/native';
 import uuid from 'react-native-uuid';
 import {
@@ -65,6 +64,8 @@ import {
 } from './lifecycleClient';
 import type { AccountLifecycleState } from './useAccountLifecycle';
 import { parseGpxBytes } from './gpxParser';
+import { createDerivedGpxExport } from './gpxExport';
+import { shareDerivedGpx } from './shareGpx';
 import { readPickedGpxSafely } from './gpxImport';
 import { routeSummary, uploadRouteToCloud } from './routeUpload';
 import { TrackNameModal } from './TrackNameModal';
@@ -78,7 +79,7 @@ import type {
   GpxTrack,
   ParsedGpxRoute,
 } from './types';
-import { normalizeTrackName, safeGpxName, toAccountError, validateTrackName } from './validation';
+import { normalizeTrackName, toAccountError, validateTrackName } from './validation';
 import { effectiveTrim, snapMarkersToTrack, trimTrackSegments } from './trackEdits';
 import { createSensitiveTempFileUri, deleteSensitiveTempFile } from '../security/sensitiveTempFiles';
 
@@ -610,18 +611,31 @@ export default function AccountArchiveScreen(props: {
   const handleDownload = async (track: GpxTrack) => {
     setActions((current) => ({ ...current, [track.id]: 'download' }));
     setError(null);
-    let uri: string | null = null;
     try {
-      const bytes = await downloadTrackBytes(track);
-      uri = await createSensitiveTempFileUri(`${safeGpxName(track.original_filename || track.display_name)}-${track.id}.gpx.gz`);
-      const file = new File(uri);
-      try { file.create({ overwrite: true }); } catch { /* downloaded cache may already exist */ }
-      file.write(bytes);
-      if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(file.uri, { mimeType: 'application/gzip' });
-      else throw new Error('La condivisione file non è disponibile su questo dispositivo.');
+      // Il raw in Storage resta immutabile. Nome, trim e marker vengono letti
+      // di nuovo dal database e applicati solo alla copia condivisa.
+      const currentArchive = await loadArchiveData();
+      const currentTrack = currentArchive.tracks.find((item) => item.id === track.id);
+      if (!currentTrack) throw new Error('Traccia non trovata. Aggiorna l’archivio e riprova.');
+      const [rawBytes, serverMarkers] = await Promise.all([
+        downloadTrackBytes(currentTrack),
+        listTrackMushroomMarkers(currentTrack.id),
+      ]);
+      const parsed = parseGpxBytes(
+        rawBytes,
+        currentTrack.original_filename || `${currentTrack.display_name}.gpx.gz`,
+        currentArchive.config.max_uncompressed_bytes,
+        currentArchive.config.max_compressed_bytes,
+      );
+      if (currentTrack.point_count !== null && parsed.rawTrackPointCount !== currentTrack.point_count) {
+        throw new Error('Il numero di punti del GPX non corrisponde ai metadati della traccia.');
+      }
+      const derived = createDerivedGpxExport(currentTrack, parsed, serverMarkers);
+      setArchive(currentArchive);
+      setConfig(currentArchive.config);
+      await shareDerivedGpx(derived, currentTrack.display_name);
     } catch (reason) { setError(toAccountError(reason).message); }
     finally {
-      await deleteSensitiveTempFile(uri).catch(() => undefined);
       setActions((current) => { const next = { ...current }; delete next[track.id]; return next; });
     }
   };

@@ -186,5 +186,6 @@ export function parseGpxBytes(
     trackPoints: trackSegments.flatMap((segment) => segment.points),
     trackSegments,
     rawTrackPointCount,
+    usesTrackPoints: trackPoints.length > 0,
   };
 }

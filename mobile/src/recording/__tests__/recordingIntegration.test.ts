@@ -30,9 +30,26 @@ describe('recording pause integration', () => {
     expect(app).toContain('title="Registrazione terminata"');
     expect(app).toContain("recordingPaused ? 'Riprendi' : 'Pausa'");
     expect(app).toContain('>Termina</Text>');
+    expect(app).toContain('recordingFinishSeparator');
+    expect(app).toContain("{ text: 'Termina', style: 'destructive', onPress: stopRecording }");
+    expect(app).toContain('+ Aggiungi porcino');
+    expect(app).toContain('+ Aggiungi finferlo');
     const handlers = app.slice(app.indexOf('const pauseRecording'), app.indexOf('const saveCurrentRoute'));
     expect(handlers).not.toMatch(/runCameraCommand|centerCamera|setCameraCommand/);
     expect(app.match(/<MemoMapCanvas\b/g)).toHaveLength(1);
+  });
+
+  it('checks recovery from persisted local auth without waiting for the network', () => {
+    const recoveryStart = app.indexOf('// Il controllo recovery deve essere solo locale');
+    const recoveryCheck = app.slice(
+      recoveryStart,
+      app.indexOf('if (!indexAccessReady)', recoveryStart),
+    );
+    expect(recoveryCheck).toContain('getPersistedAccountSession()');
+    expect(recoveryCheck).toContain('loadRecordingDraft(persistedRecordingOwnerUserIdRef.current)');
+    expect(recoveryCheck).not.toContain('accountSession.loading');
+    expect(app).not.toContain("Alert.alert('Controllo in corso'");
+    expect(app).toContain("recoveryChecking ? 'Preparo il GPS…' : 'Avvia registrazione'");
   });
 
   it('shows the prominent disclosure before requesting background location', () => {

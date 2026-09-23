@@ -34,6 +34,7 @@ import { IndexPopupSummary } from './src/index-data/IndexPopupSummary';
 import AccountArchiveScreen from './src/account/AccountArchiveScreen';
 import CloudTrackEditor from './src/account/CloudTrackEditor';
 import { useAccountSession } from './src/account/useAccountSession';
+import { getPersistedAccountSession } from './src/account/supabase';
 import { shouldClearPrivateLocalData } from './src/account/accountIdentity';
 import { useAccountLifecycle } from './src/account/useAccountLifecycle';
 import { AuthCallbackModal } from './src/account/AuthCallbackModal';
@@ -76,6 +77,13 @@ import {
 } from './src/recording/recordingDraftStorage';
 import { RecordingRecoveryModal } from './src/recording/RecordingRecoveryModal';
 import { BackgroundLocationDisclosureModal } from './src/recording/BackgroundLocationDisclosureModal';
+import { nextMushroomMarkerName } from './src/recording/mushroomNaming';
+import {
+  isApproximatePosition,
+  isUsableProvisionalPosition,
+  PROVISIONAL_POSITION_MAX_ACCURACY_METERS,
+  PROVISIONAL_POSITION_MAX_AGE_MS,
+} from './src/location/initialPosition';
 import { backoffDelayMs, createRetryableError, retryAfterFromError } from './src/network/retryPolicy';
 import { useNetworkAvailability } from './src/network/useNetworkAvailability';
 import { createSensitiveTempFileUri, deleteSensitiveTempFile, purgeSensitiveTempFiles } from './src/security/sensitiveTempFiles';
@@ -475,6 +483,7 @@ export default function App() {
   const recording = isRecordingSession(recordingStatus);
   const [path, setPath] = React.useState<Coordinate[]>([]);
   const [currentPosition, setCurrentPosition] = React.useState<Coordinate | null>(null);
+  const [positionApproximate, setPositionApproximate] = React.useState(false);
   const [markers, setMarkers] = React.useState<MarkerData[]>([]);
   const [recordingNameVisible, setRecordingNameVisible] = React.useState(false);
   const [recordingName, setRecordingName] = React.useState('');
@@ -523,12 +532,14 @@ export default function App() {
   const followLocationRef = React.useRef(true);
   const cameraCommandIdRef = React.useRef(0);
   const initialCameraCenteredRef = React.useRef(false);
+  const latestLocationTimestampRef = React.useRef(0);
   // Camera ref: tipo è il componente Camera stesso
   const recordingStatusRef = React.useRef<RecordingStatus>(recordingStatus);
   const recordingPauseWindowsRef = React.useRef<RecordingPauseWindow[]>([]);
   const recordingActionBusyRef = React.useRef(false);
   const recordingSessionIdRef = React.useRef<string | null>(null);
   const recordingOwnerUserIdRef = React.useRef<string | null>(null);
+  const persistedRecordingOwnerUserIdRef = React.useRef<string | null>(null);
   const recordingStartedAtRef = React.useRef<string | null>(null);
   const lastCheckpointPointCountRef = React.useRef(0);
   const scheduledCheckpointPointCountRef = React.useRef(0);
@@ -613,9 +624,11 @@ export default function App() {
     const previousUserId = accountIdentityRef.current;
     if (!shouldClearPrivateLocalData(previousUserId, currentUserId)) {
       accountIdentityRef.current = currentUserId;
+      persistedRecordingOwnerUserIdRef.current = currentUserId;
       return;
     }
     accountIdentityRef.current = currentUserId;
+    persistedRecordingOwnerUserIdRef.current = currentUserId;
 
     // Un cambio reale di identita' invalida immediatamente ogni geodato in
     // memoria. Il database resta owner-scoped, quindi non serve attribuire o
@@ -766,10 +779,13 @@ export default function App() {
 
   React.useEffect(() => {
     let cancelled = false;
-    if (accountSession.loading) return () => { cancelled = true; };
     (async () => {
       try {
-        const storedDraft = await loadRecordingDraft(accountSession.session?.user.id ?? null);
+        // Il controllo recovery deve essere solo locale: la rete non deve mai
+        // ritardare l'avvio di una nuova registrazione sul campo.
+        const persistedSession = await getPersistedAccountSession();
+        persistedRecordingOwnerUserIdRef.current = persistedSession?.user.id ?? null;
+        const storedDraft = await loadRecordingDraft(persistedRecordingOwnerUserIdRef.current);
         if (!storedDraft) return;
 
         await persistRecordingStatus('paused');
@@ -833,7 +849,7 @@ export default function App() {
       }
     })();
     return () => { cancelled = true; };
-  }, [accountSession.loading, accountSession.session?.user.id, persistRecordingStatus]);
+  }, [persistRecordingStatus]);
 
   React.useEffect(() => {
     if (!indexAccessReady) return;
@@ -910,31 +926,51 @@ export default function App() {
     setTileBootstrapRevision((current) => current + 1);
   }, []);
 
-  // posizione iniziale: struttura ripresa dal bundle recuperato
+  // posizione iniziale: fix recente provvisorio seguito dal fix GPS accurato
+  const applyLocationSample = React.useCallback((location: Location.LocationObject, provisional = false) => {
+    if (location.timestamp < latestLocationTimestampRef.current) return;
+    latestLocationTimestampRef.current = location.timestamp;
+    const coordinate = locationToCoordinate(location);
+    const center: [number, number] = [coordinate.longitude, coordinate.latitude];
+    setCurrentPosition(coordinate);
+    setPositionApproximate(isApproximatePosition(location, provisional));
+    if (!initialCameraCenteredRef.current) {
+      initialCameraCenteredRef.current = true;
+      setInitialCenter(center);
+      runCameraCommand({
+        centerCoordinate: center,
+        zoomLevel: CENTER_ZOOM_LEVEL,
+        animationDuration: provisional ? 450 : 1000,
+        animationMode: provisional ? 'easeTo' : 'flyTo',
+      });
+    }
+  }, [runCameraCommand]);
+
+  // Mostra subito una posizione nota recente, dichiarandola approssimativa,
+  // mentre il ricevitore calcola il fix corrente piu' preciso.
   React.useEffect(() => {
+    let mounted = true;
     (async () => {
       try {
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status !== 'granted') { Alert.alert('Permesso GPS negato!'); return; }
-        const location = await Location.getCurrentPositionAsync(FOREGROUND_LOCATION_OPTIONS);
-        const coordinate = locationToCoordinate(location);
-        const center: [number, number] = [coordinate.longitude, coordinate.latitude];
-        setCurrentPosition(coordinate);
-        setInitialCenter(center);
-        if (!initialCameraCenteredRef.current) {
-          initialCameraCenteredRef.current = true;
-          runCameraCommand({
-            centerCoordinate: center,
-            zoomLevel: CENTER_ZOOM_LEVEL,
-            animationDuration: 1000,
-            animationMode: 'flyTo',
-          });
+        const provisional = await Location.getLastKnownPositionAsync({
+          maxAge: PROVISIONAL_POSITION_MAX_AGE_MS,
+          requiredAccuracy: PROVISIONAL_POSITION_MAX_ACCURACY_METERS,
+        });
+        if (mounted && provisional && isUsableProvisionalPosition(provisional)) {
+          applyLocationSample(provisional, true);
+        }
+        const current = await Location.getCurrentPositionAsync(FOREGROUND_LOCATION_OPTIONS);
+        if (mounted) {
+          applyLocationSample(current);
         }
       } catch {
         console.log('[gps] Initial foreground position failed');
       }
     })();
-  }, [runCameraCommand]);
+    return () => { mounted = false; };
+  }, [applyLocationSample]);
 
   React.useEffect(() => {
     let subscription: Location.LocationSubscription | null = null;
@@ -951,19 +987,7 @@ export default function App() {
         subscription = await Location.watchPositionAsync(options, (location) => {
           if (!mounted) return;
           const coordinate = locationToCoordinate(location);
-          setCurrentPosition(coordinate);
-
-          if (!initialCameraCenteredRef.current) {
-            const center: [number, number] = [coordinate.longitude, coordinate.latitude];
-            setInitialCenter(center);
-            initialCameraCenteredRef.current = true;
-            runCameraCommand({
-              centerCoordinate: center,
-              zoomLevel: CENTER_ZOOM_LEVEL,
-              animationDuration: 1000,
-              animationMode: 'flyTo',
-            });
-          }
+          applyLocationSample(location);
 
           if (canAppendRecordingPoint(recordingStatusRef.current)) {
             setPath((prev) => {
@@ -984,7 +1008,7 @@ export default function App() {
       mounted = false;
       subscription?.remove();
     };
-  }, [recordingStatus, runCameraCommand]);
+  }, [applyLocationSample, recordingStatus]);
 
   const handleDeleteMarker = (marker: MarkerData) => {
     Alert.alert('Conferma eliminazione', `Vuoi eliminare ${marker.name}?`, [
@@ -1073,7 +1097,6 @@ export default function App() {
   const startRecording = async () => {
     if (recordingStatusRef.current !== 'idle' || recordingActionBusyRef.current) return;
     if (recoveryChecking) {
-      Alert.alert('Controllo in corso', 'Attendi il controllo delle registrazioni interrotte.');
       return;
     }
     if (recoveryDraft || recoveryCorrupt) {
@@ -1111,7 +1134,8 @@ export default function App() {
       const sessionId = uuid.v4() as string;
       const startedAt = new Date().toISOString();
       recordingSessionIdRef.current = sessionId;
-      recordingOwnerUserIdRef.current = accountSession.session?.user.id ?? null;
+      recordingOwnerUserIdRef.current = accountSession.session?.user.id
+        ?? persistedRecordingOwnerUserIdRef.current;
       recordingStartedAtRef.current = startedAt;
       pathRef.current = [];
       markersRef.current = [];
@@ -1522,7 +1546,7 @@ export default function App() {
             longitude: last.longitude,
             timestamp: Date.now(),
             tipo,
-            name: `${tipo}_${previous.filter((marker) => marker.tipo === tipo).length + 1}`,
+            name: nextMushroomMarkerName(tipo, previous),
           },
         ];
         markersRef.current = nextMarkers;
@@ -1585,6 +1609,7 @@ export default function App() {
       recording={privateLocalDataVisible && recording}
       recordingStatus={mapRecordingStatus}
       recordingActionBusy={recordingActionBusy}
+      recoveryChecking={recoveryChecking}
       startRecording={startRecording}
       pauseRecording={pauseRecording}
       resumeRecording={resumeRecording}
@@ -1592,6 +1617,7 @@ export default function App() {
       addMarker={addMarker}
       path={mapPath}
       currentPosition={currentPosition}
+      positionApproximate={positionApproximate}
       markers={mapMarkers}
       cameraCommand={cameraCommand}
       runCameraCommand={runCameraCommand}
@@ -1630,7 +1656,7 @@ export default function App() {
       onShowIndexAccessNotice={() => setIndexAccessNoticeOpen(true)}
     />
   ), [
-    recording, recordingActionBusy, mapRecordingStatus, mapPath, currentPosition, mapMarkers, cameraCommand, initialCenter, showAll, visibleMarkers,
+    recording, recordingActionBusy, recoveryChecking, mapRecordingStatus, mapPath, currentPosition, positionApproximate, mapMarkers, cameraCommand, initialCenter, showAll, visibleMarkers,
     addedRoutes, combinedRoutesOnMap, highlightedRoute, tileSets, allTileSets, tilesLoading, tilesError, tileRetryExhausted,
     activeLayer, tileDate, tileVersion, tileOpacity,
     runCameraCommand, addMarker, removeRouteFromMap, pauseRecording, resumeRecording, stopRecording,
@@ -1858,6 +1884,7 @@ const MemoMapCanvas = React.memo(function MemoMapCanvas(props: any) {
     tileOpacity,
     tilesLoading,
     currentPosGeoJSON,
+    positionApproximate,
     recording,
     currentPathGeoJSON,
     mushroomMarkersGeoJSON,
@@ -2036,9 +2063,9 @@ const MemoMapCanvas = React.memo(function MemoMapCanvas(props: any) {
             id="current-pos-layer"
             style={{
               circleRadius: 8,
-              circleColor: '#1988ff',
+              circleColor: positionApproximate ? '#e5a92f' : '#1988ff',
               circleStrokeWidth: 2,
-              circleStrokeColor: '#0066d3',
+              circleStrokeColor: positionApproximate ? '#6b4d08' : '#0066d3',
             }}
           />
         </ShapeSource>
@@ -2388,9 +2415,9 @@ const QuickIndexPanel = React.memo(function QuickIndexPanel(props: any) {
 
 function MainUI(props: any) {
   const {
-    recording, recordingStatus, recordingActionBusy,
+    recording, recordingStatus, recordingActionBusy, recoveryChecking,
     startRecording, pauseRecording, resumeRecording, stopRecording, addMarker,
-    path, currentPosition, markers, cameraCommand, runCameraCommand, followLocationRef, initialCenter,
+    path, currentPosition, positionApproximate, markers, cameraCommand, runCameraCommand, followLocationRef, initialCenter,
     showAll, visibleMarkers, handleDeleteMarker, setShowAll,
     addedRoutes, setAddedRoutes, setRoutesOnMap, routesOnMap, removeRouteFromMap,
     highlightRoute, highlightedRoute, activeLayer, setActiveLayer,
@@ -2619,6 +2646,7 @@ function MainUI(props: any) {
         tileOpacity={tileOpacity}
         tilesLoading={tilesLoading}
         currentPosGeoJSON={currentPosGeoJSON}
+        positionApproximate={positionApproximate}
         recording={recording}
         currentPathGeoJSON={currentPathGeoJSON}
         mushroomMarkersGeoJSON={mushroomMarkersGeoJSON}
@@ -2660,6 +2688,16 @@ function MainUI(props: any) {
               <Text style={mStyles.tileRetryText}>Riprova</Text>
             </TouchableOpacity>
           )}
+        </View>
+      )}
+      {positionApproximate && currentPosition && !tilesLoading && !(tilesError && activeLayer !== 'off') && (
+        <View
+          style={mStyles.approximatePositionPill}
+          pointerEvents="none"
+          accessible
+          accessibilityLabel="Posizione approssimativa, in attesa del GPS preciso"
+        >
+          <Text style={mStyles.approximatePositionText}>Posizione approssimativa</Text>
         </View>
       )}
 
@@ -2836,22 +2874,22 @@ function MainUI(props: any) {
             </View>
             <View style={mStyles.speciesRow}>
               <TouchableOpacity
-                style={[mStyles.speciesBtn, mStyles.speciesBtnPorcino, (recordingPaused || path.length < 1) && mStyles.speciesBtnDisabled]}
+                style={[mStyles.speciesBtn, mStyles.speciesBtnPorcino, (recordingPaused || path.length < 1 || recordingActionBusy) && mStyles.speciesBtnDisabled]}
                 onPress={() => addMarker('Porcino')}
-                disabled={recordingPaused || path.length < 1}
+                disabled={recordingPaused || path.length < 1 || recordingActionBusy}
                 activeOpacity={0.75}
                 accessibilityLabel={`Aggiungi porcino. Trovati finora: ${porciniCount}`}
               >
-                <Text style={[mStyles.speciesBtnText, { color: UI.porcinoHi }]}>+ Porcino</Text>
+                <Text style={[mStyles.speciesBtnText, { color: UI.porcinoHi }]}>+ Aggiungi porcino</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[mStyles.speciesBtn, mStyles.speciesBtnFinferlo, (recordingPaused || path.length < 1) && mStyles.speciesBtnDisabled]}
+                style={[mStyles.speciesBtn, mStyles.speciesBtnFinferlo, (recordingPaused || path.length < 1 || recordingActionBusy) && mStyles.speciesBtnDisabled]}
                 onPress={() => addMarker('Finferlo')}
-                disabled={recordingPaused || path.length < 1}
+                disabled={recordingPaused || path.length < 1 || recordingActionBusy}
                 activeOpacity={0.75}
                 accessibilityLabel={`Aggiungi finferlo. Trovati finora: ${finferliCount}`}
               >
-                <Text style={[mStyles.speciesBtnText, { color: UI.finferloHi }]}>+ Finferlo</Text>
+                <Text style={[mStyles.speciesBtnText, { color: UI.finferloHi }]}>+ Aggiungi finferlo</Text>
               </TouchableOpacity>
             </View>
             <View style={mStyles.recordingActionsRow}>
@@ -2871,12 +2909,13 @@ function MainUI(props: any) {
                 {recordingPaused ? <Play size={17} color="#fff" /> : <Pause size={17} color="#fff" />}
                 <Text style={mStyles.mainBtnTextCompact}>{recordingPaused ? 'Riprendi' : 'Pausa'}</Text>
               </TouchableOpacity>
+              <View style={mStyles.recordingFinishSeparator} />
               <TouchableOpacity
-                style={[mStyles.mainBtn, mStyles.recordingActionButton, mStyles.mainBtnStop, recordingActionBusy && mStyles.mainBtnDisabled]}
+                style={[mStyles.mainBtn, mStyles.recordingFinishButton, mStyles.mainBtnStop, recordingActionBusy && mStyles.mainBtnDisabled]}
                 onPress={() => {
-                  Alert.alert('Termina registrazione', 'Vuoi terminare e salvare questo percorso?', [
-                    { text: 'Annulla', style: 'cancel' },
-                    { text: 'Termina', onPress: stopRecording },
+                  Alert.alert('Terminare la registrazione?', 'Il percorso verrà fermato. Potrai poi salvarlo oppure eliminarlo.', [
+                    { text: 'Continua a registrare', style: 'cancel' },
+                    { text: 'Termina', style: 'destructive', onPress: stopRecording },
                   ]);
                 }}
                 disabled={recordingActionBusy}
@@ -2891,15 +2930,15 @@ function MainUI(props: any) {
           </View>
         ) : (
           <TouchableOpacity
-            style={[mStyles.mainBtn, mStyles.mainBtnStart, recordingActionBusy && mStyles.mainBtnDisabled]}
+            style={[mStyles.mainBtn, mStyles.mainBtnStart, (recordingActionBusy || recoveryChecking) && mStyles.mainBtnDisabled]}
             onPress={startRecording}
-            disabled={recordingActionBusy}
+            disabled={recordingActionBusy || recoveryChecking}
             accessibilityRole="button"
             accessibilityLabel="Avvia registrazione"
             activeOpacity={0.85}
           >
-            <Play size={18} color="#fff" fill="#fff" />
-            <Text style={mStyles.mainBtnText}>Avvia registrazione</Text>
+            {!recoveryChecking && <Play size={18} color="#fff" fill="#fff" />}
+            <Text style={mStyles.mainBtnText}>{recoveryChecking ? 'Preparo il GPS…' : 'Avvia registrazione'}</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -3130,6 +3169,8 @@ const mStyles = StyleSheet.create({
   recDotPaused: { backgroundColor: UI.amberBri },
   tileStatusPill: { position: 'absolute', top: 86, alignSelf: 'center', backgroundColor: 'rgba(10,17,11,0.88)', borderWidth: 1, borderColor: UI.border, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 6 },
   tileStatusPillError: { position: 'absolute', top: 86, alignSelf: 'center', backgroundColor: 'rgba(140,48,48,0.92)', borderWidth: 1, borderColor: UI.redBri, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 6 },
+  approximatePositionPill: { position: 'absolute', top: 86, alignSelf: 'center', backgroundColor: 'rgba(48,36,8,0.92)', borderWidth: 1, borderColor: UI.amberBri, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 6 },
+  approximatePositionText: { color: '#f6d985', fontSize: 11, fontWeight: '700' },
   tileStatusText: { color: UI.textPri, fontSize: 11, fontWeight: '700' },
   tileRetryText: { color: '#ffffff', fontSize: 11, fontWeight: '800', textDecorationLine: 'underline', marginTop: 3, textAlign: 'center' },
   indexPanel: { position: 'absolute', backgroundColor: 'rgba(10,17,11,0.94)', borderWidth: 1, borderColor: UI.borderHi, borderRadius: 10, padding: 10, gap: 9 },
@@ -3224,11 +3265,11 @@ const mStyles = StyleSheet.create({
   recordingStatusCompact: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   gpsCount: { color: UI.textSec, fontSize: 12, fontWeight: '800', fontVariant: ['tabular-nums'] },
   speciesRow: { flexDirection: 'row', gap: 8 },
-  speciesBtn: { flex: 1, minHeight: 42, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 14, borderRadius: 9, borderWidth: 1.5, backgroundColor: 'rgba(10,17,11,0.96)' },
+  speciesBtn: { flex: 1, minHeight: 46, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8, borderRadius: 9, borderWidth: 1.5, backgroundColor: 'rgba(10,17,11,0.96)' },
   speciesBtnFinferlo: { borderColor: UI.finferlo },
   speciesBtnPorcino: { borderColor: UI.porcino },
   speciesBtnDisabled: { opacity: 0.35 },
-  speciesBtnText: { fontSize: 14, fontWeight: '700' },
+  speciesBtnText: { fontSize: 13, fontWeight: '800' },
   mainBtn: { minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9, paddingVertical: 12, borderRadius: 9, borderWidth: 1.5 },
   mainBtnStart: { backgroundColor: UI.greenDim, borderColor: UI.greenBri },
   mainBtnPause: { backgroundColor: '#302408', borderColor: UI.amberBri },
@@ -3237,6 +3278,8 @@ const mStyles = StyleSheet.create({
   mainBtnDisabled: { opacity: 0.55 },
   recordingActionsRow: { flexDirection: 'row', gap: 8 },
   recordingActionButton: { flex: 1 },
+  recordingFinishSeparator: { width: 1, marginVertical: 7, backgroundColor: UI.borderHi },
+  recordingFinishButton: { width: 108 },
   mainBtnIcon: { fontSize: 16, color: '#fff' },
   mainBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
   mainBtnTextCompact: { color: '#fff', fontSize: 15, fontWeight: '700' },

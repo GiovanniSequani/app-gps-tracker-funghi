@@ -2136,23 +2136,6 @@ const MemoMapCanvas = React.memo(function MemoMapCanvas(props: any) {
           </React.Fragment>
         );
       })}
-      {visibleMushroomFeatures.length > 0 && (
-        <>
-          {visibleMushroomFeatures.map((feature, index: number) => {
-            const { species, count } = feature.properties;
-            return (
-              <PointAnnotation
-                key={`mushroom-${feature.id ?? index}-${species}-${count}`}
-                id={`mushroom-${index}-${species}-${count}`}
-                coordinate={[feature.geometry.coordinates[0], feature.geometry.coordinates[1]]}
-                anchor={{ x: 0.5, y: 0.5 }}
-              >
-                <MushroomMarkerBadge {...feature.properties} />
-              </PointAnnotation>
-            );
-          })}
-        </>
-      )}
       {selectedEditPoint && (
         <PointAnnotation
           id="cloud-edit-selected-point"
@@ -2204,6 +2187,25 @@ const MemoMapCanvas = React.memo(function MemoMapCanvas(props: any) {
             }}
           />
         </ShapeSource>
+      )}
+      {/* Keep mushroom annotations after every route/selection layer so that
+          the findings remain visually above the saved-track geometry. */}
+      {visibleMushroomFeatures.length > 0 && (
+        <>
+          {visibleMushroomFeatures.map((feature, index: number) => {
+            const { species, count } = feature.properties;
+            return (
+              <PointAnnotation
+                key={`mushroom-${feature.id ?? index}-${species}-${count}`}
+                id={`mushroom-${index}-${species}-${count}`}
+                coordinate={[feature.geometry.coordinates[0], feature.geometry.coordinates[1]]}
+                anchor={{ x: 0.5, y: 0.5 }}
+              >
+                <MushroomMarkerBadge {...feature.properties} />
+              </PointAnnotation>
+            );
+          })}
+        </>
       )}
       </MapView>
     </View>

@@ -28,23 +28,20 @@ import {
   CloudDownload,
   FileUp,
   LogIn,
-  LogOut,
   MapPinOff,
   MapPinned,
   MoreHorizontal,
   Pencil,
   RefreshCw,
   Scissors,
-  ShieldCheck,
   Trash2,
   UploadCloud,
   UserPlus,
-  UserRound,
 } from 'lucide-react-native';
 import { deleteRoute, getAllRoutes, getRouteById, insertRoute } from '../../db';
 import { AccountAuthForm, type AuthView } from './AccountAuthForm';
 import { AccountLifecyclePanel } from './AccountLifecyclePanel';
-import { AccountRightsPanel } from './AccountRightsPanel';
+import { AccountProfileHeader, AccountSettings } from './AccountSettings';
 import {
   deleteTrack,
   downloadTrack,
@@ -701,13 +698,15 @@ export default function AccountArchiveScreen(props: {
         </Animated.View>
       )}
       <ScrollView contentContainerStyle={[styles.content, { paddingTop: safeAreaInsets.top }]} keyboardShouldPersistTaps="handled" refreshControl={<RefreshControl refreshing={loading} onRefresh={() => void refresh()} enabled={Boolean(sessionState.session && props.lifecycle.fullAccess)} tintColor={COLORS.green} />}>
-        <View style={styles.header}>
-          <View><Text style={styles.title}>Archivio</Text><Text style={styles.headerSub}>Percorsi salvati</Text></View>
-          {sessionState.session && props.lifecycle.fullAccess && <View style={styles.headerActions}>
-            <TouchableOpacity style={styles.iconButton} onPress={() => void refresh()} accessibilityLabel="Aggiorna archivio"><RefreshCw size={20} color={COLORS.text} /></TouchableOpacity>
-            <TouchableOpacity style={styles.iconButton} onPress={() => setAccountVisible(true)} accessibilityLabel="Apri account e privacy"><UserRound size={21} color={COLORS.text} /></TouchableOpacity>
-          </View>}
-        </View>
+        {sessionState.session && <AccountProfileHeader
+          username={visibleArchive?.profile.username ?? sessionState.username ?? 'Utente'}
+          email={sessionState.session.user.email ?? null}
+          onOpenSettings={() => setAccountVisible(true)}
+        />}
+        {(!sessionState.session || props.lifecycle.fullAccess) && <View style={styles.header}>
+          <View style={styles.headerCopy}><Text style={styles.title}>Archivio</Text><Text style={styles.headerSub}>Percorsi salvati</Text></View>
+          {sessionState.session && props.lifecycle.fullAccess && <TouchableOpacity style={styles.iconButton} onPress={() => void refresh()} accessibilityRole="button" accessibilityLabel="Aggiorna archivio"><RefreshCw size={20} color={COLORS.text} /></TouchableOpacity>}
+        </View>}
         {sessionState.loading && <View style={styles.stateRow}><ActivityIndicator color={COLORS.green} /><Text style={styles.muted}>Ripristino sessione…</Text></View>}
         {sessionState.error && <Text style={styles.errorText}>{sessionState.error}</Text>}
         {canUseOfflineLocalArchive && <View style={styles.offlineBox} accessibilityLiveRegion="polite">
@@ -767,10 +766,6 @@ export default function AccountArchiveScreen(props: {
         )}
 
         {sessionState.session && !props.lifecycle.fullAccess && <>
-          <View style={styles.profileRow}>
-            <View style={styles.avatar}><UserRound size={25} color={COLORS.green} /></View>
-            <View style={styles.profileCopy}><Text style={styles.sectionTitle}>{sessionState.username ?? 'Utente'}</Text><Text style={styles.muted}>Stato account verificato dal server</Text></View>
-          </View>
           {props.lifecycle.loading && !props.lifecycle.config
             ? <View style={styles.stateRow}><ActivityIndicator color={COLORS.green} /><Text style={styles.muted}>Verifica accesso…</Text></View>
             : <AccountLifecyclePanel
@@ -796,12 +791,13 @@ export default function AccountArchiveScreen(props: {
               })}
               onRefresh={() => runLifecycle(async () => { await props.lifecycle.refresh('account_action'); })}
               onSignOut={() => runLifecycle(signOut)}
+              showRights={false}
             />}
         </>}
 
         {sessionState.session && props.lifecycle.fullAccess && <>
           <View style={styles.sectionHeaderRow}>
-            <Text style={styles.sectionTitle}>Percorsi</Text>
+            <Text style={styles.sectionTitle}>I tuoi percorsi</Text>
             <TouchableOpacity style={styles.importButton} onPress={() => void handleImport()} disabled={actions.import === 'import'} accessibilityLabel="Importa un file GPX dal dispositivo">
               {actions.import === 'import' ? <ActivityIndicator size="small" color={COLORS.bg} /> : <FileUp size={17} color={COLORS.bg} />}
               <Text style={styles.uploadButtonText}>Importa GPX</Text>
@@ -887,24 +883,32 @@ export default function AccountArchiveScreen(props: {
         onCancel={closeNameAction}
         onConfirm={() => void confirmNameAction()}
       />
-      {archiveDataVisible && accountVisible && sessionState.session && props.lifecycle.fullAccess && <Modal visible animationType="slide" onRequestClose={() => setAccountVisible(false)}>
+      {archiveDataVisible && accountVisible && sessionState.session && <Modal visible animationType="slide" onRequestClose={() => setAccountVisible(false)}>
         <View style={styles.accountScreen}>
           <View style={[styles.accountHeader, { paddingTop: safeAreaInsets.top + 8 }]}>
-            <TouchableOpacity style={styles.iconButton} onPress={() => setAccountVisible(false)} accessibilityLabel="Torna all'archivio"><ArrowLeft size={22} color={COLORS.text} /></TouchableOpacity>
-            <Text style={styles.accountTitle}>Account e privacy</Text>
+            <TouchableOpacity style={styles.iconButton} onPress={() => setAccountVisible(false)} accessibilityRole="button" accessibilityLabel={props.lifecycle.fullAccess ? "Torna all'archivio" : "Torna all'account"}><ArrowLeft size={22} color={COLORS.text} /></TouchableOpacity>
+            <Text style={styles.accountTitle}>Impostazioni</Text>
           </View>
           <ScrollView contentContainerStyle={[styles.accountContent, { paddingBottom: safeAreaInsets.bottom + 28 }]} showsVerticalScrollIndicator={false}>
-            <View style={styles.profileRow}>
-              <View style={styles.avatar}><UserRound size={25} color={COLORS.green} /></View>
-              <View style={styles.profileCopy}><Text style={styles.sectionTitle}>{visibleArchive?.profile.username ?? sessionState.username ?? 'Utente'}</Text><Text style={styles.muted}>{sessionState.session?.user.email}</Text></View>
-              <TouchableOpacity style={styles.secondaryButton} onPress={() => void runAuth(async () => { await signOut(); setAccountVisible(false); })} disabled={authBusy}><LogOut size={17} color={COLORS.text} /><Text style={styles.secondaryButtonText}>Esci</Text></TouchableOpacity>
-            </View>
-            {visibleArchive && <View style={styles.usageRow}>
-              <View><Text style={styles.metric}>{visibleArchive.tracks.length}/{visibleArchive.config.max_tracks_per_user}</Text><Text style={styles.muted}>percorsi salvati</Text></View>
-              <View><Text style={styles.metric}>{formatBytes(visibleArchive.config.max_compressed_bytes)}</Text><Text style={styles.muted}>massimo per file</Text></View>
-              <ShieldCheck size={23} color={COLORS.green} />
-            </View>}
-            <AccountRightsPanel accountState={props.lifecycle.access?.account_state ?? 'active'} />
+            <AccountSettings
+              username={visibleArchive?.profile.username ?? sessionState.username ?? 'Utente'}
+              email={sessionState.session.user.email ?? null}
+              accountState={props.lifecycle.cachedFullAccessExpired ? null : props.lifecycle.access?.account_state ?? null}
+              fullAccess={props.lifecycle.fullAccess}
+              trackCount={visibleArchive?.tracks.length ?? null}
+              maxTracks={visibleArchive?.config.max_tracks_per_user ?? null}
+              maxFileSize={visibleArchive ? formatBytes(visibleArchive.config.max_compressed_bytes) : null}
+              busy={authBusy}
+              error={authError}
+              notice={authNotice}
+              onChangePassword={() => void runAuth(async () => {
+                const email = sessionState.session?.user.email;
+                if (!email) return;
+                await requestPasswordRecovery(email);
+                setAuthNotice('Controlla la tua email per scegliere una nuova password.');
+              })}
+              onSignOut={() => void runAuth(async () => { await signOut(); setAccountVisible(false); })}
+            />
           </ScrollView>
         </View>
       </Modal>}
@@ -916,10 +920,10 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: COLORS.bg },
   content: { padding: 18, paddingBottom: 36, gap: 14 },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingTop: 10, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: COLORS.border },
+  headerCopy: { flex: 1, minWidth: 0 },
   eyebrow: { color: COLORS.green, fontSize: 10, fontWeight: '800', letterSpacing: 2 },
   title: { color: COLORS.text, fontSize: 26, fontWeight: '700' },
   headerSub: { color: COLORS.muted, fontSize: 14, lineHeight: 20, marginTop: 5 },
-  headerActions: { flexDirection: 'row', gap: 8 },
   sectionTitle: { color: COLORS.text, fontSize: 17, fontWeight: '800' },
   body: { color: COLORS.muted, fontSize: 14, lineHeight: 21, textAlign: 'center' },
   muted: { color: COLORS.muted, fontSize: 14, lineHeight: 20 },
@@ -929,11 +933,7 @@ const styles = StyleSheet.create({
   primaryButtonText: { color: COLORS.bg, fontWeight: '800', fontSize: 14 },
   secondaryButton: { minHeight: 44, borderRadius: 9, borderWidth: 1, borderColor: COLORS.border, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
   secondaryButtonText: { color: COLORS.text, fontWeight: '700', fontSize: 13 },
-  profileRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: COLORS.border },
-  avatar: { width: 44, height: 44, borderRadius: 22, backgroundColor: COLORS.panel2, alignItems: 'center', justifyContent: 'center' },
   profileCopy: { flex: 1 },
-  usageRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: COLORS.panel, borderRadius: 10, padding: 14 },
-  metric: { color: COLORS.text, fontSize: 17, fontWeight: '800' },
   sectionHeaderRow: { paddingTop: 4, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
   stateRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 18 },
   trackRow: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: COLORS.panel, borderRadius: 9, padding: 12 },

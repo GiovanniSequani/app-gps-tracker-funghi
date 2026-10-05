@@ -30,6 +30,7 @@ export function AccountLifecyclePanel(props: {
   onRefuse: () => Promise<void>;
   onRefresh: () => Promise<void>;
   onSignOut: () => Promise<void>;
+  showRights?: boolean;
 }) {
   const [termsAccepted, setTermsAccepted] = React.useState(false);
   const [privacyAcknowledged, setPrivacyAcknowledged] = React.useState(false);
@@ -38,6 +39,7 @@ export function AccountLifecyclePanel(props: {
   const copy = lifecycleStateCopy(props.access);
   const documentsMatch = bundledDocumentsMatch(props.config);
   const canReactivate = canChangeLegalAcceptance(props.access);
+  const isDeletionPending = props.access?.account_state === 'deletion_pending';
   const shouldRecordNotice = Boolean(props.access?.needs_terms_action && canReactivate && documentsMatch);
 
   React.useEffect(() => {
@@ -58,8 +60,8 @@ export function AccountLifecyclePanel(props: {
     setLocalError(null);
     try { await action(); } catch (cause) { setLocalError(cause instanceof Error ? cause.message : 'Operazione non riuscita. Riprova.'); }
   };
-  const deadline = formatDate(props.access?.legal_reaccept_deadline_at);
-  const inactivityDeleteAfter = formatDate(props.access?.inactivity_delete_after);
+  const deadline = isDeletionPending ? null : formatDate(props.access?.legal_reaccept_deadline_at);
+  const inactivityDeleteAfter = isDeletionPending ? null : formatDate(props.access?.inactivity_delete_after);
   const icon = props.access?.account_state === 'deletion_pending'
     ? <Trash2 size={24} color={COLORS.red} />
     : copy.tone === 'danger' ? <LockKeyhole size={24} color={COLORS.red} /> : <AlertTriangle size={24} color={COLORS.amber} />;
@@ -71,10 +73,10 @@ export function AccountLifecyclePanel(props: {
     {inactivityDeleteAfter && <View style={styles.deadline}><Clock3 size={15} color={COLORS.amber} /><Text style={styles.deadlineText}>Eliminazione prevista non prima del {inactivityDeleteAfter}, salvo nuova attività valida.</Text></View>}
     {(props.error || localError) && <Text style={styles.error} accessibilityRole="alert">{localError ?? props.error}</Text>}
 
-    {!documentsMatch && <View style={styles.versionError} accessibilityRole="alert"><Text style={styles.versionTitle}>Documenti correnti non disponibili in questa versione dell’app</Text><Text style={styles.description}>Il server richiede Termini {props.config?.current_terms_version ?? '—'} e Privacy {props.config?.current_privacy_version ?? '—'}. Per sicurezza non è possibile accettare documenti diversi.</Text></View>}
-    {documentsMatch && <View style={styles.documents}>
-      <TouchableOpacity style={styles.documentButton} onPress={() => void Linking.openURL('https://web-funghi-index.pages.dev/termini/')} accessibilityRole="link" accessibilityLabel="Leggi i Termini di utilizzo correnti"><FileText size={18} color={COLORS.green} /><Text style={styles.documentText}>Termini · versione 1.0</Text></TouchableOpacity>
-      <TouchableOpacity style={styles.documentButton} onPress={() => void Linking.openURL('https://web-funghi-index.pages.dev/privacy/')} accessibilityRole="link" accessibilityLabel="Leggi l'Informativa privacy corrente"><FileText size={18} color={COLORS.green} /><Text style={styles.documentText}>Privacy · versione 1.0</Text></TouchableOpacity>
+    {!documentsMatch && !isDeletionPending && <View style={styles.versionError} accessibilityRole="alert"><Text style={styles.versionTitle}>Documenti correnti non disponibili in questa versione dell’app</Text><Text style={styles.description}>Il server richiede Termini {props.config?.current_terms_version ?? '—'} e Privacy {props.config?.current_privacy_version ?? '—'}. Per sicurezza non è possibile accettare documenti diversi.</Text></View>}
+    {(documentsMatch || isDeletionPending) && <View style={styles.documents}>
+      <TouchableOpacity style={styles.documentButton} onPress={() => void Linking.openURL('https://web-funghi-index.pages.dev/termini/')} accessibilityRole="link" accessibilityLabel="Leggi i Termini di utilizzo correnti"><FileText size={18} color={COLORS.green} /><Text style={styles.documentText}>{isDeletionPending ? 'Termini' : 'Termini · versione 1.0'}</Text></TouchableOpacity>
+      <TouchableOpacity style={styles.documentButton} onPress={() => void Linking.openURL('https://web-funghi-index.pages.dev/privacy/')} accessibilityRole="link" accessibilityLabel="Leggi l'Informativa privacy corrente"><FileText size={18} color={COLORS.green} /><Text style={styles.documentText}>{isDeletionPending ? 'Privacy' : 'Privacy · versione 1.0'}</Text></TouchableOpacity>
     </View>}
 
     {documentsMatch && canReactivate && props.access?.needs_terms_action && <View style={styles.actions}>
@@ -83,8 +85,8 @@ export function AccountLifecyclePanel(props: {
       <TouchableOpacity style={[styles.primary, (props.busy || !termsAccepted || !privacyAcknowledged) && styles.disabled]} disabled={props.busy || !termsAccepted || !privacyAcknowledged} onPress={() => void run(props.onAccept)}><Text style={styles.primaryText}>{props.busy ? 'Salvataggio…' : 'Accetta e riattiva'}</Text></TouchableOpacity>
       <TouchableOpacity style={styles.refuse} disabled={props.busy} onPress={() => Alert.alert('Rifiuta i Termini', 'L’account resterà con accesso limitato.', [{ text: 'Annulla', style: 'cancel' }, { text: 'Rifiuta', style: 'destructive', onPress: () => void run(props.onRefuse) }])}><Text style={styles.refuseText}>Rifiuta e mantieni l’accesso limitato</Text></TouchableOpacity>
     </View>}
-    {!canReactivate && <TouchableOpacity onPress={() => void Linking.openURL('mailto:funghitracker@gmail.com')} accessibilityRole="link"><Text style={styles.support}>Assistenza: funghitracker@gmail.com</Text></TouchableOpacity>}
-    {props.access && <AccountRightsPanel accountState={props.access.account_state} />}
+    {!canReactivate && !isDeletionPending && <TouchableOpacity onPress={() => void Linking.openURL('mailto:funghitracker@gmail.com')} accessibilityRole="link"><Text style={styles.support}>Assistenza: funghitracker@gmail.com</Text></TouchableOpacity>}
+    {props.access && props.showRights !== false && <AccountRightsPanel accountState={props.access.account_state} />}
     <View style={styles.footer}><TouchableOpacity style={styles.secondary} disabled={props.loading || props.busy} onPress={() => void run(props.onRefresh)}><RefreshCw size={16} color={COLORS.text} /><Text style={styles.secondaryText}>Aggiorna stato</Text></TouchableOpacity><TouchableOpacity style={styles.secondary} disabled={props.busy} onPress={() => void run(props.onSignOut)}><Text style={styles.secondaryText}>Esci</Text></TouchableOpacity></View>
   </View>;
 }

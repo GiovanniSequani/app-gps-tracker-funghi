@@ -53,8 +53,9 @@ Le RPC usate sono:
 
 ## Diritti, export e cancellazione
 
-L’area account mostra i diritti per account `active` e `restricted`:
+`MOB-004/MOB-005`: nell'Archivio l'identità è visibile in alto. Impostazioni raccoglie utilizzo, cambio password per account attivi, export, cancellazione, documenti ed Esci. Gli account `restricted` non vedono archivio privato né cambio password, ma conservano riaccettazione, export, cancellazione, documenti e logout. `deletion_pending` mostra solo lo stato reale, documenti e logout.
 
+L’area account mostra i diritti per account `active` e `restricted`:
 - `request_my_data_export` crea o restituisce il job corrente;
 - il client legge solo il job più recente consentito da RLS e fa polling ogni 15 secondi soltanto per `pending`, `building` e `retry` mentre l’app è in foreground;
 - un job `ready` viene scaricato con il JWT dal bucket privato `user-data-exports`, salvato temporaneamente nella cache dell’app e consegnato al foglio di condivisione del sistema; non vengono creati URL pubblici o persistenti;

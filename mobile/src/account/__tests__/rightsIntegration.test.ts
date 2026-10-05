@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 describe('integrazione diritti account mobile', () => {
   const app = fs.readFileSync(path.resolve(__dirname, '../../../App.tsx'), 'utf8');
   const archive = fs.readFileSync(path.resolve(__dirname, '../AccountArchiveScreen.tsx'), 'utf8');
+  const settings = fs.readFileSync(path.resolve(__dirname, '../AccountSettings.tsx'), 'utf8');
   const lifecyclePanel = fs.readFileSync(path.resolve(__dirname, '../AccountLifecyclePanel.tsx'), 'utf8');
   const rightsPanel = fs.readFileSync(path.resolve(__dirname, '../AccountRightsPanel.tsx'), 'utf8');
   const rightsHook = fs.readFileSync(path.resolve(__dirname, '../useAccountRights.ts'), 'utf8');
@@ -25,7 +26,8 @@ describe('integrazione diritti account mobile', () => {
     expect(app).toContain('setCloudRoutesOnMap([]);');
     expect(app).toContain('setCloudEditRequest(null);');
     expect(app).not.toContain('accountLifecycle.fullAccess) { runCameraCommand');
-    expect(archive).toContain('<AccountRightsPanel');
+    expect(archive).toContain('<AccountSettings');
+    expect(settings).toContain('<AccountRightsPanel');
     expect(lifecyclePanel).toContain('<AccountRightsPanel');
   });
 

@@ -76,7 +76,8 @@ export function AccountAuthForm(props: {
         <>
           <Text style={styles.contributionNote}>L’account include l’archivio cloud. I percorsi e i ritrovamenti salvati contribuiscono a validare e migliorare l’indice, secondo i Termini e l’Informativa privacy.</Text>
           <Text style={styles.label}>Username</Text>
-          <TextInput value={username} onChangeText={(value) => setUsername(value.toLowerCase())} style={styles.input} autoCapitalize="none" autoCorrect={false} maxLength={24} textContentType="username" accessibilityLabel="Username" />
+          {/* Preserve the IME's composing text; normalize only when submitting. */}
+          <TextInput value={username} onChangeText={setUsername} style={styles.input} autoCapitalize="none" autoCorrect={false} maxLength={24} textContentType="username" accessibilityLabel="Username" />
           <Text style={styles.hint}>3-24 caratteri: lettere minuscole, numeri e underscore.</Text>
         </>
       )}

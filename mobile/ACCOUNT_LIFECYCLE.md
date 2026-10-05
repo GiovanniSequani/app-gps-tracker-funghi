@@ -17,6 +17,19 @@
 
 Questa implementazione copre lato app `MOB-001`, `MOB-003`, `MOB-004` e `MOB-005`. Non applica migration e non modifica gli switch server.
 
+### MOB-003: input Auth e composizione Android (2026-10-05)
+
+Il campo username conserva il testo IME senza convertirlo durante la digitazione:
+la normalizzazione lowercase e la validazione avvengono all'invio. Riscrivere il
+testo composto attraverso `value` può interferire con le tastiere Android e
+duplicare prefissi. Email, password, autofill e accessibilità mantengono il
+comportamento esistente. I test esercitano i callback del form con valori
+progressivi, maiuscole, sostituzioni, cancellazione e invio; non simulano l'IME
+nativo. Verifica ancora necessaria sul Galaxy S24+ SM-S926B/DS, Android 16,
+One UI 8.5: digitare `francesco` e `Francesco` nello username, sostituire una
+selezione, cancellare e provare autofill; controllare anche email/password con
+dati fittizi. La tastiera e la sua versione non sono ancora confermate.
+
 ## Fonte dello stato
 
 L’app legge `get_account_lifecycle_public_config` e, quando il rollout è attivo, `get_my_account_access`. L’accesso alle funzioni riservate è consentito soltanto quando la risposta server validata contiene `full_access=true`.

@@ -1,7 +1,7 @@
 import React from 'react';
 import {
   StyleSheet, Text, View, Button, useColorScheme, Alert, TextInput, Modal, Linking,
-  TouchableOpacity, Animated, StatusBar, Platform, ScrollView, RefreshControl, PanResponder, useWindowDimensions,
+  TouchableOpacity, StatusBar, Platform, ScrollView, RefreshControl, PanResponder, useWindowDimensions,
   AppState, BackHandler,
 } from 'react-native';
 import MapLibreGL, {
@@ -13,13 +13,13 @@ import MapLibreGL, {
   PointAnnotation,
 } from '@maplibre/maplibre-react-native';
 import type { CameraStop, MapViewRef } from '@maplibre/maplibre-react-native';
-import { Activity, Archive, CalendarDays, Map, Sprout, PanelRightOpen, Pencil, Trash2, Pause, Play, Square } from 'lucide-react-native';
+import { Activity, Archive, CalendarDays, Map, Sprout, PanelRightOpen, Pencil, Trash2, Play } from 'lucide-react-native';
 import * as Location from 'expo-location';
 import * as Clipboard from 'expo-clipboard';
 import * as TaskManager from 'expo-task-manager';
 import * as FileSystemLegacy from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
-import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { initDB, insertRoute, getAllRoutes, getRouteById, deleteRoute } from './db';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNavigationContainerRef, NavigationContainer } from '@react-navigation/native';
@@ -78,6 +78,7 @@ import {
 import { RecordingRecoveryModal } from './src/recording/RecordingRecoveryModal';
 import { BackgroundLocationDisclosureModal } from './src/recording/BackgroundLocationDisclosureModal';
 import { nextMushroomMarkerName } from './src/recording/mushroomNaming';
+import { RecordingFieldControls, RecordingSessionControls } from './src/recording/RecordingControls';
 import {
   isApproximatePosition,
   isUsableProvisionalPosition,
@@ -2222,7 +2223,7 @@ const QuickIndexPanel = React.memo(function QuickIndexPanel(props: any) {
     tileDate, setTileDate,
     tileVersion, setTileVersion,
     tileSets, allTileSets, tileOpacity, setTileOpacity,
-    tilesLoading, onShowIndexAccessNotice,
+    tilesLoading, onShowIndexAccessNotice, minTop = 56,
   } = props;
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
   const [indexPanelCollapsed, setIndexPanelCollapsed] = React.useState(false);
@@ -2232,7 +2233,7 @@ const QuickIndexPanel = React.memo(function QuickIndexPanel(props: any) {
   const panelHeight = indexPanelCollapsed ? 50 : 228;
   const [panelPos, setPanelPos] = React.useState(() => ({
     x: Math.max(8, screenWidth - panelWidth - 8),
-    y: 96,
+    y: Math.max(96, minTop),
   }));
   const panelPosRef = React.useRef(panelPos);
   const panelStartPosRef = React.useRef(panelPos);
@@ -2250,10 +2251,10 @@ const QuickIndexPanel = React.memo(function QuickIndexPanel(props: any) {
   const panelBounds = React.useMemo(() => {
     const minX = 8;
     const maxX = Math.max(minX, screenWidth - panelWidth - 8);
-    const minY = 56;
+    const minY = minTop;
     const maxY = Math.max(minY, screenHeight - panelHeight - 78);
     return { minX, maxX, minY, maxY };
-  }, [screenWidth, screenHeight, panelWidth, panelHeight]);
+  }, [screenWidth, screenHeight, panelWidth, panelHeight, minTop]);
   const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
   React.useEffect(() => {
@@ -2430,6 +2431,14 @@ function MainUI(props: any) {
   } = props;
   const recordingPaused = recordingStatus === 'paused';
   const { height: screenHeight } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const [recordingHeaderHeight, setRecordingHeaderHeight] = React.useState(100);
+  const [bottomControlsHeight, setBottomControlsHeight] = React.useState(84);
+  const recordingHeaderTop = insets.top + 8;
+  const mapOverlayTop = recording
+    ? Math.max(110, recordingHeaderTop + recordingHeaderHeight + 12)
+    : 110;
+  const statusPillTop = recording ? mapOverlayTop : 86;
 
   // La vecchia selezione locale non e' piu' una sorgente caricabile sulla
   // mappa. I percorsi locali passano dall'Archivio owner-scoped e poi dal cloud.
@@ -2438,23 +2447,6 @@ function MainUI(props: any) {
     setAddedRoutes([]);
     setRoutesOnMap([]);
   }, [addedRoutes, setAddedRoutes, setRoutesOnMap]);
-
-  // REC pulse animation
-  const recPulse = React.useRef(new Animated.Value(1)).current;
-  React.useEffect(() => {
-    if (recordingStatus === 'recording') {
-      const anim = Animated.loop(
-        Animated.sequence([
-          Animated.timing(recPulse, { toValue: 0.3, duration: 600, useNativeDriver: true }),
-          Animated.timing(recPulse, { toValue: 1, duration: 600, useNativeDriver: true }),
-        ])
-      );
-      anim.start();
-      return () => anim.stop();
-    } else {
-      recPulse.setValue(1);
-    }
-  }, [recordingStatus, recPulse]);
 
   const porciniCount = markers.filter((m: MarkerData) => m.tipo === 'Porcino').length;
   const finferliCount = markers.filter((m: MarkerData) => m.tipo === 'Finferlo').length;
@@ -2663,27 +2655,33 @@ function MainUI(props: any) {
       />
 
       {/* ── HEADER PILL ──────────────────────────────────────────────────── */}
-      <View style={mStyles.headerPill} pointerEvents="none">
+      {!recording && <View style={mStyles.headerPill} pointerEvents="none">
         <Text style={mStyles.headerEmoji}>🍄</Text>
         <Text style={mStyles.headerTitle}>FUNGHI TRACKER</Text>
-        {recording && (
-          <Animated.View
-            style={[
-              mStyles.recDot,
-              recordingPaused && mStyles.recDotPaused,
-              { opacity: recordingPaused ? 1 : recPulse },
-            ]}
+      </View>}
+
+      {recording && !editingCloudRoute && (
+        <View
+          style={[mStyles.recordingHeader, { top: recordingHeaderTop }]}
+          onLayout={(event) => setRecordingHeaderHeight(event.nativeEvent.layout.height)}
+        >
+          <RecordingSessionControls
+            paused={recordingPaused}
+            busy={recordingActionBusy}
+            pointCount={path.length}
+            onPause={pauseRecording}
+            onFinish={stopRecording}
           />
-        )}
-      </View>
+        </View>
+      )}
 
       {tilesLoading && (
-        <View style={mStyles.tileStatusPill}>
+        <View style={[mStyles.tileStatusPill, { top: statusPillTop }]}>
           <Text style={mStyles.tileStatusText}>Caricamento layer indice...</Text>
         </View>
       )}
       {!!tilesError && activeLayer !== 'off' && (
-        <View style={mStyles.tileStatusPillError}>
+        <View style={[mStyles.tileStatusPillError, { top: statusPillTop }]}>
           <Text style={mStyles.tileStatusText}>Layer indice non disponibile</Text>
           {tileRetryExhausted && (
             <TouchableOpacity onPress={retryTileBootstrap} accessibilityRole="button" accessibilityLabel="Riprova a caricare il layer indice">
@@ -2694,7 +2692,7 @@ function MainUI(props: any) {
       )}
       {positionApproximate && currentPosition && !tilesLoading && !(tilesError && activeLayer !== 'off') && (
         <View
-          style={mStyles.approximatePositionPill}
+          style={[mStyles.approximatePositionPill, { top: statusPillTop }]}
           pointerEvents="none"
           accessible
           accessibilityLabel="Posizione approssimativa, in attesa del GPS preciso"
@@ -2716,11 +2714,12 @@ function MainUI(props: any) {
         setTileOpacity={setTileOpacity}
         tilesLoading={tilesLoading}
         onShowIndexAccessNotice={onShowIndexAccessNotice}
+        minTop={recording ? mapOverlayTop + 36 : 56}
       />}
 
       {/* ── OVERLAY LISTA FUNGHI (destra) ────────────────────────────────── */}
       {recording && markers.length > 0 && (
-        <View style={mStyles.overlayRight}>
+        <View style={[mStyles.overlayRight, { top: mapOverlayTop + 36 }]}>
           <View style={mStyles.overlayHeader}>
             <Text style={mStyles.overlayLabel}>TROVATI</Text>
             <View
@@ -2764,7 +2763,7 @@ function MainUI(props: any) {
 
       {/* ── OVERLAY PERCORSI IN MAPPA (sinistra) ─────────────────────────── */}
       {!editingCloudRoute && routesOnMap.length > 0 && (
-        <View style={mStyles.overlayLeft}>
+        <View style={[mStyles.overlayLeft, { top: recording ? mapOverlayTop + 36 : 110 }]}>
           <View style={mStyles.overlayHeader}>
             <Text style={mStyles.overlayLabel}>IN MAPPA</Text>
             <View style={mStyles.overlayCount}><Text style={mStyles.overlayCountText}>{routesOnMap.length}</Text></View>
@@ -2829,7 +2828,7 @@ function MainUI(props: any) {
       {/* ── PULSANTE CENTRA ───────────────────────────────────────────────── */}
       {!editingCloudRoute && <>
       <TouchableOpacity
-        style={recording ? mStyles.centerBtnRecording : mStyles.centerBtn}
+        style={recording ? [mStyles.centerBtn, { bottom: bottomControlsHeight + 12 }] : mStyles.centerBtn}
         accessibilityRole="button"
         accessibilityLabel="Centra la mappa sulla mia posizione"
         onPress={() => {
@@ -2846,7 +2845,7 @@ function MainUI(props: any) {
 
       {/* ── CONTROLLI INFERIORI ───────────────────────────────────────────── */}
       <TouchableOpacity
-        style={recording ? mStyles.compassBtnRecording : mStyles.compassBtn}
+        style={recording ? [mStyles.compassBtn, { bottom: bottomControlsHeight + 66 }] : mStyles.compassBtn}
         accessibilityRole="button"
         accessibilityLabel="Orienta la mappa verso nord"
         onPress={() => {
@@ -2862,74 +2861,17 @@ function MainUI(props: any) {
         <Text style={mStyles.compassArrow}>^</Text>
       </TouchableOpacity>
 
-      <View style={mStyles.bottomControls}>
+      <View style={mStyles.bottomControls} onLayout={(event) => setBottomControlsHeight(event.nativeEvent.layout.height)}>
         {recording ? (
-          <View style={mStyles.recordingPanel}>
-            <View style={mStyles.recordingSummaryRow} accessibilityLiveRegion="polite">
-              <View style={mStyles.recordingStatusCompact}>
-                <View style={[mStyles.recordingStatusDot, recordingPaused && mStyles.recordingStatusDotPaused]} />
-                <Text style={[mStyles.recordingStatusText, recordingPaused && mStyles.recordingStatusTextPaused]}>
-                  {recordingPaused ? 'In pausa' : 'Registrazione attiva'}
-                </Text>
-              </View>
-              <Text style={mStyles.gpsCount}>GPS {path.length}</Text>
-            </View>
-            <View style={mStyles.speciesRow}>
-              <TouchableOpacity
-                style={[mStyles.speciesBtn, mStyles.speciesBtnPorcino, (recordingPaused || path.length < 1 || recordingActionBusy) && mStyles.speciesBtnDisabled]}
-                onPress={() => addMarker('Porcino')}
-                disabled={recordingPaused || path.length < 1 || recordingActionBusy}
-                activeOpacity={0.75}
-                accessibilityLabel={`Aggiungi porcino. Trovati finora: ${porciniCount}`}
-              >
-                <Text style={[mStyles.speciesBtnText, { color: UI.porcinoHi }]}>+ Aggiungi porcino</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[mStyles.speciesBtn, mStyles.speciesBtnFinferlo, (recordingPaused || path.length < 1 || recordingActionBusy) && mStyles.speciesBtnDisabled]}
-                onPress={() => addMarker('Finferlo')}
-                disabled={recordingPaused || path.length < 1 || recordingActionBusy}
-                activeOpacity={0.75}
-                accessibilityLabel={`Aggiungi finferlo. Trovati finora: ${finferliCount}`}
-              >
-                <Text style={[mStyles.speciesBtnText, { color: UI.finferloHi }]}>+ Aggiungi finferlo</Text>
-              </TouchableOpacity>
-            </View>
-            <View style={mStyles.recordingActionsRow}>
-              <TouchableOpacity
-                style={[
-                  mStyles.mainBtn,
-                  mStyles.recordingActionButton,
-                  recordingPaused ? mStyles.mainBtnResume : mStyles.mainBtnPause,
-                  recordingActionBusy && mStyles.mainBtnDisabled,
-                ]}
-                onPress={recordingPaused ? resumeRecording : pauseRecording}
-                disabled={recordingActionBusy}
-                accessibilityRole="button"
-                accessibilityLabel={recordingPaused ? 'Riprendi registrazione' : 'Metti in pausa la registrazione'}
-                activeOpacity={0.85}
-              >
-                {recordingPaused ? <Play size={17} color="#fff" /> : <Pause size={17} color="#fff" />}
-                <Text style={mStyles.mainBtnTextCompact}>{recordingPaused ? 'Riprendi' : 'Pausa'}</Text>
-              </TouchableOpacity>
-              <View style={mStyles.recordingFinishSeparator} />
-              <TouchableOpacity
-                style={[mStyles.mainBtn, mStyles.recordingFinishButton, mStyles.mainBtnStop, recordingActionBusy && mStyles.mainBtnDisabled]}
-                onPress={() => {
-                  Alert.alert('Terminare la registrazione?', 'Il percorso verrà fermato. Potrai poi salvarlo oppure eliminarlo.', [
-                    { text: 'Continua a registrare', style: 'cancel' },
-                    { text: 'Termina', style: 'destructive', onPress: stopRecording },
-                  ]);
-                }}
-                disabled={recordingActionBusy}
-                accessibilityRole="button"
-                accessibilityLabel="Termina registrazione"
-                activeOpacity={0.85}
-              >
-                <Square size={16} color="#fff" fill="#fff" />
-                <Text style={mStyles.mainBtnTextCompact}>Termina</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
+          <RecordingFieldControls
+            paused={recordingPaused}
+            busy={recordingActionBusy}
+            hasPoints={path.length > 0}
+            porciniCount={porciniCount}
+            finferliCount={finferliCount}
+            onAdd={addMarker}
+            onResume={resumeRecording}
+          />
         ) : (
           <TouchableOpacity
             style={[mStyles.mainBtn, mStyles.mainBtnStart, (recordingActionBusy || recoveryChecking) && mStyles.mainBtnDisabled]}
@@ -3167,8 +3109,7 @@ const mStyles = StyleSheet.create({
   headerPill: { position: 'absolute', top: 48, alignSelf: 'center', flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(10,17,11,0.88)', borderWidth: 1, borderColor: UI.border, paddingHorizontal: 14, paddingVertical: 7, borderRadius: 24 },
   headerEmoji: { fontSize: 16 },
   headerTitle: { color: UI.textPri, fontSize: 13, fontWeight: '800', letterSpacing: 2.5 },
-  recDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: UI.redBri, marginLeft: 4 },
-  recDotPaused: { backgroundColor: UI.amberBri },
+  recordingHeader: { position: 'absolute', left: 12, right: 12 },
   tileStatusPill: { position: 'absolute', top: 86, alignSelf: 'center', backgroundColor: 'rgba(10,17,11,0.88)', borderWidth: 1, borderColor: UI.border, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 6 },
   tileStatusPillError: { position: 'absolute', top: 86, alignSelf: 'center', backgroundColor: 'rgba(140,48,48,0.92)', borderWidth: 1, borderColor: UI.redBri, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 6 },
   approximatePositionPill: { position: 'absolute', top: 86, alignSelf: 'center', backgroundColor: 'rgba(48,36,8,0.92)', borderWidth: 1, borderColor: UI.amberBri, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 6 },
@@ -3251,40 +3192,16 @@ const mStyles = StyleSheet.create({
   coordinatePopupWeatherButton: { flex: 1, minHeight: 36, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, borderRadius: 7, borderWidth: 1, borderColor: UI.borderHi, backgroundColor: UI.greenDim },
   coordinatePopupAnalysisButton: { flex: 1, minHeight: 36, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, borderRadius: 7, borderWidth: 1, borderColor: '#495541', backgroundColor: '#263028' },
   coordinatePopupWeatherText: { color: UI.textPri, fontSize: 11, fontWeight: '800' },
-  recordingStatusDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: UI.redBri },
-  recordingStatusDotPaused: { backgroundColor: UI.amberBri },
-  recordingStatusText: { color: UI.redBri, fontSize: 12, fontWeight: '800' },
-  recordingStatusTextPaused: { color: UI.amberBri },
   centerBtn: { position: 'absolute', bottom: 146, left: 16, width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(10,17,11,0.90)', borderWidth: 1, borderColor: UI.border, justifyContent: 'center', alignItems: 'center' },
-  centerBtnRecording: { position: 'absolute', bottom: 190, left: 16, width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(10,17,11,0.90)', borderWidth: 1, borderColor: UI.border, justifyContent: 'center', alignItems: 'center' },
   compassBtn: { position: 'absolute', bottom: 200, left: 16, width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(10,17,11,0.90)', borderWidth: 1, borderColor: UI.border, justifyContent: 'center', alignItems: 'center' },
-  compassBtnRecording: { position: 'absolute', bottom: 244, left: 16, width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(10,17,11,0.90)', borderWidth: 1, borderColor: UI.border, justifyContent: 'center', alignItems: 'center' },
   compassNorth: { color: UI.textPri, fontSize: 11, fontWeight: '900', lineHeight: 13 },
   compassArrow: { color: UI.greenBri, fontSize: 15, fontWeight: '900', lineHeight: 15 },
   bottomControls: { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: 12, paddingBottom: 14, paddingTop: 6 },
-  recordingPanel: { padding: 8, gap: 7, borderRadius: 12, borderWidth: 1, borderColor: UI.border, backgroundColor: 'rgba(10,17,11,0.88)' },
-  recordingSummaryRow: { minHeight: 22, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 3 },
-  recordingStatusCompact: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  gpsCount: { color: UI.textSec, fontSize: 12, fontWeight: '800', fontVariant: ['tabular-nums'] },
-  speciesRow: { flexDirection: 'row', gap: 8 },
-  speciesBtn: { flex: 1, minHeight: 46, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8, borderRadius: 9, borderWidth: 1.5, backgroundColor: 'rgba(10,17,11,0.96)' },
-  speciesBtnFinferlo: { borderColor: UI.finferlo },
-  speciesBtnPorcino: { borderColor: UI.porcino },
-  speciesBtnDisabled: { opacity: 0.35 },
-  speciesBtnText: { fontSize: 13, fontWeight: '800' },
   mainBtn: { minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9, paddingVertical: 12, borderRadius: 9, borderWidth: 1.5 },
   mainBtnStart: { backgroundColor: UI.greenDim, borderColor: UI.greenBri },
-  mainBtnPause: { backgroundColor: '#302408', borderColor: UI.amberBri },
-  mainBtnResume: { backgroundColor: UI.greenDim, borderColor: UI.greenBri },
-  mainBtnStop: { backgroundColor: '#2a0a0a', borderColor: UI.redBri },
   mainBtnDisabled: { opacity: 0.55 },
-  recordingActionsRow: { flexDirection: 'row', gap: 8 },
-  recordingActionButton: { flex: 1 },
-  recordingFinishSeparator: { width: 1, marginVertical: 7, backgroundColor: UI.borderHi },
-  recordingFinishButton: { width: 108 },
   mainBtnIcon: { fontSize: 16, color: '#fff' },
   mainBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
-  mainBtnTextCompact: { color: '#fff', fontSize: 15, fontWeight: '700' },
 });
 
 const aStyles = StyleSheet.create({

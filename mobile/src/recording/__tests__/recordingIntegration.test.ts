@@ -25,15 +25,15 @@ describe('recording pause integration', () => {
   });
 
   it('shows clear pause, resume and finish actions without camera commands', () => {
-    expect(app).toContain('Registrazione attiva');
-    expect(app).toContain('In pausa');
+    expect(app).toContain('<RecordingSessionControls');
+    expect(app).toContain('<RecordingFieldControls');
     expect(app).toContain('title="Registrazione terminata"');
-    expect(app).toContain("recordingPaused ? 'Riprendi' : 'Pausa'");
-    expect(app).toContain('>Termina</Text>');
-    expect(app).toContain('recordingFinishSeparator');
-    expect(app).toContain("{ text: 'Termina', style: 'destructive', onPress: stopRecording }");
-    expect(app).toContain('+ Aggiungi porcino');
-    expect(app).toContain('+ Aggiungi finferlo');
+    const fieldArea = app.slice(app.indexOf('<View style={mStyles.bottomControls}'), app.indexOf('{coordinateSelection && ('));
+    expect(fieldArea).toContain('<RecordingFieldControls');
+    expect(fieldArea).not.toContain('stopRecording');
+    expect(fieldArea).not.toContain('pauseRecording');
+    expect(app).toContain('onFinish={stopRecording}');
+    expect(app).toContain('onResume={resumeRecording}');
     const handlers = app.slice(app.indexOf('const pauseRecording'), app.indexOf('const saveCurrentRoute'));
     expect(handlers).not.toMatch(/runCameraCommand|centerCamera|setCameraCommand/);
     expect(app.match(/<MemoMapCanvas\b/g)).toHaveLength(1);

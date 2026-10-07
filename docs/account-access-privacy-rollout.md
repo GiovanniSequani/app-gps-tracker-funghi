@@ -4,7 +4,7 @@
 
 ### BE-FORECAST-001 — 2026-10-07
 
-- `IMPLEMENTED LOCAL / REMOTE CHECK PENDING`: pipeline porcini ICON-2I ->
+- `BACKEND PUBLISHED / FRONTEND PENDING` (2026-10-08): pipeline porcini ICON-2I ->
   ICON-EU, +0..+4, bucket separati `forecast-data` e `forecast-tiles`.
 - Decisione prodotto confermata: forecast visibile solo ad account active;
   gate UI/full_access, **oggetti tecnicamente pubblici tramite URL diretto**.
@@ -14,7 +14,11 @@
   forecast locale verificato > NaN, senza inserire previsioni nelle serie
   ufficiali e senza cambiare i gate della daily ufficiale.
 - Contratto, qualita', misure e handoff: `forecast-contract.md`.
-  Migration preparata ma non applicata; nessun upload remoto o test frontend.
+  Migration applicata dal proprietario; versione `20261007T152901Z` pubblicata,
+  1,390 oggetti verificati, RPC anonima e GET pubblici collaudati. Diniego
+  attivazione anonima, rifiuto staging vecchio/scaduto e retry verificati.
+  Suite backend: 230 passed. Test frontend e osservazione reale della scadenza
+  temporale/retention remota restano pendenti.
 
 Questo documento è il backlog di coordinamento per il passaggio di
 FunghiTracker al modello con servizio pubblico limitato e account contributore.

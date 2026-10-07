@@ -197,6 +197,16 @@ def test_integrity_and_paths_fail_before_writes(tmp_path):
     with pytest.raises(ValueError): object_inventory(m)
 
 
+def test_forecast_uses_fresh_connections_without_changing_shared_default(tmp_path, monkeypatch):
+    from backend.src.publication.supabase import SupabaseClient
+    publication_fixture(tmp_path)
+    client = Fake()
+    monkeypatch.setattr(SupabaseClient, "from_env", lambda _: client)
+    assert publish(tmp_path, None) == "published"
+    assert client.max_requests_per_connection == 1
+    assert SupabaseClient("https://example.invalid", "test").max_requests_per_connection == 12
+
+
 def test_retention_only_forecast_roots(tmp_path):
     old=tmp_path / "20260901T000000Z"; old.mkdir()
     preserved=tmp_path / "official"; preserved.mkdir()

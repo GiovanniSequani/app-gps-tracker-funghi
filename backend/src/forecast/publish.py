@@ -75,6 +75,10 @@ def publish(directory, env_file, client=None):
     if client is None:
         from backend.src.publication.supabase import SupabaseClient
         client = SupabaseClient.from_env(env_file)
+        # Alternating upload/readback hit repeated remote stream resets with
+        # pooled connections in the first production run. Isolate this
+        # conservative transport setting to forecast publication only.
+        client.max_requests_per_connection = 1
     manifest = json.loads((directory / "manifest.json").read_text())
     if "rows" in manifest:
         expected = math.ceil(manifest["rows"] / 50) * math.ceil(manifest["cols"] / 50)

@@ -1,7 +1,8 @@
 # Forecast porcini: operazioni e contratto v1
 
-Task `BE-FORECAST-001`. Implementazione locale; **prima pubblicazione remota
-ancora subordinata al check del proprietario**. Nessuna modifica mobile/web.
+Task `BE-FORECAST-001`. Prima pubblicazione remota approvata e verificata
+il 2026-10-08. Integrazione e collaudo frontend ancora da eseguire.
+Nessuna modifica mobile/web.
 
 ## Decisioni e sorgenti
 
@@ -101,7 +102,8 @@ python -m backend.scripts.run_daily_forecast_pipeline --publish-existing backend
 
 Migration idempotente da applicare **dopo il check**, integralmente nel SQL Editor:
 `backend/supabase/migrations/202610070001_forecast_publication.sql`.
-Non applicata durante il collaudo locale. Configurazione backend/.env esistente:
+Applicazione confermata dal proprietario e RPC verificate il 2026-10-08.
+Configurazione backend/.env esistente:
 `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` (o alias backend gia' supportato).
 Nessun nuovo segreto; nessuna service-role nei frontend.
 
@@ -164,9 +166,9 @@ se il PC resta spento non esiste uno scheduler remoto che rimuova i file.
 Cap preventivo DB: 64 MiB/versione, 256 MiB riservati complessivi per forecast;
 non e' una misura della quota totale Supabase. Nessun cleanup di account/GPX.
 
-Prima pubblicazione: applicare migration, pubblicare una versione ancora valida,
-verificare RPC anonima, manifest, chunk e tile; testare monotonicita'/expiry su
-dati forecast controllati. Queste prove Supabase sono ancora **NOT RUN**.
+Prima pubblicazione completata: evidenze remote nella sezione seguente.
+La scadenza automatica del puntatore al passare del tempo e la cancellazione
+remota dopo sette giorni non sono ancora state osservate in produzione.
 
 ## Evidenze locali 2026-10-07
 
@@ -197,5 +199,23 @@ dati forecast controllati. Queste prove Supabase sono ancora **NOT RUN**.
   controllato, non stima rappresentativa dell'intero dominio. Un'altra fascia
   con gap il 2 ottobre non mostrava differenze: l'effetto dipende dai candidati.
 
-Non pubblicato, non collaudato da frontend. Prima emissione remota in attesa
-del check richiesto dal proprietario; non segnare il rollout end-to-end DONE.
+## Prima pubblicazione Supabase 2026-10-08
+
+- Migration applicata dal proprietario; versione approvata `20261007T152901Z`
+  pubblicata e attiva, date 7..11 ottobre, scadenza 11 ottobre 22:00 UTC
+  (12 ottobre 00:00 Europe/Rome). Emissione originale preservata, non una
+  nuova corsa del giorno 8.
+- Tutti i 1,390 oggetti riletti e confrontati byte per byte prima dello switch;
+  manifest verificato. Payload 17,480,410 byte + manifest 202,147 byte:
+  totale oggetti pubblicati 17,682,557 byte, non misura della quota organizzazione.
+- RPC con anon key e manifest pubblico verificati; ulteriori GET senza
+  credenziali di tre chunk e cinque tile (una per data), checksum/score validi.
+- Attivazione anonima negata; staging della corsa precedente risponde `stale`;
+  staging scaduto rifiutato; riattivazione identica idempotente.
+- Durante upload incompleto la RPC anonima restituiva null. Interruzione e
+  ripresa della stessa versione riuscite, nessun dataset ufficiale modificato.
+- Trasporto: reset ripetuti con connessioni riutilizzate; con nuova connessione
+  per richiesta upload completato senza ulteriori retry. Impostazione limitata
+  all'uploader forecast, nessuna modifica al default del client condiviso.
+- Suite completa dopo il fix: **230 passed**. Test frontend e osservazione
+  temporale reale di expiry/retention ancora pendenti; non dichiarare UI pronta.

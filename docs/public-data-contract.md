@@ -1,5 +1,12 @@
 # FunghiTracker public weather and terrain contract
 
+Forecast extension (BE-FORECAST-001): see `forecast-contract.md` for the
+separate public buckets, atomic RPC pointer, local dates, binary score series,
+expiry and active-account UI gate. First remote publication remains pending.
+Official weather metadata and index-data manifests may additionally contain
+`forecast_fallback`: per-date provenance when verified forecast meteorology
+filled a missing HRS/RUC date. Existing binary layouts are unchanged.
+
 Contract version: `1`.
 
 The anonymous client uses only the Supabase project URL and anonymous key. The

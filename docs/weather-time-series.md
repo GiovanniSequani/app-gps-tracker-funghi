@@ -1,5 +1,15 @@
 # Weather time-series operations
 
+## Forecast fallback (2026-10-07)
+
+Scoring windows now use HRS > ICON-RUC > verified completed local forecast >
+NaN for missing **dates**, including official index calculations. No forecast
+is appended to the annual HRS/RUC series, and the daily publication gate is
+unchanged. `weather_source=3` and JSON `forecast_fallback` record provenance;
+features and official index metadata retain it. See `forecast-contract.md`
+for retention, quality limitations and operations. Older descriptions below
+of missing dates as NaN apply when no verified forecast fallback is available.
+
 The daily downloader and complete-day publication gates are unchanged. After a
 day reaches the existing aggregation/regridding gate, step 06 updates:
 

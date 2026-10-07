@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import shutil
 from contextlib import ExitStack
 from dataclasses import dataclass
@@ -13,7 +14,7 @@ import xarray as xr
 from netCDF4 import Dataset, date2num, num2date
 
 from backend.config.meteo import DAILY_FINAL_VARIABLES
-from backend.config.paths import FINAL_METEO_DIR
+from backend.config.paths import FINAL_METEO_DIR, OUTPUTS_DIR
 
 UTC = timezone.utc
 SCORING_WEATHER_VARIABLES = (
@@ -402,7 +403,10 @@ def compose_weather_window(
     target_date: str | date,
     window_days: int,
     meteo_dir: Path = FINAL_METEO_DIR,
+    forecast_root: Path | None = OUTPUTS_DIR / "forecast",
 ) -> xr.Dataset:
+    from backend.src.forecast.weather import archived_weather
+    fallback_provenance = {}
     target = datetime.strptime(target_date, "%Y-%m-%d").date() if isinstance(target_date, str) else target_date
     required_dates = tuple(target - timedelta(days=offset) for offset in range(window_days - 1, -1, -1))
     years = sorted({item.year for item in required_dates})
@@ -439,6 +443,14 @@ def compose_weather_window(
             selected = hrs if hrs_idx is not None else icon if icon_idx is not None else None
             selected_idx = hrs_idx if hrs_idx is not None else icon_idx
             if selected is None or selected_idx is None:
+                fallback, provenance = archived_weather(forecast_root, item.isoformat())
+                if fallback is not None:
+                    if not np.allclose(fallback.lat, lat, atol=3e-6, rtol=0) or not np.allclose(fallback.lon, lon, atol=3e-6, rtol=0):
+                        raise ValueError("forecast fallback grid mismatch")
+                    for name in SCORING_WEATHER_VARIABLES:
+                        data[name][day_idx] = fallback[name].values[0]
+                    source_codes[day_idx] = 3
+                    fallback_provenance[item.isoformat()] = provenance
                 continue
             source_codes[day_idx] = 2 if hrs_idx is not None else 1
             for name in SCORING_WEATHER_VARIABLES:
@@ -460,18 +472,22 @@ def compose_weather_window(
     for name, unit in CANONICAL_UNITS.items():
         if name in ds:
             ds[name].attrs["units"] = unit
-    ds["weather_source"].attrs.update(codes="0=missing,1=ICON-RUC,2=HRS")
+    ds["weather_source"].attrs.update(codes="0=missing,1=ICON-RUC,2=HRS,3=archived-forecast")
     ds.attrs.update(
         target_date=target.isoformat(),
         feature_window_days=window_days,
         target_crs="EPSG:4326",
         target_step_deg=0.003,
-        weather_source_policy="complete validated HRS day overrides ICON-RUC; otherwise ICON-RUC; missing source is NaN",
+        weather_source_policy="HRS > ICON-RUC > verified archived forecast > NaN; original yearly series unchanged",
+        forecast_fallback=json.dumps(fallback_provenance, sort_keys=True),
     )
     return ds
 
 
-def save_composite_window(target_date: str, day_count: int, output: Path, meteo_dir: Path = FINAL_METEO_DIR) -> Path:
+def save_composite_window(target_date: str, day_count: int, output: Path, meteo_dir: Path = FINAL_METEO_DIR,
+                          forecast_root: Path | None = OUTPUTS_DIR / "forecast") -> Path:
+    from backend.src.forecast.weather import archived_weather
+    fallback_provenance = {}
     target = datetime.strptime(target_date, "%Y-%m-%d").date()
     required_dates = tuple(target - timedelta(days=offset) for offset in range(day_count - 1, -1, -1))
     years = sorted({item.year for item in required_dates})
@@ -500,7 +516,7 @@ def save_composite_window(target_date: str, day_count: int, output: Path, meteo_
                 positions[(kind, year)] = {item: idx for idx, item in enumerate(_decode_dates(ds))}
         out = stack.enter_context(_create_writer(temp, template, SCORING_WEATHER_VARIABLES, "HRS/ICON-RUC composed weather window"))
         source_var = out.createVariable("weather_source", "u1", ("time",))
-        source_var.codes = "0=missing,1=ICON-RUC,2=HRS"
+        source_var.codes = "0=missing,1=ICON-RUC,2=HRS,3=archived-forecast"
         source_codes = np.zeros(day_count, dtype=np.uint8)
         for out_idx, item in enumerate(required_dates):
             hrs = hrs_sets.get(item.year)
@@ -510,6 +526,15 @@ def save_composite_window(target_date: str, day_count: int, output: Path, meteo_
             selected = hrs if hrs_idx is not None else icon if icon_idx is not None else None
             selected_idx = hrs_idx if hrs_idx is not None else icon_idx
             if selected is None or selected_idx is None:
+                fallback, provenance = archived_weather(forecast_root, item.isoformat())
+                if fallback is not None:
+                    if not np.allclose(fallback.lat, template.variables["lat"][:], atol=3e-6, rtol=0) or not np.allclose(fallback.lon, template.variables["lon"][:], atol=3e-6, rtol=0):
+                        raise ValueError("forecast fallback grid mismatch")
+                    for name in SCORING_WEATHER_VARIABLES:
+                        out.variables[name][out_idx, :, :] = fallback[name].values[0]
+                    source_codes[out_idx] = 3
+                    fallback_provenance[item.isoformat()] = provenance
+                    continue
                 for name in SCORING_WEATHER_VARIABLES:
                     out.variables[name][out_idx, :, :] = np.nan
                 continue
@@ -518,6 +543,7 @@ def save_composite_window(target_date: str, day_count: int, output: Path, meteo_
                 out.variables[name][out_idx, :, :] = selected.variables[name][selected_idx, :, :]
         source_var[:] = source_codes
         _finish_writer(out, required_dates, "validated HRS days override ICON-D2-RUC; incomplete HRS falls back to ICON-D2-RUC")
-        out.weather_source_policy = "complete validated HRS day overrides ICON-RUC; otherwise ICON-RUC; missing source is NaN"
+        out.weather_source_policy = "HRS > ICON-RUC > verified archived forecast > NaN; original yearly series unchanged"
+        out.forecast_fallback = json.dumps(fallback_provenance, sort_keys=True)
     os.replace(temp, output)
     return output

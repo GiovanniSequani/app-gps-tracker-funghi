@@ -2,6 +2,20 @@
 
 ## Scopo e autorità
 
+### BE-FORECAST-001 — 2026-10-07
+
+- `IMPLEMENTED LOCAL / REMOTE CHECK PENDING`: pipeline porcini ICON-2I ->
+  ICON-EU, +0..+4, bucket separati `forecast-data` e `forecast-tiles`.
+- Decisione prodotto confermata: forecast visibile solo ad account active;
+  gate UI/full_access, **oggetti tecnicamente pubblici tramite URL diretto**.
+  Non e' una protezione RLS. Accettati scraping/egress; rivalutare prima di
+  crescita rilevante, accesso realmente riservato o costi anomali (SEC-AUD-008).
+- Fallback meteo confermato anche per lo scoring ufficiale: HRS > RUC >
+  forecast locale verificato > NaN, senza inserire previsioni nelle serie
+  ufficiali e senza cambiare i gate della daily ufficiale.
+- Contratto, qualita', misure e handoff: `forecast-contract.md`.
+  Migration preparata ma non applicata; nessun upload remoto o test frontend.
+
 Questo documento è il backlog di coordinamento per il passaggio di
 FunghiTracker al modello con servizio pubblico limitato e account contributore.
 Deve essere letto prima di modificare account, GPX, accesso all'indice,

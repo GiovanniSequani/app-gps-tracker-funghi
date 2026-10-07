@@ -341,6 +341,9 @@ def build_weather_dataset(
             ),
             "variables": variable_contract,
         }
+        fallback = json.loads(getattr(ds, "forecast_fallback", "{}"))
+        if fallback:
+            metadata_core["forecast_fallback"] = fallback
         digest_parts = [canonical_json_bytes(metadata_core)]
         for name in WEATHER_VARIABLES:
             digest_parts.append(name.encode("ascii"))

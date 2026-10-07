@@ -38,6 +38,8 @@ Leggere `../AGENTS.md` prima di lavorare nel repository.
 - `user-accounts-gpx-contract.md`: contratto tecnico corrente di account e GPX.
 - `public-data-contract.md`: contratti dei dataset pubblici.
 - `weather-time-series.md`: serie temporali meteo.
+- `forecast-contract.md`: pipeline porcini previsionale, fallback anche per
+  scoring ufficiale, contratto pubblico e gate della prima pubblicazione.
 - `map-camera-rules.md`: invarianti della camera della mappa.
 - `modelling-context.md`: contesto tecnico e vincoli di lifecycle per la chat
   modelling; effort, target e split restano scelte metodologiche.

@@ -109,6 +109,7 @@ def main() -> None:
         recovery_history=recovery_history,
         enable_recovery=not args.no_recovery,
     )
+    out.attrs["forecast_fallback"] = ds.attrs.get("forecast_fallback", "{}")
     output_path = args.output or str(INDEX_OUTPUT_TEMPLATE).format(date=target_date)
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     out.to_netcdf(output_path)

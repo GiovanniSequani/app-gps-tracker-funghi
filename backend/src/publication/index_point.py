@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import json
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
@@ -593,6 +594,9 @@ def build_index_point_dataset(
         "total_chunk_bytes": sum(item.byte_length for item in chunks),
         "total_raw_chunk_bytes": sum(item.raw_byte_length for item in chunks),
     }
+    fallback = json.loads(features.attrs.get("forecast_fallback", "{}"))
+    if fallback:
+        manifest_core["forecast_fallback"] = fallback
     dataset_sha256 = sha256_bytes(canonical_json_bytes(manifest_core))
     manifest = dict(manifest_core)
     manifest["dataset_sha256"] = dataset_sha256

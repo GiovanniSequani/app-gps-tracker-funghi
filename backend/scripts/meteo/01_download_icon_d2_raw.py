@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
+from backend.src.meteo.http import remote_file_available as url_exists
 
 from backend.config.meteo import (
     DWD_ICON_D2_BASE_URL,
@@ -111,21 +112,6 @@ def build_download_items(run_dt: datetime, var_key: str, step: int) -> list[tupl
         return items
 
     raise ValueError(f"level_kind non supportato: {spec['level_kind']}")
-
-
-def url_exists(url: str, timeout: int = 20) -> bool:
-    try:
-        resp = requests.head(url, timeout=timeout, allow_redirects=True)
-        if resp.status_code == 200:
-            return True
-        if resp.status_code == 405:
-            resp = requests.get(url, stream=True, timeout=timeout)
-            ok = resp.status_code == 200
-            resp.close()
-            return ok
-        return False
-    except requests.RequestException:
-        return False
 
 
 def find_latest_available_run(

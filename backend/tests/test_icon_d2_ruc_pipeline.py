@@ -4,6 +4,11 @@ import importlib
 from datetime import datetime, timezone
 
 import numpy as np
+import pytest
+import requests
+from unittest.mock import MagicMock
+
+from backend.src.meteo import http
 
 from backend.config.domain import BBOX, TARGET_STEP_DEG
 
@@ -18,6 +23,56 @@ def test_ruc_url_uses_current_dwd_v1_layout() -> None:
     assert download_ruc.build_url(run_dt, "T_2M", 1).endswith(
         "/T_2M/r/2026-07-18T14%3A00/s/PT001H00M.grib2"
     )
+
+
+def probe_response(status, payload=b"GRIB", retry_after=""):
+    response = MagicMock()
+    response.__enter__.return_value = response
+    response.status_code = status
+    response.headers = {"Retry-After": retry_after}
+    response.iter_content.return_value = iter([payload])
+    return response
+
+
+@pytest.mark.parametrize("module", [download_ruc, automatic_ruc.download_d2])
+@pytest.mark.parametrize("status", [200, 206, 404, 410])
+def test_availability_uses_small_get_and_closes_stream(monkeypatch, module, status):
+    response = probe_response(status)
+    get = MagicMock(return_value=response)
+    monkeypatch.setattr(http.requests, "get", get)
+    monkeypatch.setattr(http.requests, "head", MagicMock(side_effect=AssertionError("HEAD must not be used")))
+    assert module.url_exists("https://example.invalid/file", timeout=10) == (status in (200, 206))
+    assert get.call_args.kwargs["headers"] == {"Range": "bytes=0-15", "Connection": "close"}
+    assert get.call_args.kwargs["stream"] is True
+    response.__exit__.assert_called_once()
+
+
+@pytest.mark.parametrize("failure", [requests.ReadTimeout(), 429, 503])
+def test_availability_retries_transient_failure(monkeypatch, failure):
+    first = failure if isinstance(failure, Exception) else probe_response(failure, retry_after="2")
+    get = MagicMock(side_effect=[first, probe_response(206)])
+    monkeypatch.setattr(http.requests, "get", get)
+    sleep = MagicMock()
+    monkeypatch.setattr(http.time, "sleep", sleep)
+    assert download_ruc.url_exists("https://example.invalid/file") is True
+    assert get.call_count == 2
+    sleep.assert_called_once()
+
+
+@pytest.mark.parametrize("status,expected_calls", [(503, 3), (403, 1)])
+def test_unknown_availability_never_becomes_missing(monkeypatch, status, expected_calls):
+    get = MagicMock(side_effect=lambda *args, **kwargs: probe_response(status))
+    monkeypatch.setattr(http.requests, "get", get)
+    monkeypatch.setattr(http.time, "sleep", lambda _: None)
+    with pytest.raises(RuntimeError):
+        automatic_ruc.download_d2.url_exists("https://example.invalid/file")
+    assert get.call_count == expected_calls
+
+
+def test_ruc_filter_propagates_probe_failure(monkeypatch):
+    monkeypatch.setattr(automatic_ruc, "ruc_run_available", MagicMock(side_effect=RuntimeError("network")))
+    with pytest.raises(RuntimeError, match="network"):
+        automatic_ruc.filter_ruc_available_runs(["2026101920"], [1, 2, 3, 4, 5, 6, 7])
 
 
 def test_ruc_target_grid_matches_project_grid_definition() -> None:

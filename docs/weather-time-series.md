@@ -1,5 +1,26 @@
 # Weather time-series operations
 
+## DWD availability checks (2026-10-20)
+
+RUC raw files and D2 smi9 support are checked with a streamed GET of bytes
+0..15. Live checks found HEAD timeouts for files that GET returned correctly
+(RUC temperature and CLAT); the supposedly missing D2 smi9 file was also present.
+Only HTTP 404/410 means unavailable. Transport errors, HTTP 429 and transient
+server errors get up to three attempts; exhausted retries stop the pipeline
+with `[METEO PROBE ERROR]` instead of silently reporting missing files and
+`No unpublished complete day found`. Streams are closed even when Range is
+ignored; `Connection: close` avoids retaining the connection. Complete-day
+gates, required variables and scoring are unchanged.
+
+Live verification on 2026-10-20: RUC run `2026101920`, leads 1..7 plus
+precipitation baseline and CLAT/CLON, and its D2 smi9 support all available.
+Check completed in 56.8 seconds, recovering two transient timeouts. Backend
+suite: 245 passed; final focused meteo/gate checks: 28 passed. No scientific
+datasets regenerated or published during this diagnosis.
+
+After this fix rerun `backend/scripts/run_daily_fungus_pipeline.bat` normally;
+no `--force` or deletion of local data is required.
+
 ## Forecast fallback (2026-10-07)
 
 Scoring windows now use HRS > ICON-RUC > verified completed local forecast >

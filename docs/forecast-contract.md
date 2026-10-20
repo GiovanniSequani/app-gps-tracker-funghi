@@ -89,15 +89,15 @@ ancora locali: dopo la retention un vecchio gap puo' tornare NaN in un ricalcolo
 
 ```powershell
 # Solo locale, default +0..+4 e zoom 3..11
-.\run_daily_forecast_pipeline.bat
+.\backend\scripts\run_daily_forecast_pipeline.bat
 python -m backend.scripts.run_daily_forecast_pipeline --horizon 4 --max-zoom 11
 
 # SOLO dopo approvazione della prima pubblicazione e migration applicata
 python -m backend.scripts.run_daily_forecast_pipeline --publish-existing backend/outputs/forecast/VERSION
 # Successive corse complete con pubblicazione
-.\run_daily_forecast_pipeline.bat --publish
+.\backend\scripts\run_daily_forecast_pipeline.bat --publish
 # Retention senza generare indici (anche fuori stagione)
-.\run_daily_forecast_pipeline.bat --cleanup-only --publish
+.\backend\scripts\run_daily_forecast_pipeline.bat --cleanup-only --publish
 ```
 
 Migration idempotente da applicare **dopo il check**, integralmente nel SQL Editor:
@@ -163,8 +163,16 @@ bucket ufficiali. Elimina versioni con `valid_until` scaduta da almeno sette
 giorni; include staging incompleti. Directory incomplete locali dopo sette
 giorni dall'emissione, cache dopo sette giorni. Cleanup alla prossima esecuzione:
 se il PC resta spento non esiste uno scheduler remoto che rimuova i file.
-Cap preventivo DB: 64 MiB/versione, 256 MiB riservati complessivi per forecast;
+Cap preventivo DB: 64 MiB/versione, 512 MiB riservati complessivi per forecast
+(migration incrementale `202610200001_increase_forecast_storage_budget.sql`);
 non e' una misura della quota totale Supabase. Nessun cleanup di account/GPX.
+
+Il budget complessivo iniziale di 256 MiB e' stato raggiunto con 14 versioni
+e una nuova pubblicazione di circa 22 MB. Applicare integralmente la migration
+`202610200001_increase_forecast_storage_budget.sql` nel SQL Editor per portarlo
+a 512 MiB, poi rilanciare la pipeline o `--publish-existing` per una versione
+locale ancora valida. La migration e' ripetibile e non modifica oggetti,
+puntatore, retention o limite per versione. Applicazione produzione da confermare.
 
 Prima pubblicazione completata: evidenze remote nella sezione seguente.
 La scadenza automatica del puntatore al passare del tempo e la cancellazione

@@ -221,3 +221,23 @@ def test_sql_cas_and_expiry_are_server_enforced():
     assert "v.valid_until > now()" in sql
     assert "to anon, authenticated, service_role" in sql
     assert "from public,anon,authenticated" in sql
+
+
+def test_budget_migration_changes_only_total_cap_and_preserves_stage_guards():
+    import re
+    migrations = Path(__file__).parents[1] / "supabase/migrations"
+    original = (migrations / "202610070001_forecast_publication.sql").read_text()
+    updated = (migrations / "202610200001_increase_forecast_storage_budget.sql").read_text()
+    pattern = r"create or replace function public.stage_forecast\(.*?end; \$\$;"
+    before = re.search(pattern, original, re.S).group()
+    after = re.search(pattern, updated, re.S).group()
+    assert after == before.replace("268435456", "536870912")
+    per_version, total = map(int, re.search(
+        r"requested_bytes > (\d+) or reserved_bytes \+ requested_bytes > (\d+)", after
+    ).groups())
+    assert per_version == 64 * 1024**2
+    assert total == 512 * 1024**2
+    # The observed failed publication fits the new total reservation budget.
+    assert 248553476 + 22273564 <= total
+    assert "from public,anon,authenticated" in updated
+    assert "to service_role" in updated

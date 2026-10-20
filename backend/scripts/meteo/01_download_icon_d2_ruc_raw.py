@@ -10,6 +10,7 @@ from pathlib import Path
 import requests
 
 from backend.config.meteo import RAW_METEO_DIR
+from backend.src.meteo.http import remote_file_available as url_exists
 
 UTC = timezone.utc
 DWD_ICON_D2_RUC_BASE_URL = "https://opendata.dwd.de/weather/nwp/v1/m/icon-d2-ruc/p"
@@ -82,21 +83,6 @@ def normalize_variable_keys(var_keys: list[str] | None) -> list[str]:
 
 def is_valid_grib(path: Path) -> bool:
     return path.is_file() and path.stat().st_size > 0
-
-
-def url_exists(url: str, timeout: int = 20) -> bool:
-    try:
-        resp = requests.head(url, timeout=timeout, allow_redirects=True)
-        if resp.status_code == 200:
-            return True
-        if resp.status_code == 405:
-            resp = requests.get(url, stream=True, timeout=timeout)
-            ok = resp.status_code == 200
-            resp.close()
-            return ok
-        return False
-    except requests.RequestException:
-        return False
 
 
 def list_available_runs(probe_var: str = "T_2M", timeout: int = 30) -> list[datetime]:
